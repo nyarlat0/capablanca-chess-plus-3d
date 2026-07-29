@@ -364,11 +364,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy_panorbit_camera",
- "bevy_picking",
  "capablanca-engine",
- "crossbeam-channel",
- "futures-lite",
- "num-traits",
 ]
 
 [[package]]

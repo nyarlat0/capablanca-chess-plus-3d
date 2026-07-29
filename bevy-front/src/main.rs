@@ -1,989 +1,1201 @@
-// "Chess Scene Pieces / Blender" (https://skfb.ly/67OF8) by moyicat is licensed under Creative Commons Attribution (http://creativecommons.org/licenses/by/4.0/).
-// "Realistic 3D Chess Pieces (Blender)" (https://skfb.ly/oXTUP) by ronildo.facanha is licensed under Creative Commons Attribution (http://creativecommons.org/licenses/by/4.0/).
-// "Chess" (https://skfb.ly/6uVLu) by xnicrox is licensed under Creative Commons Attribution (http://creativecommons.org/licenses/by/4.0/).
-// "Wooden Chess Board" (https://skfb.ly/oXqwI) by Bhargav Limje is licensed under Creative Commons Attribution (http://creativecommons.org/licenses/by/4.0/).
-
-// Plain Bevy frontend for the tiny Salewski chess engine
-// v 0.2 — 15-AUG-2025
-// (C) 2015 - 2032 Dr. Stefan Salewski
-// All rights reserved.
-
-// cargo run --features=default_font
-// cargo run --features=salewskiChessDebug
-
-// Bevy version 0.16.1
-
-use bevy::color::palettes::tailwind::*;
 use bevy::{
-    color::palettes::css::GOLD,
+    color::LinearRgba,
     prelude::*,
     tasks::{AsyncComputeTaskPool, Task, futures_lite::future},
 };
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex};
+use capablanca_chess_plus::{
+    BoardSize, CastleSide, Color as Side, DrawReason, Engine, Game, GameOutcome, Move, MoveKind,
+    Piece, PieceKind, SearchLimits, SearchResult, Square, Variant,
+};
+use std::f32::consts::{FRAC_PI_4, PI};
 
-mod engine;
+const DEFAULT_SEARCH_DEPTH: u8 = 3;
+const MIN_SEARCH_DEPTH: u8 = 1;
+const MAX_SEARCH_DEPTH: u8 = 6;
+const MOVE_ANIMATION_SECONDS: f32 = 0.38;
 
-// === Constants ===
-const DEFAULT_TIME_PER_MOVE: f32 = 1.5;
-const ACCELERATION: f32 = 8.0; // pseudo-accel for arc animation
-const MAX_SPEED: f32 = 6.0; // max piece animation speed
-
-// highlight "kinds"
-const SQUARE_HOVER_FACTOR: i32 = 1;
-const PIECE_HOVER_FACTOR: i32 = 2;
-
-// tag meanings in game_data.tagged
-const TAG_LEGAL: i8 = 1;
-const TAG_LAST: i8 = 2;
-
-// Mapping from bool -> player label
-const PLAYER_LABEL: [&str; 2] = ["Human", "Computer"];
-
-// === Resources / Components ===
-#[derive(Resource)]
-struct NextMoveTask(Option<Task<engine::Move>>);
-
-#[derive(Component, Reflect, Clone, Copy)]
-struct PositionData {
-    location: Vec3,
-}
-
-#[derive(Resource, Default, Component)]
-struct Figure {
-    location: Vec3,
-    speed: f32,
-}
-
-#[derive(Resource)]
-struct Txt {
-    ui_text: String,
-    turn: String,
-    time: String,
-    nxt: String,
-}
-
-impl Default for Txt {
-    fn default() -> Self {
-        Self {
-            ui_text: "Left-click on a piece, then on a destination to move. Use the middle mouse\nbutton to rotate the board, right-click to pan, and scroll to zoom.".to_string(),
-            turn: "Human player vs. Computer\n  use keypad 1 or 2 to change".to_string(),
-            time: format!("{} secs per move\n  use keypad + or - to modify", DEFAULT_TIME_PER_MOVE),
-            nxt: "White starts the game. Press\nkeypad 0 to start a new game.".to_string(),
-        }
-    }
-}
-
-impl Txt {
-    fn refresh(&mut self, secs_per_move: f32, sides: &EnginePlays, game: &engine::Game) {
-        self.turn = format!(
-            "{} (1) vs {} (2)",
-            PLAYER_LABEL[sides.t[0] as usize], PLAYER_LABEL[sides.t[1] as usize]
-        );
-        self.time = format!("Secs per move: {:.1}", secs_per_move);
-        let next = game.move_counter as usize % 2;
-        self.nxt = format!("Next move: {}", ["Black", "White"][next]);
-    }
-}
-
-#[derive(Resource)]
-struct EnginePlays {
-    t: [bool; 2],
-}
-
-impl Default for EnginePlays {
-    fn default() -> Self {
-        Self { t: [false, true] }
-    }
-}
-
-#[derive(Resource)]
-struct SecsPerMove {
-    time: f32,
-}
-
-impl Default for SecsPerMove {
-    fn default() -> Self {
-        Self {
-            time: DEFAULT_TIME_PER_MOVE,
-        }
-    }
-}
-
-#[derive(Resource, PartialEq)]
-enum State {
-    Playing,
-    Waiting,
-    GameTerminated,
-}
-
-#[allow(dead_code)]
-#[derive(Resource, Component)]
-struct GameData {
-    game: Arc<Mutex<engine::Game>>,
-    tagged: engine::Board, // used for highlight of legal moves / last move
-}
-
-impl Default for GameData {
-    fn default() -> Self {
-        Self {
-            game: Arc::new(Mutex::new(engine::new_game())),
-            tagged: [0; 64],
-        }
-    }
-}
-
-#[derive(Resource, Default)]
-struct SelectionState {
-    first_selection: Option<(Entity, PositionData)>,
-}
-
-// Track last applied tags so we update materials only when needed
-#[derive(Resource, Clone)]
-struct TaggedCache(engine::Board);
-impl Default for TaggedCache {
-    fn default() -> Self {
-        Self([0; 64])
-    }
-}
-
-// --- Highlight support (swap-to-highlight with cache) ---
-
-// Cache key: combine original material handle + variant so we can have multiple
-// highlight looks per base material without clashes.
-#[derive(Clone)]
-struct HighlightKey {
-    handle: Handle<StandardMaterial>,
-    variant: i32,
-}
-impl PartialEq for HighlightKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.variant == other.variant && self.handle == other.handle
-    }
-}
-impl Eq for HighlightKey {}
-impl Hash for HighlightKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.handle.hash(state);
-        self.variant.hash(state);
-    }
-}
-
-#[derive(Resource, Default)]
-struct HighlightCache(HashMap<HighlightKey, Handle<StandardMaterial>>);
-
-#[derive(Component, Clone)]
-struct OriginalMaterial(Handle<StandardMaterial>);
-
-// keep original square index for mapping
-#[derive(Component, Copy, Clone)]
-struct Square {
-    idx: usize, // 0..63
-}
-
-fn unused_lighten_towards_white(color: Color, amount: f32) -> Color {
-    let c = color.to_linear();
-    let w = Color::srgb(1.0, 1.0, 1.0).to_linear();
-    let mixed = bevy::color::LinearRgba {
-        red: c.red + (w.red - c.red) * amount,
-        green: c.green + (w.green - c.green) * amount,
-        blue: c.blue + (w.blue - c.blue) * amount,
-        alpha: c.alpha,
-    };
-    mixed.into()
-}
-
-fn unused_scaled(color: Color, factor: f32) -> Color {
-    let mut l = color.to_linear();
-    l.red = (l.red * factor).clamp(0.0, 1.0);
-    l.green = (l.green * factor).clamp(0.0, 1.0);
-    l.blue = (l.blue * factor).clamp(0.0, 1.0);
-    l.into()
-}
-
-fn highlight_for(
-    orig: &Handle<StandardMaterial>,
-    cache: &mut HighlightCache,
-    materials: &mut Assets<StandardMaterial>,
-    variant: i32,
-) -> Handle<StandardMaterial> {
-    let key = HighlightKey {
-        handle: orig.clone(),
-        variant,
-    };
-    if let Some(h) = cache.0.get(&key) {
-        return h.clone();
-    }
-
-    let mut mat = materials
-        .get(orig)
-        .cloned()
-        .unwrap_or_else(StandardMaterial::default);
-
-    // Brighter regardless of texture
-    // mat.base_color = lighten_towards_white(mat.base_color, 0.22);
-
-    // Visible variants (unchanged: 1 = legal-move red-ish, 2 = last-move/piece blue-ish)
-    if variant == 1 {
-        mat.base_color = Color::from(RED_300);
-        mat.emissive = LinearRgba::rgb(0.9, 0.0, 0.0);
-    } else {
-        mat.base_color = Color::from(BLUE_300);
-        // no emissive for this variant
-    }
-    // (Optionally bring back this emissive for extra pop:)
-    // mat.emissive = scaled(mat.base_color, 0.10).into();
-
-    let hi = materials.add(mat);
-    cache.0.insert(key, hi.clone());
-    hi
-}
-
-
-
-/*
-
-// Old
-commands.add_observer(|trigger: Trigger<OnAdd, Player>| {
-    info!("Spawned player {}", trigger.target());
-});
-
-// New
-commands.add_observer(|add: On<Add, Player>| {
-    info!("Spawned player {}", add.entity);
-});
-
-*/
-
-
-
-
-
-fn swap_to_highlight_on<E: bevy::prelude::EntityEvent>(
-    variant: i32,
-) -> impl Fn(
-    On<E>,
-    ResMut<HighlightCache>,
-    ResMut<Assets<StandardMaterial>>,
-    Query<&mut MeshMaterial3d<StandardMaterial>>,
-    Query<&OriginalMaterial>,
-) {
-    move |trigger, mut cache, mut materials, mut mut_mat_q, orig_q| {
-        if let (Ok(mut mat), Ok(orig)) = (
-            mut_mat_q.get_mut(trigger.event_target()), // ****
-            orig_q.get(trigger.event_target()),
-        ) {
-            let hi = highlight_for(&orig.0, &mut cache, &mut materials, variant);
-            mat.0 = hi;
-        }
-    }
-}
-
-//fn swap_back_on<E>()
-fn swap_back_on<E: bevy::prelude::EntityEvent>()
--> impl Fn(On<E>, Query<&mut MeshMaterial3d<StandardMaterial>>, Query<&OriginalMaterial>) {
-    move |trigger, mut mut_mat_q, orig_q| {
-        if let (Ok(mut mat), Ok(orig)) = (
-            mut_mat_q.get_mut(trigger.event_target()),
-            orig_q.get(trigger.event_target()),
-        ) {
-            mat.0 = orig.0.clone();
-        }
-    }
-}
-
-// === Helpers ===
-#[inline]
-fn idx_to_vec3(idx: i8) -> Vec3 {
-    let x = (7 - idx / 8) as f32;
-    let z = (idx % 8) as f32;
-    Vec3::new(x, 0.0, z)
-}
-
-#[inline]
-fn vec3_to_idx(v: Vec3) -> i8 {
-    (7 - v.x as i8) * 8 + v.z as i8
-}
-
-// === App ===
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "Bevy 3D-Chess".into(),
-                name: Some("bevy.app".into()),
+                title: "Capablanca Chess Plus 3D".into(),
+                name: Some("capablanca-chess-plus-3d".into()),
+                resolution: (1280, 800).into(),
                 ..default()
             }),
             ..default()
         }))
-        .register_type::<PositionData>()
-        .add_plugins(MeshPickingPlugin)
-        .add_plugins(PanOrbitCameraPlugin)
-        .insert_resource(NextMoveTask(None))
-        .insert_resource(SelectionState::default())
-        .insert_resource(Figure::default())
-        .insert_resource(SecsPerMove::default())
-        .insert_resource(Txt::default())
-        .insert_resource(State::Playing)
-        .insert_resource(GameData::default())
-        .insert_resource(EnginePlays::default())
-        .insert_resource(HighlightCache::default())
-        .insert_resource(TaggedCache::default())
+        .add_plugins((MeshPickingPlugin, PanOrbitCameraPlugin))
+        .init_resource::<ChessMatch>()
+        .init_resource::<AiSettings>()
+        .init_resource::<AiTask>()
+        .init_resource::<RenderedPosition>()
         .add_systems(Startup, setup)
-        .add_systems(Startup, setup_menu_text)
-        .add_systems(Update, move_figures)
-        .add_systems(Update, new_game)
-        .add_systems(Update, engine)
-        .add_systems(Update, text_update_system)
-        .add_systems(Update, time_text_update_system)
-        .add_systems(Update, turn_text_update_system)
-        .add_systems(Update, nxt_text_update_system)
-        .add_systems(Update, keyboard_input_system)
-        .add_systems(Update, do_engine_move)
-        // Apply tag-based highlights to squares
-        .add_systems(Update, update_square_highlights)
+        .add_systems(
+            Update,
+            (
+                handle_keyboard,
+                poll_ai_task,
+                start_ai_task,
+                sync_board_geometry,
+                sync_pieces,
+                update_square_materials,
+                animate_pieces,
+                update_hud,
+            )
+                .chain(),
+        )
         .run();
 }
 
-// === Input ===
-fn keyboard_input_system(
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut ui: ResMut<Txt>,
-    mut sides: ResMut<EnginePlays>,
-    mut secs: ResMut<SecsPerMove>,
-    game_data: ResMut<GameData>,
-) {
-    // Time adjust
-    let old = secs.time;
-    if keyboard.pressed(KeyCode::NumpadAdd) {
-        secs.time += 0.05;
-    }
-    if keyboard.pressed(KeyCode::NumpadSubtract) {
-        secs.time -= 0.05;
-    }
-    if (secs.time - old).abs() > f32::EPSILON {
-        secs.time = secs.time.clamp(0.3, 5.0);
-        ui.time = format!("Secs per move: {:.1}", secs.time);
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Controller {
+    Human,
+    Computer,
+}
+
+impl Controller {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Human => "Human",
+            Self::Computer => "Computer",
+        }
     }
 
-    // Toggle sides
-    let mut changed = false;
-    if keyboard.just_pressed(KeyCode::Numpad1) {
-        sides.t[0] = !sides.t[0];
-        changed = true;
-    } else if keyboard.just_pressed(KeyCode::Numpad2) {
-        sides.t[1] = !sides.t[1];
-        changed = true;
-    }
-    if changed {
-        ui.turn = format!(
-            "{} (1) vs {} (2)",
-            PLAYER_LABEL[sides.t[0] as usize], PLAYER_LABEL[sides.t[1] as usize]
-        );
-    }
-
-    // Engine debug: print move list
-    if keyboard.just_pressed(KeyCode::KeyM) {
-        engine::print_move_list(&game_data.game.lock().unwrap());
+    fn toggle(&mut self) {
+        *self = match self {
+            Self::Human => Self::Computer,
+            Self::Computer => Self::Human,
+        };
     }
 }
 
-fn new_game(
-    mut commands: Commands,
-    pieces: Query<(Entity, &mut Figure)>,
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mut ui: ResMut<Txt>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    asset_server: Res<AssetServer>,
-    mut game_data: ResMut<GameData>,
-) {
-    if keyboard.pressed(KeyCode::Numpad0) {
-        clear_board(&mut commands, pieces);
-        engine::reset_game(&mut game_data.game.lock().unwrap());
-        // clear tags
-        game_data.tagged = [0; 64];
-        populate_board(&mut commands, &asset_server, &mut materials, &mut game_data);
-        ui.ui_text = "New game".to_string();
-        ui.nxt = "White starts the game".to_string();
+#[derive(Resource)]
+struct ChessMatch {
+    game: Game,
+    variant: Variant,
+    controllers: [Controller; 2],
+    selected: Option<Square>,
+    pending_promotion: Option<PendingPromotion>,
+    last_move: Option<Move>,
+    status: String,
+    generation: u64,
+}
+
+impl Default for ChessMatch {
+    fn default() -> Self {
+        let variant = Variant::Capablanca;
+        Self {
+            game: Game::new(variant.starting_position()),
+            variant,
+            controllers: [Controller::Human, Controller::Computer],
+            selected: None,
+            pending_promotion: None,
+            last_move: None,
+            status: "White to move.".to_owned(),
+            generation: 0,
+        }
     }
 }
 
-// === UI Text markers ===
+#[derive(Clone)]
+struct PendingPromotion {
+    moves: Vec<Move>,
+}
+
+#[derive(Resource)]
+struct AiSettings {
+    depth: u8,
+}
+
+impl Default for AiSettings {
+    fn default() -> Self {
+        Self {
+            depth: DEFAULT_SEARCH_DEPTH,
+        }
+    }
+}
+
+#[derive(Resource, Default)]
+struct AiTask(Option<Task<AiReply>>);
+
+struct AiReply {
+    generation: u64,
+    result: Option<SearchResult>,
+}
+
+#[derive(Resource)]
+struct RenderedPosition {
+    generation: u64,
+    board_size: Option<BoardSize>,
+}
+
+impl Default for RenderedPosition {
+    fn default() -> Self {
+        Self {
+            generation: u64::MAX,
+            board_size: None,
+        }
+    }
+}
+
+#[derive(Resource)]
+struct SceneAssets {
+    square_mesh: Handle<Mesh>,
+    frame_mesh: Handle<Mesh>,
+    cylinder_mesh: Handle<Mesh>,
+    cone_mesh: Handle<Mesh>,
+    sphere_mesh: Handle<Mesh>,
+    cube_mesh: Handle<Mesh>,
+    capsule_mesh: Handle<Mesh>,
+    light_square: Handle<StandardMaterial>,
+    dark_square: Handle<StandardMaterial>,
+    selected_square: Handle<StandardMaterial>,
+    legal_square: Handle<StandardMaterial>,
+    capture_square: Handle<StandardMaterial>,
+    last_square: Handle<StandardMaterial>,
+    check_square: Handle<StandardMaterial>,
+    frame_material: Handle<StandardMaterial>,
+    white_piece: Handle<StandardMaterial>,
+    black_piece: Handle<StandardMaterial>,
+    white_accent: Handle<StandardMaterial>,
+    black_accent: Handle<StandardMaterial>,
+}
+
+#[derive(Component, Clone, Copy)]
+struct BoardSquare(Square);
+
 #[derive(Component)]
-struct TimeInfoText;
+struct BoardFrame;
+
 #[derive(Component)]
-struct NxtInfoText;
+struct PieceRoot;
+
 #[derive(Component)]
-struct TurnInfoText;
+struct PieceMotion {
+    start: Vec3,
+    end: Vec3,
+    elapsed: f32,
+}
+
 #[derive(Component)]
-struct InfoText;
-
-fn setup_menu_text(mut commands: Commands, asset_server: Res<AssetServer>) {
-    // Sidebar info
-    commands
-        .spawn((
-            Text::new("Help text\n"),
-            TextFont {
-                font: asset_server.load("fonts/FiraSans-Bold.ttf"),
-                font_size: 32.0,
-                ..default()
-            },
-            InfoText,
-        ))
-        .with_child((
-            TextSpan::new("Player info\n"),
-            (
-                TextFont {
-                    #[cfg(not(feature = "default_font"))]
-                    font: asset_server.load("fonts/FiraMono-Medium.ttf"),
-                    font_size: 24.0,
-                    ..default()
-                },
-                TextColor(GOLD.into()),
-            ),
-            TurnInfoText,
-        ))
-        .with_child((
-            TextSpan::new("Time info\n"),
-            (
-                TextFont {
-                    #[cfg(not(feature = "default_font"))]
-                    font: asset_server.load("fonts/FiraMono-Medium.ttf"),
-                    font_size: 24.0,
-                    ..default()
-                },
-                TextColor(GOLD.into()),
-            ),
-            TimeInfoText,
-        ))
-        .with_child((
-            TextSpan::new("Next move\n"),
-            (
-                TextFont {
-                    #[cfg(not(feature = "default_font"))]
-                    font: asset_server.load("fonts/FiraMono-Medium.ttf"),
-                    font_size: 24.0,
-                    ..default()
-                },
-                TextColor(GOLD.into()),
-            ),
-            NxtInfoText,
-        ));
-}
-
-fn time_text_update_system(t: Res<Txt>, mut q: Query<&mut TextSpan, With<TimeInfoText>>) {
-    for mut span in &mut q {
-        **span = format!("{}\n", t.time);
-    }
-}
-
-fn turn_text_update_system(t: Res<Txt>, mut q: Query<&mut TextSpan, With<TurnInfoText>>) {
-    for mut span in &mut q {
-        **span = format!("{}\n", t.turn);
-    }
-}
-
-fn nxt_text_update_system(t: Res<Txt>, mut q: Query<&mut TextSpan, With<NxtInfoText>>) {
-    for mut span in &mut q {
-        **span = format!("{}\n", t.nxt);
-    }
-}
-
-fn text_update_system(t: Res<Txt>, mut q: Query<&mut Text, With<InfoText>>) {
-    for mut text in &mut q {
-        **text = format!("{}\n", t.ui_text);
-    }
-}
-
-// === Scene management ===
-fn clear_board(commands: &mut Commands, mut pieces: Query<(Entity, &mut Figure)>) {
-    for (entity, _) in pieces.iter_mut() {
-        commands.entity(entity).despawn();
-    }
-}
-
-fn do_engine_move(
-    mut pieces: Query<(Entity, &mut Figure)>,
-    mut game_data: ResMut<GameData>,
-    mut ui: ResMut<Txt>,
-    secs: Res<SecsPerMove>,
-    sides: Res<EnginePlays>,
-    mut state: ResMut<State>,
-    mut commands: Commands,
-    mut task: ResMut<NextMoveTask>,
-    mut pos_q: Query<&mut PositionData>,
-) {
-    if let Some(ref mut next_move_task) = task.0 {
-        if let Some(m) = future::block_on(future::poll_once(next_move_task)) {
-            // Early game over
-            if m.state == engine::STATE_CHECKMATE {
-                ui.ui_text.push_str(" Checkmate, game terminated!");
-                ui.nxt.clear();
-                *state = State::GameTerminated;
-                task.0 = None;
-                return;
-            }
-
-            // Tag last move squares (for optional visualization)
-            game_data.tagged = [0; 64];
-            game_data.tagged[m.src as usize] = TAG_LAST;
-            game_data.tagged[m.dst as usize] = TAG_LAST;
-
-            // Update UI
-            {
-                let game = game_data.game.lock().unwrap();
-                ui.refresh(secs.time, &sides, &game);
-            }
-
-            let flag = engine::do_move(
-                &mut game_data.game.lock().unwrap(),
-                m.src as i8,
-                m.dst as i8,
-                false,
-            );
-
-            ui.ui_text = engine::move_to_str(
-                & game_data.game.lock().unwrap(),
-                m.src as i8,
-                m.dst as i8,
-                flag,
-            ) + &format!(" (score: {})", m.score);
-
-            if m.checkmate_in == 2 && m.score == engine::KING_VALUE as i64 {
-                ui.ui_text.push_str(" Checkmate, game terminated!");
-                ui.nxt.clear();
-                *state = State::GameTerminated;
-                task.0 = None;
-            } else if m.score > engine::KING_VALUE_DIV_2 as i64
-                || m.score < -engine::KING_VALUE_DIV_2 as i64
-            {
-                ui.ui_text.push_str(&format!(
-                    " Checkmate in {}",
-                    if m.score > 0 {
-                        m.checkmate_in / 2 - 1
-                    } else {
-                        m.checkmate_in / 2 + 1
-                    }
-                ));
-            }
-
-            // Capture
-            let dst = idx_to_vec3(m.dst as i8);
-            for (entity, piece) in pieces.iter_mut() {
-                if piece.location == dst {
-                    commands.entity(entity).despawn();
-                }
-            }
-
-            // Move piece
-            let src = idx_to_vec3(m.src as i8);
-            for (entity, mut piece) in pieces.iter_mut() {
-                if piece.location == src {
-                    piece.location = dst;
-                    if let Ok(mut pos) = pos_q.get_mut(entity) {
-                        pos.location = dst;
-                    }
-                }
-            }
-
-            task.0 = None;
-            if *state != State::GameTerminated {
-                *state = State::Playing;
-            }
-        }
-    }
-}
-
-fn move_figures(mut q: Query<(&mut Transform, &mut Figure)>, time: Res<Time>) {
-    const REACHED_EPS: f32 = 0.05; // stop threshold in world units
-    const LIFT_SCALE: f32 = 0.7; // visual arc scale
-    const LAND_STEP: f32 = 0.05; // per-frame landing drop
-
-    let dt = time.delta_secs();
-    let a = ACCELERATION;
-    let v_max = MAX_SPEED;
-
-    for (mut tf, mut fig) in &mut q {
-        // Work in a y=0 plane without touching the transform yet
-        let mut pos = tf.translation;
-        pos.y = 0.0;
-
-        let to_target = fig.location - pos;
-        let dist = to_target.length();
-
-        // Default: keep current height (used for the soft landing branch)
-        let mut new_y = tf.translation.y;
-
-        if dist > REACHED_EPS {
-            // Move along the path using current speed
-            let dir = to_target / dist; // safe: dist > 0
-            let old_speed = fig.speed;
-            pos += dir * (old_speed * dt);
-
-            // Decide accel/decel from stopping distance
-            let stopping_dist = (old_speed * old_speed) / (2.0 * a);
-            if dist <= stopping_dist {
-                // Decelerate: average of “explicit decel” and “recompute from distance”
-                let v1 = old_speed - a * dt;
-                let v2 = (2.0 * a * dist).sqrt();
-                fig.speed = 0.5 * (v1 + v2);
-            } else {
-                // Accelerate
-                fig.speed = old_speed + a * dt;
-            }
-
-            // Clamp and update vertical arc from average speed
-            fig.speed = fig.speed.clamp(0.0, v_max);
-            let v_avg = 0.5 * (old_speed + fig.speed);
-            new_y = LIFT_SCALE * v_avg.sqrt();
-
-            // Commit the planar move + arc
-            tf.translation = Vec3::new(pos.x, new_y, pos.z);
-        } else {
-            // Close enough: soften the landing without popping
-            new_y = (new_y - LAND_STEP).max(0.0);
-            tf.translation.y = new_y;
-        }
-    }
-}
-
-fn engine(
-    secs: Res<SecsPerMove>,
-    mut task: ResMut<NextMoveTask>,
-    sides: Res<EnginePlays>,
-    mut state: ResMut<State>,
-    game_data: ResMut<GameData>,
-) {
-    if *state == State::Playing {
-        let next = game_data.game.lock().unwrap().move_counter as usize % 2;
-        if sides.t[next] {
-            *state = State::Waiting;
-            game_data.game.lock().unwrap().secs_per_move = secs.time;
-            if task.0.is_none() {
-                let pool = AsyncComputeTaskPool::get();
-                let game_clone = game_data.game.clone();
-                let new_task =
-                    pool.spawn(async move { engine::reply(&mut game_clone.lock().unwrap()) });
-                task.0 = Some(new_task);
-            }
-        }
-    }
-}
-
-// --- Click handling + legal-move tagging ---
-fn process_mouse_click(
-    mut click: On<Pointer<Click>>,        // observer param; provides the clicked entity
-    mut selection: ResMut<SelectionState>,
-    mut commands: Commands,
-    secs: Res<SecsPerMove>,
-    sides: Res<EnginePlays>,
-    state: Res<State>,
-    mut pieces: Query<(Entity, &mut Figure)>,
-    mut game_data: ResMut<GameData>,
-    mut ui: ResMut<Txt>,
-    mut pos_q: Query<&mut PositionData>,
-) {
-    // Only allow interaction while game is "Playing"
-    if *state != State::Playing {
-        return;
-    }
-
-    // If it's the engine's turn, ignore clicks
-    let next = game_data.game.lock().unwrap().move_counter as usize % 2;
-    if sides.t[next] {
-        return;
-    }
-
-    // The entity that received this click (i.e., the board square or piece you observed on)
-    let target = click.event_target();
-
-    // We only care about entities that have PositionData
-    let Ok(pd) = pos_q.get(target) else { return; };
-    let loc = pd.location;
-    let pos = PositionData { location: loc };
-
-    // === First click: select a piece (must be a square that currently holds a piece) ===
-    if selection.first_selection.is_none() {
-        // Verify there is a piece on that square
-        let mut found_piece = false;
-        for (_e, p) in pieces.iter_mut() {
-            if p.location == loc {
-                selection.first_selection = Some((target, pos));
-                found_piece = true;
-                break;
-            }
-        }
-
-        // If a piece was selected, compute and tag all legal destination squares
-        if found_piece {
-            let a = vec3_to_idx(pos.location) as i64;
-            let mut new_tags = [0i8; 64];
-
-            {
-                let mut g = game_data.game.lock().unwrap();
-                for b in 0..64 {
-                    if engine::move_is_valid2(&mut g, a, b as i64) {
-                        new_tags[b] = TAG_LEGAL; // legal destination
-                    }
-                }
-            }
-
-            // Also tag the selected source square as "last"
-            let ai = a as usize;
-            if ai < 64 {
-                new_tags[ai] = TAG_LAST;
-            }
-
-            game_data.tagged = new_tags;
-        }
-
-        return;
-    }
-
-    // === Second click: attempt to move to the clicked square ===
-    let (_, first) = selection.first_selection.as_ref().unwrap();
-    let a = vec3_to_idx(first.location) as i64;
-    let b = vec3_to_idx(pos.location) as i64;
-
-    if !engine::move_is_valid2(&mut game_data.game.lock().unwrap(), a, b) {
-        ui.ui_text = "invalid move, ignored.".to_owned();
-        selection.first_selection = None;
-        game_data.tagged = [0; 64]; // clear highlights
-        return;
-    }
-
-    ui.refresh(secs.time, &sides, &game_data.game.lock().unwrap());
-
-    // Handle capture on destination square
-    for (entity, mut piece) in pieces.iter_mut() {
-        if piece.location == pos.location {
-            commands.entity(entity).despawn();
-        }
-        if piece.location == first.location {
-            piece.location = pos.location;
-            if let Ok(mut pd) = pos_q.get_mut(entity) {
-                pd.location = pos.location;
-            }
-        }
-    }
-
-    // Tag last move (source & destination)
-    game_data.tagged = [0; 64];
-    game_data.tagged[a as usize] = TAG_LAST;
-    game_data.tagged[b as usize] = TAG_LAST;
-
-    let flag = engine::do_move(&mut game_data.game.lock().unwrap(), a as i8, b as i8, false);
-    ui.ui_text = engine::move_to_str(&game_data.game.lock().unwrap(), a as i8, b as i8, flag);
-
-    // Reset selection after a completed move
-    selection.first_selection = None;
-}
-
-
-
-// --- Squares ---
-fn create_squares(
-    commands: &mut Commands,
-    asset_server: &Res<AssetServer>,
-    _materials: &mut ResMut<Assets<StandardMaterial>>, // kept for parity with original signature
-    meshes: &mut ResMut<Assets<Mesh>>,
-) {
-    let mat2: Handle<StandardMaterial> =
-        asset_server.load("models/wooden_chess_board.glb#Material1");
-    let mat1: Handle<StandardMaterial> =
-        asset_server.load("models/wooden_chess_board.glb#Material0");
-
-    for i in 0..8 {
-        for j in 0..8 {
-            let location = Vec3::new(i as f32, 0.0, j as f32);
-            let mesh_handle = meshes.add(Mesh::from(Cuboid::new(1.0, 1.0, 0.4)));
-            let base_mat: Handle<StandardMaterial> = if (i + j) % 2 == 0 {
-                mat1.clone()
-            } else {
-                mat2.clone()
-            };
-            // engine index mapping for this board coordinate:
-            let idx = (7 - i) * 8 + j;
-
-            commands
-                .spawn((
-                    Mesh3d(mesh_handle),
-                    MeshMaterial3d(base_mat.clone()),
-                    Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
-                        .with_translation(Vec3 {
-                            x: i as f32,
-                            y: -0.2,
-                            z: j as f32,
-                        }),
-                    PositionData { location },
-                    OriginalMaterial(base_mat.clone()),
-                    Square { idx },
-                ))
-                // we can enable square hover here if desired:
-                // .observe(swap_to_highlight_on::<Pointer<Over>>(SQUARE_HOVER_FACTOR))
-                // .observe(swap_back_on::<Pointer<Out>>())
-                .observe(process_mouse_click);
-        }
-    }
-}
-
-// Applies game_data.tagged to board square materials.
-// If tagged[idx] != 0, swap to cached highlight; else revert to original.
-fn update_square_highlights(
-    mut cache: ResMut<HighlightCache>,
-    mut mats: ResMut<Assets<StandardMaterial>>,
-    game_data: Res<GameData>,
-    mut last: ResMut<TaggedCache>,
-    mut q: Query<(
-        &Square,
-        &mut MeshMaterial3d<StandardMaterial>,
-        &OriginalMaterial,
-    )>,
-) {
-    // Early-out if nothing changed
-    if game_data.tagged == last.0 {
-        return;
-    }
-
-    for (sq, mut mat, orig) in q.iter_mut() {
-        let tagged = game_data.tagged[sq.idx];
-
-        if tagged == TAG_LAST {
-            let hi = highlight_for(&orig.0, &mut cache, &mut mats, PIECE_HOVER_FACTOR);
-            mat.0 = hi;
-        } else if tagged != 0 {
-            let hi = highlight_for(&orig.0, &mut cache, &mut mats, SQUARE_HOVER_FACTOR);
-            mat.0 = hi;
-        } else {
-            mat.0 = orig.0.clone();
-        }
-    }
-
-    last.0 = game_data.tagged;
-}
-
-fn populate_board(
-    commands: &mut Commands,
-    asset_server: &Res<AssetServer>,
-    materials: &mut ResMut<Assets<StandardMaterial>>,
-    game_data: &mut ResMut<GameData>,
-) {
-    const PIECE_POS: [usize; 6] = [0, 2, 3, 5, 13, 14];
-    const NUM_PIECES: usize = 12; // 6 white + 6 black variants
-
-    // engine index -> glb mesh index (see original code)
-    const ENGINE_TO_MODEL: [usize; 13] = [
-        1,
-        4,
-        5,
-        0,
-        2,
-        3,
-        99,
-        3 + 6,
-        2 + 6,
-        0 + 6,
-        5 + 6,
-        4 + 6,
-        1 + 6,
-    ];
-
-    // Preload piece meshes (white then black set)
-    let mut figures: Vec<Handle<Mesh>> = Vec::with_capacity(NUM_PIECES);
-    for i in 0..(NUM_PIECES / 2) {
-        figures.push(asset_server.load(format!(
-            "models/wooden_chess_board.glb#Mesh{}/Primitive0",
-            PIECE_POS[i]
-        )));
-    }
-    for i in 0..(NUM_PIECES / 2) {
-        figures.push(asset_server.load(format!(
-            "models/wooden_chess_board.glb#Mesh{}/Primitive0",
-            PIECE_POS[i] + 18
-        )));
-    }
-
-    let mat2: Handle<StandardMaterial> =
-        asset_server.load("models/wooden_chess_board.glb#Material1");
-    let mat1: Handle<StandardMaterial> =
-        asset_server.load("models/wooden_chess_board.glb#Material0");
-    let _hover_mat = materials.add(Color::from(CYAN_300)); // unused (kept for reference)
-
-    let engine_board = engine::get_board(&game_data.game.lock().unwrap());
-
-    for i in 0..8 {
-        for j in 0..8 {
-            let h = engine_board[j + i * 8];
-            if h == 0 {
-                continue; // empty square
-            }
-
-            let rotation = if i > 5 {
-                Quat::from_rotation_y(std::f32::consts::PI)
-            } else {
-                Quat::from_rotation_y(0.0)
-            };
-            let location = Vec3::new((7 - i) as f32, 0.0, j as f32);
-            let base_mat = if h > 0 { mat2.clone() } else { mat1.clone() };
-            let mesh_index = ENGINE_TO_MODEL[(h + 6) as usize];
-
-            commands
-                .spawn((
-                    Mesh3d(figures[mesh_index].clone()),
-                    MeshMaterial3d(base_mat.clone()),
-                    Transform::from_translation(location)
-                        .with_scale(Vec3::splat(1.0))
-                        .with_rotation(rotation),
-                    PositionData { location },
-                    Figure {
-                        location,
-                        speed: 0.0,
-                    },
-                    OriginalMaterial(base_mat.clone()),
-                ))
-                .observe(swap_to_highlight_on::<Pointer<Over>>(PIECE_HOVER_FACTOR))
-                .observe(swap_back_on::<Pointer<Out>>())
-                .observe(process_mouse_click);
-        }
-    }
-}
+struct HudText;
 
 fn setup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    mut game_data: ResMut<GameData>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    create_squares(&mut commands, &asset_server, &mut materials, &mut meshes);
-    populate_board(&mut commands, &asset_server, &mut materials, &mut game_data);
+    let assets = SceneAssets {
+        square_mesh: meshes.add(Cuboid::new(0.98, 0.12, 0.98)),
+        frame_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
+        cylinder_mesh: meshes.add(Cylinder::new(0.5, 1.0)),
+        cone_mesh: meshes.add(Cone::new(0.5, 1.0)),
+        sphere_mesh: meshes.add(Sphere::new(0.5).mesh().uv(20, 12)),
+        cube_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
+        capsule_mesh: meshes.add(Capsule3d::new(0.5, 1.0)),
+        light_square: materials.add(chess_material(Color::srgb(0.72, 0.52, 0.31), 0.82)),
+        dark_square: materials.add(chess_material(Color::srgb(0.24, 0.105, 0.055), 0.9)),
+        selected_square: materials.add(highlight_material(
+            Color::srgb(1.0, 0.66, 0.08),
+            LinearRgba::rgb(0.7, 0.28, 0.01),
+        )),
+        legal_square: materials.add(highlight_material(
+            Color::srgb(0.23, 0.72, 0.37),
+            LinearRgba::rgb(0.02, 0.35, 0.05),
+        )),
+        capture_square: materials.add(highlight_material(
+            Color::srgb(0.88, 0.22, 0.2),
+            LinearRgba::rgb(0.45, 0.015, 0.01),
+        )),
+        last_square: materials.add(highlight_material(
+            Color::srgb(0.2, 0.52, 0.9),
+            LinearRgba::rgb(0.015, 0.12, 0.45),
+        )),
+        check_square: materials.add(highlight_material(
+            Color::srgb(0.86, 0.04, 0.08),
+            LinearRgba::rgb(0.8, 0.0, 0.01),
+        )),
+        frame_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.075, 0.025, 0.012),
+            perceptual_roughness: 0.62,
+            metallic: 0.08,
+            ..default()
+        }),
+        white_piece: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.92, 0.82, 0.66),
+            perceptual_roughness: 0.36,
+            metallic: 0.04,
+            ..default()
+        }),
+        black_piece: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.075, 0.055, 0.05),
+            perceptual_roughness: 0.3,
+            metallic: 0.16,
+            ..default()
+        }),
+        white_accent: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.78, 0.48, 0.12),
+            perceptual_roughness: 0.28,
+            metallic: 0.52,
+            ..default()
+        }),
+        black_accent: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.48, 0.16, 0.055),
+            perceptual_roughness: 0.26,
+            metallic: 0.48,
+            ..default()
+        }),
+    };
+    commands.insert_resource(assets);
+    commands.insert_resource(GlobalAmbientLight {
+        color: Color::srgb(0.78, 0.84, 1.0),
+        brightness: 260.0,
+        ..default()
+    });
 
     commands.spawn((
-        PointLight {
-            //intensity: 2000.0,
-            shadows_enabled: true,
+        DirectionalLight {
+            illuminance: 9_500.0,
+            shadow_maps_enabled: true,
             ..default()
         },
-        Transform::from_xyz(4.0, 8.0, 4.0),
+        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.9, -0.55, 0.0)),
     ));
 
     commands.spawn((
-        Camera3d { ..default() },
-        Transform::from_xyz(12., 7., 4.).looking_at(
-            Vec3 {
-                x: 4.,
-                y: 0.,
-                z: 4.,
-            },
-            Vec3::Y,
-        ),
+        Transform::from_xyz(0.0, 10.5, -13.5).looking_at(Vec3::ZERO, Vec3::Y),
         PanOrbitCamera {
             button_orbit: MouseButton::Middle,
-            focus: Vec3::new(4.0, 0.0, 4.0),
+            button_pan: MouseButton::Right,
+            zoom_lower_limit: 6.0,
+            zoom_upper_limit: Some(25.0),
             ..default()
         },
     ));
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: px(16),
+                right: px(16),
+                width: px(350),
+                padding: UiRect::all(px(16)),
+                border_radius: BorderRadius::all(px(10)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.025, 0.03, 0.045, 0.9)),
+            Pickable::IGNORE,
+        ))
+        .with_child((
+            Text::new(""),
+            TextFont {
+                font: asset_server.load("fonts/FiraSans-Bold.ttf").into(),
+                font_size: FontSize::Px(17.0),
+                ..default()
+            },
+            TextColor(Color::srgb(0.92, 0.94, 1.0)),
+            Pickable::IGNORE,
+            HudText,
+        ));
 }
-// 957 lines
+
+fn chess_material(color: Color, roughness: f32) -> StandardMaterial {
+    StandardMaterial {
+        base_color: color,
+        perceptual_roughness: roughness,
+        ..default()
+    }
+}
+
+fn highlight_material(color: Color, emissive: LinearRgba) -> StandardMaterial {
+    StandardMaterial {
+        base_color: color,
+        emissive,
+        perceptual_roughness: 0.68,
+        ..default()
+    }
+}
+
+fn handle_keyboard(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut chess_match: ResMut<ChessMatch>,
+    mut ai_settings: ResMut<AiSettings>,
+    mut ai_task: ResMut<AiTask>,
+) {
+    if chess_match.pending_promotion.is_some() {
+        if keyboard.just_pressed(KeyCode::Escape) {
+            chess_match.pending_promotion = None;
+            chess_match.selected = None;
+            chess_match.status = "Promotion cancelled.".to_owned();
+            return;
+        }
+
+        let requested = promotion_key(&keyboard);
+        if requested.is_some() || keyboard.just_pressed(KeyCode::Space) {
+            let promotion = requested.flatten();
+            let chess_move = chess_match.pending_promotion.as_ref().and_then(|pending| {
+                pending
+                    .moves
+                    .iter()
+                    .copied()
+                    .find(|candidate| candidate.promotion == promotion)
+            });
+            if let Some(chess_move) = chess_move {
+                apply_move(&mut chess_match, chess_move, None);
+            } else {
+                chess_match.status = promotion_prompt(
+                    &chess_match
+                        .pending_promotion
+                        .as_ref()
+                        .expect("promotion is pending")
+                        .moves,
+                );
+            }
+            return;
+        }
+    }
+
+    if keyboard.just_pressed(KeyCode::Escape) {
+        chess_match.selected = None;
+        chess_match.status = side_to_move_message(&chess_match);
+    }
+
+    if keyboard.just_pressed(KeyCode::KeyN) || keyboard.just_pressed(KeyCode::Numpad0) {
+        let variant = chess_match.variant;
+        restart_match(&mut chess_match, variant);
+        ai_task.0 = None;
+    }
+
+    if let Some(variant) = variant_key(&keyboard)
+        && variant != chess_match.variant
+    {
+        restart_match(&mut chess_match, variant);
+        ai_task.0 = None;
+    }
+
+    let toggle_white =
+        keyboard.just_pressed(KeyCode::Digit1) || keyboard.just_pressed(KeyCode::Numpad1);
+    let toggle_black =
+        keyboard.just_pressed(KeyCode::Digit2) || keyboard.just_pressed(KeyCode::Numpad2);
+    if toggle_white || toggle_black {
+        let index = usize::from(toggle_black);
+        chess_match.controllers[index].toggle();
+        chess_match.selected = None;
+        chess_match.pending_promotion = None;
+        chess_match.status = format!(
+            "{} is now controlled by the {}.",
+            side_name(if index == 0 { Side::White } else { Side::Black }),
+            chess_match.controllers[index].label().to_ascii_lowercase()
+        );
+        ai_task.0 = None;
+    }
+
+    let increase_depth = keyboard.just_pressed(KeyCode::Equal)
+        || keyboard.just_pressed(KeyCode::NumpadAdd)
+        || keyboard.just_pressed(KeyCode::ArrowUp);
+    let decrease_depth = keyboard.just_pressed(KeyCode::Minus)
+        || keyboard.just_pressed(KeyCode::NumpadSubtract)
+        || keyboard.just_pressed(KeyCode::ArrowDown);
+    let old_depth = ai_settings.depth;
+    if increase_depth {
+        ai_settings.depth = ai_settings.depth.saturating_add(1).min(MAX_SEARCH_DEPTH);
+    }
+    if decrease_depth {
+        ai_settings.depth = ai_settings.depth.saturating_sub(1).max(MIN_SEARCH_DEPTH);
+    }
+    if ai_settings.depth != old_depth {
+        chess_match.status = format!("Engine search depth set to {}.", ai_settings.depth);
+        ai_task.0 = None;
+    }
+}
+
+fn promotion_key(keyboard: &ButtonInput<KeyCode>) -> Option<Option<PieceKind>> {
+    [
+        (KeyCode::KeyQ, PieceKind::Queen),
+        (KeyCode::KeyC, PieceKind::Chancellor),
+        (KeyCode::KeyA, PieceKind::Archbishop),
+        (KeyCode::KeyR, PieceKind::Rook),
+        (KeyCode::KeyB, PieceKind::Bishop),
+        (KeyCode::KeyN, PieceKind::Knight),
+    ]
+    .into_iter()
+    .find_map(|(key, kind)| keyboard.just_pressed(key).then_some(Some(kind)))
+}
+
+fn variant_key(keyboard: &ButtonInput<KeyCode>) -> Option<Variant> {
+    [
+        (KeyCode::F1, Variant::Capablanca),
+        (KeyCode::F2, Variant::Gothic),
+        (KeyCode::F3, Variant::Embassy),
+        (KeyCode::F4, Variant::Schoolbook),
+        (KeyCode::F5, Variant::Bird),
+        (KeyCode::F6, Variant::Carrera),
+        (KeyCode::F7, Variant::Grand),
+    ]
+    .into_iter()
+    .find_map(|(key, variant)| keyboard.just_pressed(key).then_some(variant))
+}
+
+fn restart_match(chess_match: &mut ChessMatch, variant: Variant) {
+    chess_match.game = Game::new(variant.starting_position());
+    chess_match.variant = variant;
+    chess_match.selected = None;
+    chess_match.pending_promotion = None;
+    chess_match.last_move = None;
+    chess_match.status = format!("New {} game. White to move.", variant.rules().name());
+    chess_match.generation = chess_match.generation.wrapping_add(1);
+}
+
+fn on_square_click(
+    click: On<Pointer<Click>>,
+    squares: Query<&BoardSquare>,
+    mut chess_match: ResMut<ChessMatch>,
+) {
+    if click.button != PointerButton::Primary {
+        return;
+    }
+    let Ok(clicked) = squares.get(click.entity) else {
+        return;
+    };
+    if chess_match.pending_promotion.is_some() {
+        return;
+    }
+    if !is_playable(chess_match.game.outcome()) {
+        chess_match.status = outcome_message(chess_match.game.outcome());
+        return;
+    }
+
+    let side = chess_match.game.position().side_to_move();
+    if chess_match.controllers[side.index()] == Controller::Computer {
+        chess_match.status = format!("{} is controlled by the computer.", side_name(side));
+        return;
+    }
+
+    let square = clicked.0;
+    if let Some(from) = chess_match.selected {
+        let candidates: Vec<_> = chess_match
+            .game
+            .position()
+            .legal_moves()
+            .into_iter()
+            .filter(|chess_move| chess_move.from == from && chess_move.to == square)
+            .collect();
+        match candidates.as_slice() {
+            [] => {
+                if selectable_piece(&chess_match, square) {
+                    select_square(&mut chess_match, square);
+                } else {
+                    chess_match.selected = None;
+                    chess_match.status = format!("{square} is not a legal destination.");
+                }
+            }
+            [chess_move] => apply_move(&mut chess_match, *chess_move, None),
+            _ => {
+                chess_match.status = promotion_prompt(&candidates);
+                chess_match.pending_promotion = Some(PendingPromotion { moves: candidates });
+            }
+        }
+    } else if selectable_piece(&chess_match, square) {
+        select_square(&mut chess_match, square);
+    } else {
+        chess_match.status = format!("Select a {} piece.", side_name(side).to_ascii_lowercase());
+    }
+}
+
+fn selectable_piece(chess_match: &ChessMatch, square: Square) -> bool {
+    let position = chess_match.game.position();
+    position
+        .board()
+        .piece_at(square)
+        .is_some_and(|piece| piece.color == position.side_to_move())
+        && position
+            .legal_moves()
+            .iter()
+            .any(|chess_move| chess_move.from == square)
+}
+
+fn select_square(chess_match: &mut ChessMatch, square: Square) {
+    chess_match.selected = Some(square);
+    let count = chess_match
+        .game
+        .position()
+        .legal_moves()
+        .iter()
+        .filter(|chess_move| chess_move.from == square)
+        .map(|chess_move| chess_move.to)
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    chess_match.status = format!("{square} selected: {count} destination(s).");
+}
+
+fn apply_move(chess_match: &mut ChessMatch, chess_move: Move, analysis: Option<&SearchResult>) {
+    let position = chess_match.game.position();
+    let moving_piece = position
+        .board()
+        .piece_at(chess_move.from)
+        .expect("a legal move has a source piece");
+    let is_capture = matches!(chess_move.kind, MoveKind::EnPassant)
+        || position.board().piece_at(chess_move.to).is_some();
+    let description = describe_move(moving_piece, chess_move, is_capture);
+
+    chess_match
+        .game
+        .play(chess_move)
+        .expect("only engine-provided legal moves are applied");
+    chess_match.selected = None;
+    chess_match.pending_promotion = None;
+    chess_match.last_move = Some(chess_move);
+    chess_match.generation = chess_match.generation.wrapping_add(1);
+
+    let analysis_text = analysis.map_or_else(String::new, |result| {
+        format!(
+            "  Evaluation {:+.2}, depth {}, {} nodes.",
+            f64::from(result.score) / 100.0,
+            result.depth,
+            result.nodes
+        )
+    });
+    let outcome = chess_match.game.outcome();
+    chess_match.status = format!("{description}.{analysis_text} {}", outcome_message(outcome));
+}
+
+fn describe_move(piece: Piece, chess_move: Move, capture: bool) -> String {
+    if let MoveKind::Castle(side) = chess_move.kind {
+        return format!(
+            "{} castles {}",
+            side_name(piece.color),
+            match side {
+                CastleSide::QueenSide => "queen-side",
+                CastleSide::KingSide => "king-side",
+            }
+        );
+    }
+    let separator = if capture { "x" } else { "-" };
+    let mut value = format!(
+        "{} {} {}{}{}",
+        side_name(piece.color),
+        piece_name(piece.kind),
+        chess_move.from,
+        separator,
+        chess_move.to
+    );
+    if let Some(promotion) = chess_move.promotion {
+        value.push_str(&format!(" promotes to {}", piece_name(promotion)));
+    }
+    value
+}
+
+fn start_ai_task(
+    mut chess_match: ResMut<ChessMatch>,
+    settings: Res<AiSettings>,
+    mut task: ResMut<AiTask>,
+) {
+    if task.0.is_some()
+        || chess_match.pending_promotion.is_some()
+        || !is_playable(chess_match.game.outcome())
+    {
+        return;
+    }
+    let side = chess_match.game.position().side_to_move();
+    if chess_match.controllers[side.index()] != Controller::Computer {
+        return;
+    }
+
+    let position = chess_match.game.position().clone();
+    let generation = chess_match.generation;
+    let depth = settings.depth;
+    chess_match.status = format!("{} computer is thinking at depth {depth}…", side_name(side));
+    task.0 = Some(AsyncComputeTaskPool::get().spawn(async move {
+        let result = Engine::new().search(&position, SearchLimits::depth(depth));
+        AiReply { generation, result }
+    }));
+}
+
+fn poll_ai_task(mut chess_match: ResMut<ChessMatch>, mut task: ResMut<AiTask>) {
+    let Some(ai_task) = task.0.as_mut() else {
+        return;
+    };
+    let Some(reply) = future::block_on(future::poll_once(ai_task)) else {
+        return;
+    };
+    task.0 = None;
+
+    if reply.generation != chess_match.generation {
+        return;
+    }
+    if let Some(result) = reply.result {
+        apply_move(&mut chess_match, result.best_move, Some(&result));
+    } else {
+        chess_match.status = outcome_message(chess_match.game.outcome());
+    }
+}
+
+fn sync_board_geometry(
+    mut commands: Commands,
+    chess_match: Res<ChessMatch>,
+    assets: Res<SceneAssets>,
+    mut rendered: ResMut<RenderedPosition>,
+    squares: Query<Entity, With<BoardSquare>>,
+    frames: Query<Entity, With<BoardFrame>>,
+    mut cameras: Query<&mut PanOrbitCamera>,
+) {
+    let position = chess_match.game.position();
+    let size = position.board().size();
+
+    if rendered.board_size != Some(size) {
+        for entity in &squares {
+            commands.entity(entity).despawn();
+        }
+        for entity in &frames {
+            commands.entity(entity).despawn();
+        }
+        spawn_board(&mut commands, &assets, size);
+        if let Ok(mut camera) = cameras.single_mut() {
+            let radius = f32::from(size.files().max(size.ranks())) * 1.42;
+            camera.target_focus = Vec3::ZERO;
+            camera.target_radius = radius;
+            camera.zoom_upper_limit = Some(radius * 1.8);
+            camera.force_update = true;
+        }
+        rendered.board_size = Some(size);
+    }
+}
+
+fn sync_pieces(
+    mut commands: Commands,
+    chess_match: Res<ChessMatch>,
+    assets: Res<SceneAssets>,
+    mut rendered: ResMut<RenderedPosition>,
+    pieces: Query<Entity, With<PieceRoot>>,
+) {
+    if rendered.generation == chess_match.generation {
+        return;
+    }
+    let position = chess_match.game.position();
+    let size = position.board().size();
+    for entity in &pieces {
+        commands.entity(entity).despawn();
+    }
+    for (square, piece) in position.board().pieces() {
+        let target = square_world(square, size);
+        let start = animation_start(&chess_match, square, piece)
+            .map_or(target, |source| square_world(source, size));
+        spawn_piece(&mut commands, &assets, square, piece, start, target);
+    }
+    rendered.generation = chess_match.generation;
+}
+
+fn spawn_board(commands: &mut Commands, assets: &SceneAssets, size: BoardSize) {
+    commands.spawn((
+        Mesh3d(assets.frame_mesh.clone()),
+        MeshMaterial3d(assets.frame_material.clone()),
+        Transform::from_xyz(0.0, -0.15, 0.0).with_scale(Vec3::new(
+            f32::from(size.files()) + 0.7,
+            0.18,
+            f32::from(size.ranks()) + 0.7,
+        )),
+        Pickable::IGNORE,
+        BoardFrame,
+    ));
+
+    for rank in 0..size.ranks() {
+        for file in 0..size.files() {
+            let square = Square::new(file, rank);
+            let material = if (file + rank) % 2 == 0 {
+                assets.dark_square.clone()
+            } else {
+                assets.light_square.clone()
+            };
+            commands
+                .spawn((
+                    Mesh3d(assets.square_mesh.clone()),
+                    MeshMaterial3d(material),
+                    Transform::from_translation(square_world(square, size) - Vec3::Y * 0.06),
+                    BoardSquare(square),
+                ))
+                .observe(on_square_click);
+        }
+    }
+}
+
+fn animation_start(chess_match: &ChessMatch, square: Square, piece: Piece) -> Option<Square> {
+    let chess_move = chess_match.last_move?;
+    if square == chess_move.to {
+        return Some(chess_move.from);
+    }
+    let MoveKind::Castle(side) = chess_move.kind else {
+        return None;
+    };
+    let route = chess_match
+        .game
+        .position()
+        .rules()
+        .castling()
+        .route(piece.color, side)?;
+    (square == route.rook_to).then_some(route.rook_from)
+}
+
+fn spawn_piece(
+    commands: &mut Commands,
+    assets: &SceneAssets,
+    square: Square,
+    piece: Piece,
+    start: Vec3,
+    target: Vec3,
+) {
+    let material = match piece.color {
+        Side::White => assets.white_piece.clone(),
+        Side::Black => assets.black_piece.clone(),
+    };
+    let accent = match piece.color {
+        Side::White => assets.white_accent.clone(),
+        Side::Black => assets.black_accent.clone(),
+    };
+    let parts = piece_parts(piece.kind, assets);
+    let mut entity = commands.spawn((
+        Transform::from_translation(start).with_rotation(Quat::from_rotation_y(
+            if piece.color == Side::Black { PI } else { 0.0 },
+        )),
+        Visibility::default(),
+        PieceRoot,
+        Name::new(format!(
+            "{} {} on {}",
+            side_name(piece.color),
+            piece_name(piece.kind),
+            square
+        )),
+    ));
+    if start != target {
+        entity.insert(PieceMotion {
+            start,
+            end: target,
+            elapsed: 0.0,
+        });
+    }
+    entity.with_children(|parent| {
+        for part in parts {
+            parent.spawn((
+                Mesh3d(part.mesh),
+                MeshMaterial3d(if part.accent {
+                    accent.clone()
+                } else {
+                    material.clone()
+                }),
+                part.transform,
+                Pickable::IGNORE,
+            ));
+        }
+    });
+}
+
+struct PiecePart {
+    mesh: Handle<Mesh>,
+    transform: Transform,
+    accent: bool,
+}
+
+fn piece_parts(kind: PieceKind, assets: &SceneAssets) -> Vec<PiecePart> {
+    let mut parts = vec![
+        part(
+            &assets.cylinder_mesh,
+            Vec3::new(0.0, 0.08, 0.0),
+            Vec3::new(0.76, 0.16, 0.76),
+            Quat::IDENTITY,
+            false,
+        ),
+        part(
+            &assets.cylinder_mesh,
+            Vec3::new(0.0, 0.2, 0.0),
+            Vec3::new(0.58, 0.16, 0.58),
+            Quat::IDENTITY,
+            false,
+        ),
+    ];
+
+    match kind {
+        PieceKind::Pawn => {
+            parts.push(part(
+                &assets.cone_mesh,
+                Vec3::new(0.0, 0.47, 0.0),
+                Vec3::new(0.48, 0.48, 0.48),
+                Quat::IDENTITY,
+                false,
+            ));
+            parts.push(part(
+                &assets.sphere_mesh,
+                Vec3::new(0.0, 0.76, 0.0),
+                Vec3::splat(0.48),
+                Quat::IDENTITY,
+                false,
+            ));
+        }
+        PieceKind::Knight => add_knight_top(&mut parts, assets, false),
+        PieceKind::Bishop => add_bishop_top(&mut parts, assets, false),
+        PieceKind::Rook => add_rook_top(&mut parts, assets, false),
+        PieceKind::Queen => {
+            add_tall_body(&mut parts, assets);
+            parts.push(part(
+                &assets.sphere_mesh,
+                Vec3::new(0.0, 1.08, 0.0),
+                Vec3::splat(0.27),
+                Quat::IDENTITY,
+                true,
+            ));
+            for (x, z) in [(-0.2, 0.0), (0.2, 0.0), (0.0, -0.2), (0.0, 0.2)] {
+                parts.push(part(
+                    &assets.sphere_mesh,
+                    Vec3::new(x, 0.96, z),
+                    Vec3::splat(0.2),
+                    Quat::IDENTITY,
+                    false,
+                ));
+            }
+        }
+        PieceKind::King => {
+            add_tall_body(&mut parts, assets);
+            parts.push(part(
+                &assets.cube_mesh,
+                Vec3::new(0.0, 1.12, 0.0),
+                Vec3::new(0.12, 0.42, 0.12),
+                Quat::IDENTITY,
+                true,
+            ));
+            parts.push(part(
+                &assets.cube_mesh,
+                Vec3::new(0.0, 1.17, 0.0),
+                Vec3::new(0.42, 0.11, 0.12),
+                Quat::IDENTITY,
+                true,
+            ));
+        }
+        PieceKind::Archbishop => {
+            add_bishop_top(&mut parts, assets, true);
+            parts.push(part(
+                &assets.cube_mesh,
+                Vec3::new(0.0, 1.02, 0.0),
+                Vec3::new(0.42, 0.1, 0.13),
+                Quat::from_rotation_z(FRAC_PI_4),
+                true,
+            ));
+        }
+        PieceKind::Chancellor => {
+            add_rook_top(&mut parts, assets, true);
+            parts.push(part(
+                &assets.capsule_mesh,
+                Vec3::new(0.0, 0.94, -0.08),
+                Vec3::new(0.25, 0.35, 0.25),
+                Quat::from_rotation_x(-0.65),
+                true,
+            ));
+        }
+    }
+    parts
+}
+
+fn part(
+    mesh: &Handle<Mesh>,
+    translation: Vec3,
+    scale: Vec3,
+    rotation: Quat,
+    accent: bool,
+) -> PiecePart {
+    PiecePart {
+        mesh: mesh.clone(),
+        transform: Transform::from_translation(translation)
+            .with_rotation(rotation)
+            .with_scale(scale),
+        accent,
+    }
+}
+
+fn add_tall_body(parts: &mut Vec<PiecePart>, assets: &SceneAssets) {
+    parts.push(part(
+        &assets.cone_mesh,
+        Vec3::new(0.0, 0.61, 0.0),
+        Vec3::new(0.6, 0.78, 0.6),
+        Quat::IDENTITY,
+        false,
+    ));
+    parts.push(part(
+        &assets.cylinder_mesh,
+        Vec3::new(0.0, 0.91, 0.0),
+        Vec3::new(0.52, 0.13, 0.52),
+        Quat::IDENTITY,
+        true,
+    ));
+}
+
+fn add_knight_top(parts: &mut Vec<PiecePart>, assets: &SceneAssets, accent: bool) {
+    parts.push(part(
+        &assets.capsule_mesh,
+        Vec3::new(0.0, 0.58, -0.05),
+        Vec3::new(0.42, 0.58, 0.42),
+        Quat::from_rotation_x(-0.62),
+        accent,
+    ));
+    parts.push(part(
+        &assets.sphere_mesh,
+        Vec3::new(0.0, 0.88, -0.22),
+        Vec3::new(0.5, 0.38, 0.58),
+        Quat::IDENTITY,
+        accent,
+    ));
+}
+
+fn add_bishop_top(parts: &mut Vec<PiecePart>, assets: &SceneAssets, accent: bool) {
+    parts.push(part(
+        &assets.cone_mesh,
+        Vec3::new(0.0, 0.61, 0.0),
+        Vec3::new(0.58, 0.72, 0.58),
+        Quat::IDENTITY,
+        false,
+    ));
+    parts.push(part(
+        &assets.sphere_mesh,
+        Vec3::new(0.0, 0.94, 0.0),
+        Vec3::new(0.45, 0.58, 0.45),
+        Quat::IDENTITY,
+        accent,
+    ));
+}
+
+fn add_rook_top(parts: &mut Vec<PiecePart>, assets: &SceneAssets, accent: bool) {
+    parts.push(part(
+        &assets.cylinder_mesh,
+        Vec3::new(0.0, 0.55, 0.0),
+        Vec3::new(0.53, 0.62, 0.53),
+        Quat::IDENTITY,
+        false,
+    ));
+    parts.push(part(
+        &assets.cube_mesh,
+        Vec3::new(0.0, 0.88, 0.0),
+        Vec3::new(0.62, 0.2, 0.62),
+        Quat::IDENTITY,
+        accent,
+    ));
+    for (x, z) in [(-0.25, -0.25), (-0.25, 0.25), (0.25, -0.25), (0.25, 0.25)] {
+        parts.push(part(
+            &assets.cube_mesh,
+            Vec3::new(x, 1.02, z),
+            Vec3::splat(0.22),
+            Quat::IDENTITY,
+            accent,
+        ));
+    }
+}
+
+fn animate_pieces(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut pieces: Query<(Entity, &mut Transform, &mut PieceMotion)>,
+) {
+    for (entity, mut transform, mut motion) in &mut pieces {
+        motion.elapsed += time.delta_secs();
+        let t = (motion.elapsed / MOVE_ANIMATION_SECONDS).min(1.0);
+        let eased = t * t * (3.0 - 2.0 * t);
+        transform.translation = motion.start.lerp(motion.end, eased);
+        transform.translation.y += 0.9 * 4.0 * t * (1.0 - t);
+        if t >= 1.0 {
+            transform.translation = motion.end;
+            commands.entity(entity).remove::<PieceMotion>();
+        }
+    }
+}
+
+fn update_square_materials(
+    chess_match: Res<ChessMatch>,
+    assets: Res<SceneAssets>,
+    mut squares: Query<(&BoardSquare, &mut MeshMaterial3d<StandardMaterial>)>,
+) {
+    let position = chess_match.game.position();
+    let selected_moves = chess_match.selected.map_or_else(Vec::new, |selected| {
+        position
+            .legal_moves()
+            .into_iter()
+            .filter(|chess_move| chess_move.from == selected)
+            .collect()
+    });
+    let checked_king = (chess_match.game.outcome() == GameOutcome::Check)
+        .then(|| position.board().king_square(position.side_to_move()))
+        .flatten();
+
+    for (board_square, mut material) in &mut squares {
+        let square = board_square.0;
+        material.0 = if checked_king == Some(square) {
+            assets.check_square.clone()
+        } else if chess_match.selected == Some(square) {
+            assets.selected_square.clone()
+        } else if let Some(chess_move) = selected_moves
+            .iter()
+            .find(|chess_move| chess_move.to == square)
+        {
+            if matches!(chess_move.kind, MoveKind::EnPassant)
+                || position.board().piece_at(square).is_some()
+            {
+                assets.capture_square.clone()
+            } else {
+                assets.legal_square.clone()
+            }
+        } else if chess_match
+            .last_move
+            .is_some_and(|last| last.from == square || last.to == square)
+        {
+            assets.last_square.clone()
+        } else if (square.file() + square.rank()) % 2 == 0 {
+            assets.dark_square.clone()
+        } else {
+            assets.light_square.clone()
+        };
+    }
+}
+
+fn update_hud(
+    chess_match: Res<ChessMatch>,
+    settings: Res<AiSettings>,
+    mut hud: Query<&mut Text, With<HudText>>,
+) {
+    let Ok(mut text) = hud.single_mut() else {
+        return;
+    };
+    let position = chess_match.game.position();
+    let size = position.board().size();
+    let selected = chess_match
+        .selected
+        .map_or_else(|| "none".to_owned(), |square| square.to_string());
+    **text = format!(
+        "{}\n\
+         Board: {} × {}\n\
+         White: {}    Black: {}\n\
+         Engine depth: {}\n\
+         Side to move: {}\n\
+         Selected: {}\n\n\
+         {}\n\n\
+         Left click: select / move\n\
+         Middle drag: orbit    Right drag: pan\n\
+         Wheel: zoom    Esc: cancel\n\
+         1 / 2: toggle human or computer\n\
+         ↑ / ↓ or + / −: engine depth\n\
+         N: new game\n\
+         F1 Capablanca  F2 Gothic\n\
+         F3 Embassy     F4 Schoolbook\n\
+         F5 Bird        F6 Carrera\n\
+         F7 Grand Chess\n\n\
+         Promotion: Q/C/A/R/B/N\n\
+         (Space = no promotion where allowed)",
+        position.rules().name(),
+        size.files(),
+        size.ranks(),
+        chess_match.controllers[Side::White.index()].label(),
+        chess_match.controllers[Side::Black.index()].label(),
+        settings.depth,
+        side_name(position.side_to_move()),
+        selected,
+        chess_match.status,
+    );
+}
+
+fn square_world(square: Square, size: BoardSize) -> Vec3 {
+    Vec3::new(
+        f32::from(square.file()) - (f32::from(size.files()) - 1.0) * 0.5,
+        0.0,
+        f32::from(square.rank()) - (f32::from(size.ranks()) - 1.0) * 0.5,
+    )
+}
+
+fn side_name(side: Side) -> &'static str {
+    match side {
+        Side::White => "White",
+        Side::Black => "Black",
+    }
+}
+
+fn piece_name(kind: PieceKind) -> &'static str {
+    match kind {
+        PieceKind::Pawn => "pawn",
+        PieceKind::Knight => "knight",
+        PieceKind::Bishop => "bishop",
+        PieceKind::Rook => "rook",
+        PieceKind::Queen => "queen",
+        PieceKind::King => "king",
+        PieceKind::Archbishop => "archbishop",
+        PieceKind::Chancellor => "chancellor",
+    }
+}
+
+fn side_to_move_message(chess_match: &ChessMatch) -> String {
+    let side = chess_match.game.position().side_to_move();
+    format!("{} to move.", side_name(side))
+}
+
+fn is_playable(outcome: GameOutcome) -> bool {
+    matches!(outcome, GameOutcome::Ongoing | GameOutcome::Check)
+}
+
+fn outcome_message(outcome: GameOutcome) -> String {
+    match outcome {
+        GameOutcome::Ongoing => "Game in progress.".to_owned(),
+        GameOutcome::Check => "Check.".to_owned(),
+        GameOutcome::Win { winner } => {
+            format!("Checkmate — {} wins.", side_name(winner))
+        }
+        GameOutcome::Draw(reason) => match reason {
+            DrawReason::Stalemate => "Draw by stalemate.".to_owned(),
+            DrawReason::FiftyMoveRule => "Draw by the fifty-move rule.".to_owned(),
+            DrawReason::ThreefoldRepetition => "Draw by threefold repetition.".to_owned(),
+        },
+    }
+}
+
+fn promotion_prompt(moves: &[Move]) -> String {
+    let mut choices = Vec::new();
+    for chess_move in moves {
+        let choice = match chess_move.promotion {
+            Some(PieceKind::Queen) => "Q queen",
+            Some(PieceKind::Chancellor) => "C chancellor",
+            Some(PieceKind::Archbishop) => "A archbishop",
+            Some(PieceKind::Rook) => "R rook",
+            Some(PieceKind::Bishop) => "B bishop",
+            Some(PieceKind::Knight) => "N knight",
+            Some(PieceKind::Pawn | PieceKind::King) => continue,
+            None => "Space no promotion",
+        };
+        if !choices.contains(&choice) {
+            choices.push(choice);
+        }
+    }
+    format!("Choose promotion: {}.", choices.join(", "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn square_world_centers_both_supported_board_sizes() {
+        for size in [BoardSize::CAPABLANCA, BoardSize::GRAND] {
+            let lower = square_world(Square::new(0, 0), size);
+            let upper = square_world(Square::new(size.files() - 1, size.ranks() - 1), size);
+            assert_eq!(lower + upper, Vec3::ZERO);
+        }
+    }
+
+    #[test]
+    fn promotion_prompt_exposes_compound_piece_keys() {
+        let from = Square::new(0, 6);
+        let to = Square::new(0, 7);
+        let moves = [
+            Move::promotion(from, to, PieceKind::Queen),
+            Move::promotion(from, to, PieceKind::Chancellor),
+            Move::promotion(from, to, PieceKind::Archbishop),
+        ];
+        let prompt = promotion_prompt(&moves);
+        assert!(prompt.contains("Q queen"));
+        assert!(prompt.contains("C chancellor"));
+        assert!(prompt.contains("A archbishop"));
+    }
+}
