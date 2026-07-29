@@ -1,0 +1,14 @@
+[package]
+name = "capablanca-engine"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Rules and search engine for Capablanca-family chess variants and Grand Chess"
+keywords = ["chess", "capablanca", "gothic", "grand-chess", "engine"]
+categories = ["game-development"]
+
+[dependencies]
+
+[lib]
+name = "capablanca_chess_plus"
+path = "src/lib.rs"

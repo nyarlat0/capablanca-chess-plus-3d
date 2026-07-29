@@ -1,0 +1,7 @@
+[workspace]
+resolver = "3"
+members = [
+    "bevy-front",
+    "engine"]
+
+[workspace.dependencies]
