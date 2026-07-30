@@ -8,12 +8,13 @@ use capablanca_chess_plus::{
     BoardSize, CastleSide, Color as Side, DrawReason, Engine, Game, GameOutcome, Move, MoveKind,
     Piece, PieceKind, SearchLimits, SearchResult, Square, Variant,
 };
-use std::f32::consts::{FRAC_PI_4, PI};
+use std::f32::consts::PI;
 
 const DEFAULT_SEARCH_DEPTH: u8 = 3;
 const MIN_SEARCH_DEPTH: u8 = 1;
 const MAX_SEARCH_DEPTH: u8 = 6;
 const MOVE_ANIMATION_SECONDS: f32 = 0.38;
+const PIECE_MODEL_SCALE: f32 = 0.018;
 
 fn main() {
     App::new()
@@ -144,11 +145,14 @@ impl Default for RenderedPosition {
 struct SceneAssets {
     square_mesh: Handle<Mesh>,
     frame_mesh: Handle<Mesh>,
-    cylinder_mesh: Handle<Mesh>,
-    cone_mesh: Handle<Mesh>,
-    sphere_mesh: Handle<Mesh>,
-    cube_mesh: Handle<Mesh>,
-    capsule_mesh: Handle<Mesh>,
+    pawn_mesh: Handle<Mesh>,
+    knight_mesh: Handle<Mesh>,
+    bishop_mesh: Handle<Mesh>,
+    rook_mesh: Handle<Mesh>,
+    queen_mesh: Handle<Mesh>,
+    king_mesh: Handle<Mesh>,
+    archbishop_mesh: Handle<Mesh>,
+    chancellor_mesh: Handle<Mesh>,
     light_square: Handle<StandardMaterial>,
     dark_square: Handle<StandardMaterial>,
     selected_square: Handle<StandardMaterial>,
@@ -159,8 +163,6 @@ struct SceneAssets {
     frame_material: Handle<StandardMaterial>,
     white_piece: Handle<StandardMaterial>,
     black_piece: Handle<StandardMaterial>,
-    white_accent: Handle<StandardMaterial>,
-    black_accent: Handle<StandardMaterial>,
 }
 
 #[derive(Component, Clone, Copy)]
@@ -191,11 +193,14 @@ fn setup(
     let assets = SceneAssets {
         square_mesh: meshes.add(Cuboid::new(0.98, 0.12, 0.98)),
         frame_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
-        cylinder_mesh: meshes.add(Cylinder::new(0.5, 1.0)),
-        cone_mesh: meshes.add(Cone::new(0.5, 1.0)),
-        sphere_mesh: meshes.add(Sphere::new(0.5).mesh().uv(20, 12)),
-        cube_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
-        capsule_mesh: meshes.add(Capsule3d::new(0.5, 1.0)),
+        pawn_mesh: asset_server.load("models/pawn.glb#Mesh0/Primitive0"),
+        knight_mesh: asset_server.load("models/knight.glb#Mesh0/Primitive0"),
+        bishop_mesh: asset_server.load("models/bishop.glb#Mesh0/Primitive0"),
+        rook_mesh: asset_server.load("models/rook.glb#Mesh0/Primitive0"),
+        queen_mesh: asset_server.load("models/queen.glb#Mesh0/Primitive0"),
+        king_mesh: asset_server.load("models/king.glb#Mesh0/Primitive0"),
+        archbishop_mesh: asset_server.load("models/archbishop.glb#Mesh0/Primitive0"),
+        chancellor_mesh: asset_server.load("models/chancellor.glb#Mesh0/Primitive0"),
         light_square: materials.add(chess_material(Color::srgb(0.72, 0.52, 0.31), 0.82)),
         dark_square: materials.add(chess_material(Color::srgb(0.24, 0.105, 0.055), 0.9)),
         selected_square: materials.add(highlight_material(
@@ -234,18 +239,6 @@ fn setup(
             base_color: Color::srgb(0.075, 0.055, 0.05),
             perceptual_roughness: 0.3,
             metallic: 0.16,
-            ..default()
-        }),
-        white_accent: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.78, 0.48, 0.12),
-            perceptual_roughness: 0.28,
-            metallic: 0.52,
-            ..default()
-        }),
-        black_accent: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.48, 0.16, 0.055),
-            perceptual_roughness: 0.26,
-            metallic: 0.48,
             ..default()
         }),
     };
@@ -751,11 +744,7 @@ fn spawn_piece(
         Side::White => assets.white_piece.clone(),
         Side::Black => assets.black_piece.clone(),
     };
-    let accent = match piece.color {
-        Side::White => assets.white_accent.clone(),
-        Side::Black => assets.black_accent.clone(),
-    };
-    let parts = piece_parts(piece.kind, assets);
+    let model = piece_model(piece.kind, assets);
     let mut entity = commands.spawn((
         Transform::from_translation(start).with_rotation(Quat::from_rotation_y(
             if piece.color == Side::Black { PI } else { 0.0 },
@@ -776,216 +765,42 @@ fn spawn_piece(
             elapsed: 0.0,
         });
     }
-    entity.with_children(|parent| {
-        for part in parts {
-            parent.spawn((
-                Mesh3d(part.mesh),
-                MeshMaterial3d(if part.accent {
-                    accent.clone()
-                } else {
-                    material.clone()
-                }),
-                part.transform,
-                Pickable::IGNORE,
-            ));
-        }
-    });
+    entity.with_child((
+        Mesh3d(model.mesh),
+        MeshMaterial3d(material),
+        model.transform,
+        Pickable::IGNORE,
+    ));
 }
 
-struct PiecePart {
+struct PieceModel {
     mesh: Handle<Mesh>,
     transform: Transform,
-    accent: bool,
 }
 
-fn piece_parts(kind: PieceKind, assets: &SceneAssets) -> Vec<PiecePart> {
-    let mut parts = vec![
-        part(
-            &assets.cylinder_mesh,
-            Vec3::new(0.0, 0.08, 0.0),
-            Vec3::new(0.76, 0.16, 0.76),
-            Quat::IDENTITY,
-            false,
-        ),
-        part(
-            &assets.cylinder_mesh,
-            Vec3::new(0.0, 0.2, 0.0),
-            Vec3::new(0.58, 0.16, 0.58),
-            Quat::IDENTITY,
-            false,
-        ),
-    ];
+fn piece_model(kind: PieceKind, assets: &SceneAssets) -> PieceModel {
+    let (mesh, center_x, min_y, center_z) = match kind {
+        PieceKind::Pawn => (&assets.pawn_mesh, -0.005_807, 0.0, -0.010_721),
+        PieceKind::Knight => (&assets.knight_mesh, 15.440_479, 0.0, 4.078_164),
+        PieceKind::Bishop => (&assets.bishop_mesh, -0.040_336, -21.983_118, 0.098_973),
+        PieceKind::Rook => (&assets.rook_mesh, -22.567_917, 0.0, -2.458_724),
+        PieceKind::Queen => (&assets.queen_mesh, 0.034_510, -34.450_596, 0.070_159),
+        PieceKind::King => (&assets.king_mesh, 11.008_427, 0.0, -1.965_424),
+        PieceKind::Archbishop => (&assets.archbishop_mesh, 0.060_687, -27.845_299, -0.058_388),
+        PieceKind::Chancellor => (&assets.chancellor_mesh, -0.008_492, -24.878_624, -0.414_659),
+    };
+    let rotation = if kind == PieceKind::Knight {
+        Quat::from_rotation_y(PI)
+    } else {
+        Quat::IDENTITY
+    };
+    let anchor = Vec3::new(center_x, min_y, center_z) * PIECE_MODEL_SCALE;
 
-    match kind {
-        PieceKind::Pawn => {
-            parts.push(part(
-                &assets.cone_mesh,
-                Vec3::new(0.0, 0.47, 0.0),
-                Vec3::new(0.48, 0.48, 0.48),
-                Quat::IDENTITY,
-                false,
-            ));
-            parts.push(part(
-                &assets.sphere_mesh,
-                Vec3::new(0.0, 0.76, 0.0),
-                Vec3::splat(0.48),
-                Quat::IDENTITY,
-                false,
-            ));
-        }
-        PieceKind::Knight => add_knight_top(&mut parts, assets, false),
-        PieceKind::Bishop => add_bishop_top(&mut parts, assets, false),
-        PieceKind::Rook => add_rook_top(&mut parts, assets, false),
-        PieceKind::Queen => {
-            add_tall_body(&mut parts, assets);
-            parts.push(part(
-                &assets.sphere_mesh,
-                Vec3::new(0.0, 1.08, 0.0),
-                Vec3::splat(0.27),
-                Quat::IDENTITY,
-                true,
-            ));
-            for (x, z) in [(-0.2, 0.0), (0.2, 0.0), (0.0, -0.2), (0.0, 0.2)] {
-                parts.push(part(
-                    &assets.sphere_mesh,
-                    Vec3::new(x, 0.96, z),
-                    Vec3::splat(0.2),
-                    Quat::IDENTITY,
-                    false,
-                ));
-            }
-        }
-        PieceKind::King => {
-            add_tall_body(&mut parts, assets);
-            parts.push(part(
-                &assets.cube_mesh,
-                Vec3::new(0.0, 1.12, 0.0),
-                Vec3::new(0.12, 0.42, 0.12),
-                Quat::IDENTITY,
-                true,
-            ));
-            parts.push(part(
-                &assets.cube_mesh,
-                Vec3::new(0.0, 1.17, 0.0),
-                Vec3::new(0.42, 0.11, 0.12),
-                Quat::IDENTITY,
-                true,
-            ));
-        }
-        PieceKind::Archbishop => {
-            add_bishop_top(&mut parts, assets, true);
-            parts.push(part(
-                &assets.cube_mesh,
-                Vec3::new(0.0, 1.02, 0.0),
-                Vec3::new(0.42, 0.1, 0.13),
-                Quat::from_rotation_z(FRAC_PI_4),
-                true,
-            ));
-        }
-        PieceKind::Chancellor => {
-            add_rook_top(&mut parts, assets, true);
-            parts.push(part(
-                &assets.capsule_mesh,
-                Vec3::new(0.0, 0.94, -0.08),
-                Vec3::new(0.25, 0.35, 0.25),
-                Quat::from_rotation_x(-0.65),
-                true,
-            ));
-        }
-    }
-    parts
-}
-
-fn part(
-    mesh: &Handle<Mesh>,
-    translation: Vec3,
-    scale: Vec3,
-    rotation: Quat,
-    accent: bool,
-) -> PiecePart {
-    PiecePart {
+    PieceModel {
         mesh: mesh.clone(),
-        transform: Transform::from_translation(translation)
+        transform: Transform::from_translation(-(rotation * anchor))
             .with_rotation(rotation)
-            .with_scale(scale),
-        accent,
-    }
-}
-
-fn add_tall_body(parts: &mut Vec<PiecePart>, assets: &SceneAssets) {
-    parts.push(part(
-        &assets.cone_mesh,
-        Vec3::new(0.0, 0.61, 0.0),
-        Vec3::new(0.6, 0.78, 0.6),
-        Quat::IDENTITY,
-        false,
-    ));
-    parts.push(part(
-        &assets.cylinder_mesh,
-        Vec3::new(0.0, 0.91, 0.0),
-        Vec3::new(0.52, 0.13, 0.52),
-        Quat::IDENTITY,
-        true,
-    ));
-}
-
-fn add_knight_top(parts: &mut Vec<PiecePart>, assets: &SceneAssets, accent: bool) {
-    parts.push(part(
-        &assets.capsule_mesh,
-        Vec3::new(0.0, 0.58, -0.05),
-        Vec3::new(0.42, 0.58, 0.42),
-        Quat::from_rotation_x(-0.62),
-        accent,
-    ));
-    parts.push(part(
-        &assets.sphere_mesh,
-        Vec3::new(0.0, 0.88, -0.22),
-        Vec3::new(0.5, 0.38, 0.58),
-        Quat::IDENTITY,
-        accent,
-    ));
-}
-
-fn add_bishop_top(parts: &mut Vec<PiecePart>, assets: &SceneAssets, accent: bool) {
-    parts.push(part(
-        &assets.cone_mesh,
-        Vec3::new(0.0, 0.61, 0.0),
-        Vec3::new(0.58, 0.72, 0.58),
-        Quat::IDENTITY,
-        false,
-    ));
-    parts.push(part(
-        &assets.sphere_mesh,
-        Vec3::new(0.0, 0.94, 0.0),
-        Vec3::new(0.45, 0.58, 0.45),
-        Quat::IDENTITY,
-        accent,
-    ));
-}
-
-fn add_rook_top(parts: &mut Vec<PiecePart>, assets: &SceneAssets, accent: bool) {
-    parts.push(part(
-        &assets.cylinder_mesh,
-        Vec3::new(0.0, 0.55, 0.0),
-        Vec3::new(0.53, 0.62, 0.53),
-        Quat::IDENTITY,
-        false,
-    ));
-    parts.push(part(
-        &assets.cube_mesh,
-        Vec3::new(0.0, 0.88, 0.0),
-        Vec3::new(0.62, 0.2, 0.62),
-        Quat::IDENTITY,
-        accent,
-    ));
-    for (x, z) in [(-0.25, -0.25), (-0.25, 0.25), (0.25, -0.25), (0.25, 0.25)] {
-        parts.push(part(
-            &assets.cube_mesh,
-            Vec3::new(x, 1.02, z),
-            Vec3::splat(0.22),
-            Quat::IDENTITY,
-            accent,
-        ));
+            .with_scale(Vec3::splat(PIECE_MODEL_SCALE)),
     }
 }
 
