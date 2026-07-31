@@ -1,6 +1,7 @@
 use bevy::{
     color::LinearRgba,
     gltf::GltfAssetLabel,
+    image::ImageLoaderSettings,
     prelude::*,
     tasks::{AsyncComputeTaskPool, Task, futures_lite::future},
     world_serialization::WorldInstanceReady,
@@ -147,7 +148,7 @@ impl Default for RenderedPosition {
 #[derive(Resource)]
 struct SceneAssets {
     square_mesh: Handle<Mesh>,
-    frame_mesh: Handle<Mesh>,
+    board_part_mesh: Handle<Mesh>,
     pawn_scene: Handle<WorldAsset>,
     knight_scene: Handle<WorldAsset>,
     bishop_scene: Handle<WorldAsset>,
@@ -156,23 +157,26 @@ struct SceneAssets {
     king_scene: Handle<WorldAsset>,
     archbishop_scene: Handle<WorldAsset>,
     chancellor_scene: Handle<WorldAsset>,
-    light_square: Handle<StandardMaterial>,
-    dark_square: Handle<StandardMaterial>,
-    selected_square: Handle<StandardMaterial>,
-    legal_square: Handle<StandardMaterial>,
-    capture_square: Handle<StandardMaterial>,
-    last_square: Handle<StandardMaterial>,
-    check_square: Handle<StandardMaterial>,
-    frame_material: Handle<StandardMaterial>,
+    square_materials: SquareMaterials,
+    wood_material: Handle<StandardMaterial>,
     white_piece: Handle<StandardMaterial>,
     black_piece: Handle<StandardMaterial>,
+}
+
+struct SquareMaterials {
+    normal: [Handle<StandardMaterial>; 2],
+    selected: [Handle<StandardMaterial>; 2],
+    legal: [Handle<StandardMaterial>; 2],
+    capture: [Handle<StandardMaterial>; 2],
+    last: [Handle<StandardMaterial>; 2],
+    check: [Handle<StandardMaterial>; 2],
 }
 
 #[derive(Component, Clone, Copy)]
 struct BoardSquare(Square);
 
 #[derive(Component)]
-struct BoardFrame;
+struct BoardPart;
 
 #[derive(Component)]
 struct PieceRoot;
@@ -196,9 +200,78 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    let white_marble_color = asset_server.load("textures/white_marble_color.jpg");
+    let black_marble_color = asset_server.load("textures/black_marble_color.jpg");
+    let wood_color = asset_server.load("textures/wood_color.jpg");
+    let white_marble_normal = asset_server
+        .load_builder()
+        .with_settings(|settings: &mut ImageLoaderSettings| settings.is_srgb = false)
+        .load("textures/white_marble_normalgl.jpg");
+    let black_marble_normal = asset_server
+        .load_builder()
+        .with_settings(|settings: &mut ImageLoaderSettings| settings.is_srgb = false)
+        .load("textures/black_marble_normalgl.jpg");
+    let wood_normal = asset_server
+        .load_builder()
+        .with_settings(|settings: &mut ImageLoaderSettings| settings.is_srgb = false)
+        .load("textures/wood_normalgl.jpg");
+
+    let square_materials = SquareMaterials {
+        normal: marble_material_pair(
+            &mut materials,
+            [&black_marble_color, &white_marble_color],
+            [&black_marble_normal, &white_marble_normal],
+            Color::WHITE,
+            LinearRgba::BLACK,
+        ),
+        selected: marble_material_pair(
+            &mut materials,
+            [&black_marble_color, &white_marble_color],
+            [&black_marble_normal, &white_marble_normal],
+            Color::srgb(1.0, 0.66, 0.08),
+            LinearRgba::rgb(0.7, 0.28, 0.01),
+        ),
+        legal: marble_material_pair(
+            &mut materials,
+            [&black_marble_color, &white_marble_color],
+            [&black_marble_normal, &white_marble_normal],
+            Color::srgb(0.23, 0.72, 0.37),
+            LinearRgba::rgb(0.02, 0.35, 0.05),
+        ),
+        capture: marble_material_pair(
+            &mut materials,
+            [&black_marble_color, &white_marble_color],
+            [&black_marble_normal, &white_marble_normal],
+            Color::srgb(0.88, 0.22, 0.2),
+            LinearRgba::rgb(0.45, 0.015, 0.01),
+        ),
+        last: marble_material_pair(
+            &mut materials,
+            [&black_marble_color, &white_marble_color],
+            [&black_marble_normal, &white_marble_normal],
+            Color::srgb(0.2, 0.52, 0.9),
+            LinearRgba::rgb(0.015, 0.12, 0.45),
+        ),
+        check: marble_material_pair(
+            &mut materials,
+            [&black_marble_color, &white_marble_color],
+            [&black_marble_normal, &white_marble_normal],
+            Color::srgb(0.86, 0.04, 0.08),
+            LinearRgba::rgb(0.8, 0.0, 0.01),
+        ),
+    };
+
     let assets = SceneAssets {
-        square_mesh: meshes.add(Cuboid::new(0.98, 0.12, 0.98)),
-        frame_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
+        square_mesh: meshes.add(
+            Mesh::from(Cuboid::new(0.98, 0.12, 0.98))
+                .with_generated_tangents()
+                .expect("a cuboid has valid UVs for tangent generation"),
+        ),
+        board_part_mesh: meshes.add(
+            Mesh::from(Cuboid::new(1.0, 1.0, 1.0))
+                .with_generated_tangents()
+                .expect("a cuboid has valid UVs for tangent generation"),
+        ),
         pawn_scene: asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/pawn.glb")),
         knight_scene: asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/knight.glb")),
         bishop_scene: asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/bishop.glb")),
@@ -209,44 +282,31 @@ fn setup(
             .load(GltfAssetLabel::Scene(0).from_asset("models/archbishop.glb")),
         chancellor_scene: asset_server
             .load(GltfAssetLabel::Scene(0).from_asset("models/chancellor.glb")),
-        light_square: materials.add(chess_material(Color::srgb(0.72, 0.52, 0.31), 0.82)),
-        dark_square: materials.add(chess_material(Color::srgb(0.24, 0.105, 0.055), 0.9)),
-        selected_square: materials.add(highlight_material(
-            Color::srgb(1.0, 0.66, 0.08),
-            LinearRgba::rgb(0.7, 0.28, 0.01),
-        )),
-        legal_square: materials.add(highlight_material(
-            Color::srgb(0.23, 0.72, 0.37),
-            LinearRgba::rgb(0.02, 0.35, 0.05),
-        )),
-        capture_square: materials.add(highlight_material(
-            Color::srgb(0.88, 0.22, 0.2),
-            LinearRgba::rgb(0.45, 0.015, 0.01),
-        )),
-        last_square: materials.add(highlight_material(
-            Color::srgb(0.2, 0.52, 0.9),
-            LinearRgba::rgb(0.015, 0.12, 0.45),
-        )),
-        check_square: materials.add(highlight_material(
-            Color::srgb(0.86, 0.04, 0.08),
-            LinearRgba::rgb(0.8, 0.0, 0.01),
-        )),
-        frame_material: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.075, 0.025, 0.012),
-            perceptual_roughness: 0.62,
-            metallic: 0.08,
+        square_materials,
+        wood_material: materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            base_color_texture: Some(wood_color),
+            normal_map_texture: Some(wood_normal),
+            perceptual_roughness: 0.48,
+            reflectance: 0.4,
+            clearcoat: 0.08,
+            clearcoat_perceptual_roughness: 0.3,
             ..default()
         }),
         white_piece: materials.add(StandardMaterial {
             base_color: Color::srgb(0.92, 0.82, 0.66),
             perceptual_roughness: 0.36,
-            metallic: 0.04,
+            reflectance: 0.4,
+            clearcoat: 0.08,
+            clearcoat_perceptual_roughness: 0.25,
             ..default()
         }),
         black_piece: materials.add(StandardMaterial {
             base_color: Color::srgb(0.075, 0.055, 0.05),
             perceptual_roughness: 0.3,
-            metallic: 0.16,
+            reflectance: 0.4,
+            clearcoat: 0.08,
+            clearcoat_perceptual_roughness: 0.25,
             ..default()
         }),
     };
@@ -304,21 +364,40 @@ fn setup(
         ));
 }
 
-fn chess_material(color: Color, roughness: f32) -> StandardMaterial {
-    StandardMaterial {
-        base_color: color,
-        perceptual_roughness: roughness,
-        ..default()
-    }
-}
+fn marble_material_pair(
+    materials: &mut Assets<StandardMaterial>,
+    color_textures: [&Handle<Image>; 2],
+    normal_maps: [&Handle<Image>; 2],
+    tint: Color,
+    emissive: LinearRgba,
+) -> [Handle<StandardMaterial>; 2] {
+    std::array::from_fn(|index| {
+        materials.add(StandardMaterial {
+            base_color: tint,
+            base_color_texture: Some(color_textures[index].clone()),
 
-fn highlight_material(color: Color, emissive: LinearRgba) -> StandardMaterial {
-    StandardMaterial {
-        base_color: color,
-        emissive,
-        perceptual_roughness: 0.68,
-        ..default()
-    }
+            //normal_map_texture: Some(normal_maps[index].clone()),
+            normal_map_texture: None,
+
+            // Для обычного мрамора передавай LinearRgba::BLACK.
+            emissive,
+
+            metallic: 0.0,
+
+            // Было 0.12. Слишком резкий блик усиливал каждую
+            // микронеровность normal map.
+            perceptual_roughness: 0.36,
+
+            // 0.65 было избыточно.
+            reflectance: 0.45,
+
+            // Оставляем эффект полировки, но не слой автомобильного лака.
+            clearcoat: 0.25,
+            clearcoat_perceptual_roughness: 0.18,
+
+            ..default()
+        })
+    })
 }
 
 fn handle_keyboard(
@@ -641,7 +720,7 @@ fn sync_board_geometry(
     assets: Res<SceneAssets>,
     mut rendered: ResMut<RenderedPosition>,
     squares: Query<Entity, With<BoardSquare>>,
-    frames: Query<Entity, With<BoardFrame>>,
+    board_parts: Query<Entity, With<BoardPart>>,
     mut cameras: Query<&mut PanOrbitCamera>,
 ) {
     let position = chess_match.game.position();
@@ -651,7 +730,7 @@ fn sync_board_geometry(
         for entity in &squares {
             commands.entity(entity).despawn();
         }
-        for entity in &frames {
+        for entity in &board_parts {
             commands.entity(entity).despawn();
         }
         spawn_board(&mut commands, &assets, size);
@@ -691,26 +770,38 @@ fn sync_pieces(
 }
 
 fn spawn_board(commands: &mut Commands, assets: &SceneAssets, size: BoardSize) {
-    commands.spawn((
-        Mesh3d(assets.frame_mesh.clone()),
-        MeshMaterial3d(assets.frame_material.clone()),
-        Transform::from_xyz(0.0, -0.15, 0.0).with_scale(Vec3::new(
-            f32::from(size.files()) + 0.7,
-            0.18,
-            f32::from(size.ranks()) + 0.7,
-        )),
-        Pickable::IGNORE,
-        BoardFrame,
-    ));
+    let width = f32::from(size.files());
+    let depth = f32::from(size.ranks());
+    let outer_width = width + 0.8;
+    let outer_depth = depth + 0.8;
+
+    spawn_wood_part(
+        commands,
+        assets,
+        Vec3::new(0.0, -0.2, 0.0),
+        Vec3::new(outer_width, 0.18, outer_depth),
+    );
+    for z in [-depth * 0.5 - 0.2, depth * 0.5 + 0.2] {
+        spawn_wood_part(
+            commands,
+            assets,
+            Vec3::new(0.0, -0.04, z),
+            Vec3::new(outer_width, 0.16, 0.4),
+        );
+    }
+    for x in [-width * 0.5 - 0.2, width * 0.5 + 0.2] {
+        spawn_wood_part(
+            commands,
+            assets,
+            Vec3::new(x, -0.04, 0.0),
+            Vec3::new(0.4, 0.16, depth),
+        );
+    }
 
     for rank in 0..size.ranks() {
         for file in 0..size.files() {
             let square = Square::new(file, rank);
-            let material = if (file + rank) % 2 == 0 {
-                assets.dark_square.clone()
-            } else {
-                assets.light_square.clone()
-            };
+            let material = assets.square_materials.normal[square_material_index(square)].clone();
             commands
                 .spawn((
                     Mesh3d(assets.square_mesh.clone()),
@@ -721,6 +812,16 @@ fn spawn_board(commands: &mut Commands, assets: &SceneAssets, size: BoardSize) {
                 .observe(on_square_click);
         }
     }
+}
+
+fn spawn_wood_part(commands: &mut Commands, assets: &SceneAssets, translation: Vec3, scale: Vec3) {
+    commands.spawn((
+        Mesh3d(assets.board_part_mesh.clone()),
+        MeshMaterial3d(assets.wood_material.clone()),
+        Transform::from_translation(translation).with_scale(scale),
+        Pickable::IGNORE,
+        BoardPart,
+    ));
 }
 
 fn animation_start(chess_match: &ChessMatch, square: Square, piece: Piece) -> Option<Square> {
@@ -850,10 +951,11 @@ fn update_square_materials(
 
     for (board_square, mut material) in &mut squares {
         let square = board_square.0;
+        let material_index = square_material_index(square);
         material.0 = if checked_king == Some(square) {
-            assets.check_square.clone()
+            assets.square_materials.check[material_index].clone()
         } else if chess_match.selected == Some(square) {
-            assets.selected_square.clone()
+            assets.square_materials.selected[material_index].clone()
         } else if let Some(chess_move) = selected_moves
             .iter()
             .find(|chess_move| chess_move.to == square)
@@ -861,21 +963,23 @@ fn update_square_materials(
             if matches!(chess_move.kind, MoveKind::EnPassant)
                 || position.board().piece_at(square).is_some()
             {
-                assets.capture_square.clone()
+                assets.square_materials.capture[material_index].clone()
             } else {
-                assets.legal_square.clone()
+                assets.square_materials.legal[material_index].clone()
             }
         } else if chess_match
             .last_move
             .is_some_and(|last| last.from == square || last.to == square)
         {
-            assets.last_square.clone()
-        } else if (square.file() + square.rank()) % 2 == 0 {
-            assets.dark_square.clone()
+            assets.square_materials.last[material_index].clone()
         } else {
-            assets.light_square.clone()
+            assets.square_materials.normal[material_index].clone()
         };
     }
+}
+
+fn square_material_index(square: Square) -> usize {
+    usize::from(!(square.file() + square.rank()).is_multiple_of(2))
 }
 
 fn update_hud(
