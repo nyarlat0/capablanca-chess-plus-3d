@@ -1,7 +1,9 @@
 use bevy::{
     color::LinearRgba,
+    gltf::GltfAssetLabel,
     prelude::*,
     tasks::{AsyncComputeTaskPool, Task, futures_lite::future},
+    world_serialization::WorldInstanceReady,
 };
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use capablanca_chess_plus::{
@@ -32,6 +34,7 @@ fn main() {
         .init_resource::<AiSettings>()
         .init_resource::<AiTask>()
         .init_resource::<RenderedPosition>()
+        .add_observer(apply_piece_material)
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -145,14 +148,14 @@ impl Default for RenderedPosition {
 struct SceneAssets {
     square_mesh: Handle<Mesh>,
     frame_mesh: Handle<Mesh>,
-    pawn_mesh: Handle<Mesh>,
-    knight_mesh: Handle<Mesh>,
-    bishop_mesh: Handle<Mesh>,
-    rook_mesh: Handle<Mesh>,
-    queen_mesh: Handle<Mesh>,
-    king_mesh: Handle<Mesh>,
-    archbishop_mesh: Handle<Mesh>,
-    chancellor_mesh: Handle<Mesh>,
+    pawn_scene: Handle<WorldAsset>,
+    knight_scene: Handle<WorldAsset>,
+    bishop_scene: Handle<WorldAsset>,
+    rook_scene: Handle<WorldAsset>,
+    queen_scene: Handle<WorldAsset>,
+    king_scene: Handle<WorldAsset>,
+    archbishop_scene: Handle<WorldAsset>,
+    chancellor_scene: Handle<WorldAsset>,
     light_square: Handle<StandardMaterial>,
     dark_square: Handle<StandardMaterial>,
     selected_square: Handle<StandardMaterial>,
@@ -175,6 +178,9 @@ struct BoardFrame;
 struct PieceRoot;
 
 #[derive(Component)]
+struct PieceMaterial(Handle<StandardMaterial>);
+
+#[derive(Component)]
 struct PieceMotion {
     start: Vec3,
     end: Vec3,
@@ -193,14 +199,16 @@ fn setup(
     let assets = SceneAssets {
         square_mesh: meshes.add(Cuboid::new(0.98, 0.12, 0.98)),
         frame_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
-        pawn_mesh: asset_server.load("models/pawn.glb#Mesh0/Primitive0"),
-        knight_mesh: asset_server.load("models/knight.glb#Mesh0/Primitive0"),
-        bishop_mesh: asset_server.load("models/bishop.glb#Mesh0/Primitive0"),
-        rook_mesh: asset_server.load("models/rook.glb#Mesh0/Primitive0"),
-        queen_mesh: asset_server.load("models/queen.glb#Mesh0/Primitive0"),
-        king_mesh: asset_server.load("models/king.glb#Mesh0/Primitive0"),
-        archbishop_mesh: asset_server.load("models/archbishop.glb#Mesh0/Primitive0"),
-        chancellor_mesh: asset_server.load("models/chancellor.glb#Mesh0/Primitive0"),
+        pawn_scene: asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/pawn.glb")),
+        knight_scene: asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/knight.glb")),
+        bishop_scene: asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/bishop.glb")),
+        rook_scene: asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/rook.glb")),
+        queen_scene: asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/queen.glb")),
+        king_scene: asset_server.load(GltfAssetLabel::Scene(0).from_asset("models/king.glb")),
+        archbishop_scene: asset_server
+            .load(GltfAssetLabel::Scene(0).from_asset("models/archbishop.glb")),
+        chancellor_scene: asset_server
+            .load(GltfAssetLabel::Scene(0).from_asset("models/chancellor.glb")),
         light_square: materials.add(chess_material(Color::srgb(0.72, 0.52, 0.31), 0.82)),
         dark_square: materials.add(chess_material(Color::srgb(0.24, 0.105, 0.055), 0.9)),
         selected_square: materials.add(highlight_material(
@@ -744,13 +752,17 @@ fn spawn_piece(
         Side::White => assets.white_piece.clone(),
         Side::Black => assets.black_piece.clone(),
     };
-    let model = piece_model(piece.kind, assets);
     let mut entity = commands.spawn((
-        Transform::from_translation(start).with_rotation(Quat::from_rotation_y(
-            if piece.color == Side::Black { PI } else { 0.0 },
-        )),
-        Visibility::default(),
+        WorldAssetRoot(piece_scene(piece.kind, assets)),
+        Transform::from_translation(start)
+            .with_rotation(Quat::from_rotation_y(if piece.color == Side::Black {
+                PI
+            } else {
+                0.0
+            }))
+            .with_scale(Vec3::splat(PIECE_MODEL_SCALE)),
         PieceRoot,
+        PieceMaterial(material),
         Name::new(format!(
             "{} {} on {}",
             side_name(piece.color),
@@ -765,42 +777,39 @@ fn spawn_piece(
             elapsed: 0.0,
         });
     }
-    entity.with_child((
-        Mesh3d(model.mesh),
-        MeshMaterial3d(material),
-        model.transform,
-        Pickable::IGNORE,
-    ));
 }
 
-struct PieceModel {
-    mesh: Handle<Mesh>,
-    transform: Transform,
+fn piece_scene(kind: PieceKind, assets: &SceneAssets) -> Handle<WorldAsset> {
+    match kind {
+        PieceKind::Pawn => &assets.pawn_scene,
+        PieceKind::Knight => &assets.knight_scene,
+        PieceKind::Bishop => &assets.bishop_scene,
+        PieceKind::Rook => &assets.rook_scene,
+        PieceKind::Queen => &assets.queen_scene,
+        PieceKind::King => &assets.king_scene,
+        PieceKind::Archbishop => &assets.archbishop_scene,
+        PieceKind::Chancellor => &assets.chancellor_scene,
+    }
+    .clone()
 }
 
-fn piece_model(kind: PieceKind, assets: &SceneAssets) -> PieceModel {
-    let (mesh, center_x, min_y, center_z) = match kind {
-        PieceKind::Pawn => (&assets.pawn_mesh, -0.005_807, 0.0, -0.010_721),
-        PieceKind::Knight => (&assets.knight_mesh, 15.440_479, 0.0, 4.078_164),
-        PieceKind::Bishop => (&assets.bishop_mesh, -0.040_336, -21.983_118, 0.098_973),
-        PieceKind::Rook => (&assets.rook_mesh, -22.567_917, 0.0, -2.458_724),
-        PieceKind::Queen => (&assets.queen_mesh, 0.034_510, -34.450_596, 0.070_159),
-        PieceKind::King => (&assets.king_mesh, 11.008_427, 0.0, -1.965_424),
-        PieceKind::Archbishop => (&assets.archbishop_mesh, 0.060_687, -27.845_299, -0.058_388),
-        PieceKind::Chancellor => (&assets.chancellor_mesh, -0.008_492, -24.878_624, -0.414_659),
+fn apply_piece_material(
+    scene_ready: On<WorldInstanceReady>,
+    mut commands: Commands,
+    children: Query<&Children>,
+    piece_materials: Query<&PieceMaterial>,
+    meshes: Query<(), With<Mesh3d>>,
+) {
+    let Ok(material) = piece_materials.get(scene_ready.entity) else {
+        return;
     };
-    let rotation = if kind == PieceKind::Knight {
-        Quat::from_rotation_y(PI)
-    } else {
-        Quat::IDENTITY
-    };
-    let anchor = Vec3::new(center_x, min_y, center_z) * PIECE_MODEL_SCALE;
 
-    PieceModel {
-        mesh: mesh.clone(),
-        transform: Transform::from_translation(-(rotation * anchor))
-            .with_rotation(rotation)
-            .with_scale(Vec3::splat(PIECE_MODEL_SCALE)),
+    for descendant in children.iter_descendants(scene_ready.entity) {
+        if meshes.contains(descendant) {
+            commands
+                .entity(descendant)
+                .insert((MeshMaterial3d(material.0.clone()), Pickable::IGNORE));
+        }
     }
 }
 
