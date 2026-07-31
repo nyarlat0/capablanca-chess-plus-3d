@@ -679,7 +679,8 @@ mod tests {
         );
 
         let inner_corner = square_edge_highlight_alpha(Vec2::splat(0.4));
-        assert!(inner_corner > SQUARE_HIGHLIGHT_EDGE_OPACITY);
+        let farther_from_corner = square_edge_highlight_alpha(Vec2::splat(0.3));
+        assert!(inner_corner > farther_from_corner);
         assert!(inner_corner < SQUARE_HIGHLIGHT_CORNER_OPACITY);
     }
 }

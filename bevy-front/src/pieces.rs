@@ -15,7 +15,10 @@ use crate::{
 
 const MOVE_ANIMATION_SECONDS: f32 = 0.38;
 const MOVE_ARC_HEIGHT: f32 = 0.9;
-const PIECE_MODEL_SCALE: f32 = 0.018;
+// User-facing size multiplier for every piece. 1.0 is the original GLB size
+// after unit conversion; 1.2 makes all pieces 20% larger on the board.
+const PIECE_SCALE: f32 = 1.3;
+const GLB_TO_BOARD_SCALE: f32 = 0.018;
 
 pub(crate) struct PiecesPlugin;
 
@@ -198,7 +201,7 @@ fn spawn_piece(
             } else {
                 0.0
             }))
-            .with_scale(Vec3::splat(PIECE_MODEL_SCALE)),
+            .with_scale(Vec3::splat(GLB_TO_BOARD_SCALE * PIECE_SCALE)),
         PieceRoot,
         PieceMaterial(material),
         Name::new(format!(
