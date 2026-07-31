@@ -14,13 +14,14 @@ use crate::{
 };
 
 const MOVE_ANIMATION_SECONDS: f32 = 0.38;
+const MOVE_ARC_HEIGHT: f32 = 0.9;
 const PIECE_MODEL_SCALE: f32 = 0.018;
 
 pub(crate) struct PiecesPlugin;
 
 impl Plugin for PiecesPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PieceRenderState>()
+        app.init_resource::<PieceAnimationState>()
             .add_observer(apply_piece_material)
             .add_systems(Startup, setup_piece_assets)
             .add_systems(Update, sync_pieces.in_set(FrontendSet::PieceSync))
@@ -43,14 +44,33 @@ struct PieceAssets {
 }
 
 #[derive(Resource)]
-struct PieceRenderState {
-    generation: u64,
+pub(crate) struct PieceAnimationState {
+    rendered_generation: u64,
+    active_motions: usize,
 }
 
-impl Default for PieceRenderState {
+impl Default for PieceAnimationState {
     fn default() -> Self {
         Self {
-            generation: u64::MAX,
+            rendered_generation: u64::MAX,
+            active_motions: 0,
+        }
+    }
+}
+
+impl PieceAnimationState {
+    pub(crate) fn is_settled(&self, generation: u64) -> bool {
+        self.rendered_generation == generation && self.active_motions == 0
+    }
+
+    fn begin_generation(&mut self, generation: u64, active_motions: usize) {
+        self.rendered_generation = generation;
+        self.active_motions = active_motions;
+    }
+
+    fn finish_motion(&mut self, generation: u64) {
+        if self.rendered_generation == generation {
+            self.active_motions = self.active_motions.saturating_sub(1);
         }
     }
 }
@@ -66,6 +86,7 @@ struct PieceMotion {
     start: Vec3,
     end: Vec3,
     elapsed: f32,
+    generation: u64,
 }
 
 fn setup_piece_assets(
@@ -109,10 +130,10 @@ fn sync_pieces(
     mut commands: Commands,
     chess_match: Res<ChessMatch>,
     assets: Res<PieceAssets>,
-    mut rendered: ResMut<PieceRenderState>,
+    mut animation: ResMut<PieceAnimationState>,
     pieces: Query<Entity, With<PieceRoot>>,
 ) {
-    if rendered.generation == chess_match.generation {
+    if animation.rendered_generation == chess_match.generation {
         return;
     }
 
@@ -121,13 +142,22 @@ fn sync_pieces(
     for entity in &pieces {
         commands.entity(entity).despawn();
     }
+    let mut active_motions = 0;
     for (square, piece) in position.board().pieces() {
         let target = square_world(square, size);
         let start = animation_start(&chess_match, square, piece)
             .map_or(target, |source| square_world(source, size));
-        spawn_piece(&mut commands, &assets, square, piece, start, target);
+        active_motions += usize::from(spawn_piece(
+            &mut commands,
+            &assets,
+            square,
+            piece,
+            start,
+            target,
+            chess_match.generation,
+        ));
     }
-    rendered.generation = chess_match.generation;
+    animation.begin_generation(chess_match.generation, active_motions);
 }
 
 fn animation_start(chess_match: &ChessMatch, square: Square, piece: Piece) -> Option<Square> {
@@ -154,7 +184,8 @@ fn spawn_piece(
     piece: Piece,
     start: Vec3,
     target: Vec3,
-) {
+    generation: u64,
+) -> bool {
     let material = match piece.color {
         Side::White => assets.white_material.clone(),
         Side::Black => assets.black_material.clone(),
@@ -177,13 +208,16 @@ fn spawn_piece(
             square
         )),
     ));
-    if start != target {
+    let animated = start != target;
+    if animated {
         entity.insert(PieceMotion {
             start,
             end: target,
             elapsed: 0.0,
+            generation,
         });
     }
+    animated
 }
 
 fn piece_scene(kind: PieceKind, assets: &PieceAssets) -> Handle<WorldAsset> {
@@ -226,6 +260,7 @@ fn apply_piece_material(
 fn animate_pieces(
     mut commands: Commands,
     time: Res<Time>,
+    mut animation: ResMut<PieceAnimationState>,
     mut pieces: Query<(Entity, &mut Transform, &mut PieceMotion)>,
 ) {
     for (entity, mut transform, mut motion) in &mut pieces {
@@ -233,10 +268,30 @@ fn animate_pieces(
         let t = (motion.elapsed / MOVE_ANIMATION_SECONDS).min(1.0);
         let eased = t * t * (3.0 - 2.0 * t);
         transform.translation = motion.start.lerp(motion.end, eased);
-        transform.translation.y += 0.9 * 4.0 * t * (1.0 - t);
+        transform.translation.y += MOVE_ARC_HEIGHT * 4.0 * t * (1.0 - t);
         if t >= 1.0 {
             transform.translation = motion.end;
+            animation.finish_motion(motion.generation);
             commands.entity(entity).remove::<PieceMotion>();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn animation_settles_only_after_every_current_motion_finishes() {
+        let mut state = PieceAnimationState::default();
+        state.begin_generation(7, 2);
+        assert!(!state.is_settled(7));
+
+        state.finish_motion(6);
+        state.finish_motion(7);
+        assert!(!state.is_settled(7));
+
+        state.finish_motion(7);
+        assert!(state.is_settled(7));
     }
 }

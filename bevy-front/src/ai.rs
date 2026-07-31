@@ -8,6 +8,7 @@ use crate::{
     app::FrontendSet,
     game::{ChessMatch, Controller, apply_move, is_playable, outcome_message, side_name},
     menu::GameMenuState,
+    pieces::PieceAnimationState,
 };
 
 const DEFAULT_SEARCH_DEPTH: u8 = 3;
@@ -53,11 +54,13 @@ struct AiReply {
 fn start_ai_task(
     mut chess_match: ResMut<ChessMatch>,
     menu: Res<GameMenuState>,
+    animation: Res<PieceAnimationState>,
     settings: Res<AiSettings>,
     mut task: ResMut<AiTask>,
 ) {
     if menu.open
         || task.0.is_some()
+        || !animation.is_settled(chess_match.generation)
         || chess_match.pending_promotion.is_some()
         || !is_playable(chess_match.game.outcome())
     {

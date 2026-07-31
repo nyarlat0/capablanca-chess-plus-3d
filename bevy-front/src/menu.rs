@@ -1,5 +1,3 @@
-use std::f32::consts::PI;
-
 use bevy::{ecs::hierarchy::ChildSpawnerCommands, prelude::*};
 use bevy_panorbit_camera::PanOrbitCamera;
 use capablanca_chess_plus::{Color as Side, Variant};
@@ -8,6 +6,7 @@ use crate::{
     ai::AiTask,
     app::FrontendSet::Menu,
     game::{ChessMatch, Controller, restart_match},
+    scene::{CameraAutoTurn, start_camera_turn},
 };
 
 const ACCENT: Color = Color::srgb(0.98, 0.19, 0.52);
@@ -289,6 +288,7 @@ fn handle_menu_interactions(
     mut menu: ResMut<GameMenuState>,
     mut chess_match: ResMut<ChessMatch>,
     mut ai_task: ResMut<AiTask>,
+    mut auto_turn: ResMut<CameraAutoTurn>,
     mut camera: Single<&mut PanOrbitCamera>,
 ) {
     for (interaction, action) in &interactions {
@@ -317,7 +317,7 @@ fn handle_menu_interactions(
                 menu.active_mode = mode;
                 menu.active_side = side;
                 menu.open = false;
-                orient_camera_for_side(&mut camera, side);
+                start_camera_turn(&mut camera, &mut auto_turn, side);
             }
         }
     }
@@ -436,15 +436,6 @@ fn controllers_for(mode: GameMode, human_side: Side) -> [Controller; 2] {
             }
         }),
     }
-}
-
-fn orient_camera_for_side(camera: &mut PanOrbitCamera, side: Side) {
-    camera.target_yaw = match side {
-        Side::White => PI,
-        Side::Black => 0.0,
-    };
-    camera.enabled = true;
-    camera.force_update = true;
 }
 
 fn variant_label(variant: Variant) -> &'static str {

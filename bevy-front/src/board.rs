@@ -13,6 +13,7 @@ use crate::{
     app::FrontendSet,
     game::{ChessMatch, handle_square_selection},
     menu::GameMenuState,
+    pieces::PieceAnimationState,
     reflection::{
         PlanarBoardMaterial, PlanarReflectionExtension, PlanarReflectionImage,
         PlanarReflectionStartup,
@@ -393,9 +394,13 @@ fn on_square_click(
     click: On<Pointer<Click>>,
     squares: Query<&BoardSquare>,
     menu: Res<GameMenuState>,
+    animation: Res<PieceAnimationState>,
     mut chess_match: ResMut<ChessMatch>,
 ) {
-    if menu.open || click.button != PointerButton::Primary {
+    if menu.open
+        || !animation.is_settled(chess_match.generation)
+        || click.button != PointerButton::Primary
+    {
         return;
     }
     let Ok(clicked) = squares.get(click.entity) else {
