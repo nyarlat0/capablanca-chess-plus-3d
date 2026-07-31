@@ -1,12 +1,10 @@
 use bevy::prelude::*;
-use capablanca_chess_plus::{Color as Side, PieceKind, Variant};
+use capablanca_chess_plus::PieceKind;
 
 use crate::{
-    ai::{AiSettings, AiTask},
     app::FrontendSet,
-    game::{
-        ChessMatch, apply_move, promotion_prompt, restart_match, side_name, side_to_move_message,
-    },
+    game::{ChessMatch, apply_move, promotion_prompt, side_to_move_message},
+    menu::GameMenuState,
 };
 
 pub(crate) struct InputPlugin;
@@ -19,10 +17,12 @@ impl Plugin for InputPlugin {
 
 fn handle_keyboard(
     keyboard: Res<ButtonInput<KeyCode>>,
+    menu: Res<GameMenuState>,
     mut chess_match: ResMut<ChessMatch>,
-    mut ai_settings: ResMut<AiSettings>,
-    mut ai_task: ResMut<AiTask>,
 ) {
+    if menu.open {
+        return;
+    }
     if chess_match.pending_promotion.is_some() {
         if keyboard.just_pressed(KeyCode::Escape) {
             chess_match.pending_promotion = None;
@@ -60,54 +60,6 @@ fn handle_keyboard(
         chess_match.selected = None;
         chess_match.status = side_to_move_message(&chess_match);
     }
-
-    if keyboard.just_pressed(KeyCode::KeyN) || keyboard.just_pressed(KeyCode::Numpad0) {
-        let variant = chess_match.variant;
-        restart_match(&mut chess_match, variant);
-        ai_task.cancel();
-    }
-
-    if let Some(variant) = variant_key(&keyboard)
-        && variant != chess_match.variant
-    {
-        restart_match(&mut chess_match, variant);
-        ai_task.cancel();
-    }
-
-    let toggle_white =
-        keyboard.just_pressed(KeyCode::Digit1) || keyboard.just_pressed(KeyCode::Numpad1);
-    let toggle_black =
-        keyboard.just_pressed(KeyCode::Digit2) || keyboard.just_pressed(KeyCode::Numpad2);
-    if toggle_white || toggle_black {
-        let index = usize::from(toggle_black);
-        chess_match.controllers[index].toggle();
-        chess_match.selected = None;
-        chess_match.pending_promotion = None;
-        chess_match.status = format!(
-            "{} is now controlled by the {}.",
-            side_name(if index == 0 { Side::White } else { Side::Black }),
-            chess_match.controllers[index].label().to_ascii_lowercase()
-        );
-        ai_task.cancel();
-    }
-
-    let increase_depth = keyboard.just_pressed(KeyCode::Equal)
-        || keyboard.just_pressed(KeyCode::NumpadAdd)
-        || keyboard.just_pressed(KeyCode::ArrowUp);
-    let decrease_depth = keyboard.just_pressed(KeyCode::Minus)
-        || keyboard.just_pressed(KeyCode::NumpadSubtract)
-        || keyboard.just_pressed(KeyCode::ArrowDown);
-    let old_depth = ai_settings.depth;
-    if increase_depth {
-        ai_settings.increase_depth();
-    }
-    if decrease_depth {
-        ai_settings.decrease_depth();
-    }
-    if ai_settings.depth != old_depth {
-        chess_match.status = format!("Engine search depth set to {}.", ai_settings.depth);
-        ai_task.cancel();
-    }
 }
 
 fn promotion_key(keyboard: &ButtonInput<KeyCode>) -> Option<Option<PieceKind>> {
@@ -121,18 +73,4 @@ fn promotion_key(keyboard: &ButtonInput<KeyCode>) -> Option<Option<PieceKind>> {
     ]
     .into_iter()
     .find_map(|(key, kind)| keyboard.just_pressed(key).then_some(Some(kind)))
-}
-
-fn variant_key(keyboard: &ButtonInput<KeyCode>) -> Option<Variant> {
-    [
-        (KeyCode::F1, Variant::Capablanca),
-        (KeyCode::F2, Variant::Gothic),
-        (KeyCode::F3, Variant::Embassy),
-        (KeyCode::F4, Variant::Schoolbook),
-        (KeyCode::F5, Variant::Bird),
-        (KeyCode::F6, Variant::Carrera),
-        (KeyCode::F7, Variant::Grand),
-    ]
-    .into_iter()
-    .find_map(|(key, variant)| keyboard.just_pressed(key).then_some(variant))
 }

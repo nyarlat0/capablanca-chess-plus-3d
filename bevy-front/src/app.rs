@@ -3,11 +3,13 @@ use bevy_panorbit_camera::PanOrbitCameraPlugin;
 
 use crate::{
     ai::AiPlugin, board::BoardPlugin, game::GamePlugin, hud::HudPlugin, input::InputPlugin,
-    pieces::PiecesPlugin, reflection::PlanarReflectionPlugin, scene::EnvironmentPlugin,
+    menu::GameMenuPlugin, pieces::PiecesPlugin, reflection::PlanarReflectionPlugin,
+    scene::EnvironmentPlugin,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, SystemSet)]
 pub(crate) enum FrontendSet {
+    Menu,
     Input,
     AiPoll,
     AiStart,
@@ -25,6 +27,7 @@ impl Plugin for FrontendPlugin {
         app.configure_sets(
             Update,
             (
+                FrontendSet::Menu,
                 FrontendSet::Input,
                 FrontendSet::AiPoll,
                 FrontendSet::AiStart,
@@ -38,6 +41,7 @@ impl Plugin for FrontendPlugin {
         )
         .add_plugins((
             GamePlugin,
+            GameMenuPlugin,
             AiPlugin,
             InputPlugin,
             EnvironmentPlugin,

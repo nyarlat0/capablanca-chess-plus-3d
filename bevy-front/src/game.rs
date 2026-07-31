@@ -18,22 +18,6 @@ pub(crate) enum Controller {
     Computer,
 }
 
-impl Controller {
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Human => "Human",
-            Self::Computer => "Computer",
-        }
-    }
-
-    pub(crate) fn toggle(&mut self) {
-        *self = match self {
-            Self::Human => Self::Computer,
-            Self::Computer => Self::Human,
-        };
-    }
-}
-
 #[derive(Resource)]
 pub(crate) struct ChessMatch {
     pub(crate) game: Game,
@@ -48,11 +32,11 @@ pub(crate) struct ChessMatch {
 
 impl Default for ChessMatch {
     fn default() -> Self {
-        let variant = Variant::Capablanca;
+        let variant = Variant::Gothic;
         Self {
             game: Game::new(variant.starting_position()),
             variant,
-            controllers: [Controller::Human, Controller::Computer],
+            controllers: [Controller::Human, Controller::Human],
             selected: None,
             pending_promotion: None,
             last_move: None,

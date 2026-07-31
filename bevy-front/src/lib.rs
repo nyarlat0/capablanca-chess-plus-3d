@@ -4,6 +4,7 @@ mod board;
 mod game;
 mod hud;
 mod input;
+mod menu;
 mod pieces;
 mod reflection;
 mod scene;

@@ -7,11 +7,10 @@ use capablanca_chess_plus::{Engine, SearchLimits, SearchResult};
 use crate::{
     app::FrontendSet,
     game::{ChessMatch, Controller, apply_move, is_playable, outcome_message, side_name},
+    menu::GameMenuState,
 };
 
 const DEFAULT_SEARCH_DEPTH: u8 = 3;
-const MIN_SEARCH_DEPTH: u8 = 1;
-const MAX_SEARCH_DEPTH: u8 = 6;
 
 pub(crate) struct AiPlugin;
 
@@ -37,16 +36,6 @@ impl Default for AiSettings {
     }
 }
 
-impl AiSettings {
-    pub(crate) fn increase_depth(&mut self) {
-        self.depth = self.depth.saturating_add(1).min(MAX_SEARCH_DEPTH);
-    }
-
-    pub(crate) fn decrease_depth(&mut self) {
-        self.depth = self.depth.saturating_sub(1).max(MIN_SEARCH_DEPTH);
-    }
-}
-
 #[derive(Resource, Default)]
 pub(crate) struct AiTask(Option<Task<AiReply>>);
 
@@ -63,10 +52,12 @@ struct AiReply {
 
 fn start_ai_task(
     mut chess_match: ResMut<ChessMatch>,
+    menu: Res<GameMenuState>,
     settings: Res<AiSettings>,
     mut task: ResMut<AiTask>,
 ) {
-    if task.0.is_some()
+    if menu.open
+        || task.0.is_some()
         || chess_match.pending_promotion.is_some()
         || !is_playable(chess_match.game.outcome())
     {
@@ -87,7 +78,14 @@ fn start_ai_task(
     }));
 }
 
-fn poll_ai_task(mut chess_match: ResMut<ChessMatch>, mut task: ResMut<AiTask>) {
+fn poll_ai_task(
+    menu: Res<GameMenuState>,
+    mut chess_match: ResMut<ChessMatch>,
+    mut task: ResMut<AiTask>,
+) {
+    if menu.open {
+        return;
+    }
     let Some(ai_task) = task.0.as_mut() else {
         return;
     };

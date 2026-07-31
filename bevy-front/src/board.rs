@@ -12,6 +12,7 @@ use capablanca_chess_plus::{BoardSize, GameOutcome, MoveKind, Square};
 use crate::{
     app::FrontendSet,
     game::{ChessMatch, handle_square_selection},
+    menu::GameMenuState,
     reflection::{
         PlanarBoardMaterial, PlanarReflectionExtension, PlanarReflectionImage,
         PlanarReflectionStartup,
@@ -391,9 +392,10 @@ fn wood_mesh(size: Vec3) -> Mesh {
 fn on_square_click(
     click: On<Pointer<Click>>,
     squares: Query<&BoardSquare>,
+    menu: Res<GameMenuState>,
     mut chess_match: ResMut<ChessMatch>,
 ) {
-    if click.button != PointerButton::Primary {
+    if menu.open || click.button != PointerButton::Primary {
         return;
     }
     let Ok(clicked) = squares.get(click.entity) else {
