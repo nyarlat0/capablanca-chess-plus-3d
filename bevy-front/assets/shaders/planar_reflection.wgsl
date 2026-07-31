@@ -11,8 +11,8 @@
 }
 
 struct PlanarReflectionMaterial {
-    // RGB is the regular square highlight emission; A is reflection strength.
-    emissive_and_strength: vec4<f32>,
+    // X is reflection strength. Highlights render as separate unlit geometry.
+    reflection_strength: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> material: PlanarReflectionMaterial;
@@ -31,9 +31,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let reflected = textureSample(emissive_texture, emissive_sampler, reflection_uv);
 
     // pbr_input sampled the reflection image using the mesh UVs because it is
-    // bound as the StandardMaterial emissive texture. Restore the actual board
-    // highlight before evaluating the normal PBR lighting.
-    pbr_input.material.emissive = vec4<f32>(material.emissive_and_strength.rgb, 1.0);
+    // bound as the StandardMaterial emissive texture. Remove that accidental
+    // emissive contribution before evaluating the normal PBR lighting.
+    pbr_input.material.emissive = vec4<f32>(0.0, 0.0, 0.0, 1.0);
 
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);
@@ -44,7 +44,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let smoothness = 1.0 - clamp(pbr_input.material.perceptual_roughness, 0.0, 1.0);
     let ndotv = clamp(dot(pbr_input.N, pbr_input.V), 0.0, 1.0);
     let fresnel = 0.04 + 0.96 * pow(1.0 - ndotv, 5.0);
-    let strength = material.emissive_and_strength.a;
+    let strength = material.reflection_strength.x;
     let reflection_weight = clamp(
         reflected.a * strength * smoothness * mix(0.75, 1.0, fresnel),
         0.0,

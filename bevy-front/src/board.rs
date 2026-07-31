@@ -1,10 +1,12 @@
 use bevy::{
-    color::LinearRgba,
+    asset::RenderAssetUsages,
     ecs::system::SystemParam,
     image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor},
+    light::NotShadowCaster,
     mesh::VertexAttributeValues,
     pbr::ExtendedMaterial,
     prelude::*,
+    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
 use bevy_panorbit_camera::PanOrbitCamera;
 use capablanca_chess_plus::{BoardSize, GameOutcome, MoveKind, Square};
@@ -25,6 +27,19 @@ use crate::{
 // details from turning into mirror-like speckles. Order: black, white.
 const MARBLE_ROUGHNESS_FACTORS: [f32; 2] = [1.6, 2.4];
 const MARBLE_REFLECTION_STRENGTH: f32 = 0.72;
+const HIGHLIGHT_PLANE_SIZE: f32 = 0.98;
+const HIGHLIGHT_PLANE_HEIGHT: f32 = 0.003;
+const HIGHLIGHT_MASK_SIZE: u32 = 128;
+const SMALL_HIGHLIGHT_RADIUS: f32 = 0.13;
+const HIGHLIGHT_FEATHER: f32 = 0.1;
+const HIGHLIGHT_HALO_ALPHA: f32 = 0.14;
+// Square highlight tuning. Distances are measured from the cell center: 0.0 is
+// the center and 0.5 is an edge. The straight perimeter stays subtle, while
+// both axes must approach an edge before the denser corner accent appears.
+const SQUARE_HIGHLIGHT_FADE_START: f32 = 0.24;
+const SQUARE_HIGHLIGHT_CORNER_START: f32 = 0.1;
+const SQUARE_HIGHLIGHT_EDGE_OPACITY: f32 = 0.8;
+const SQUARE_HIGHLIGHT_CORNER_OPACITY: f32 = 1.0;
 const WOOD_ROUGHNESS_FACTOR: f32 = 1.45;
 const WOOD_TEXTURE_WORLD_SIZE: f32 = 3.0;
 
@@ -37,24 +52,24 @@ impl Plugin for BoardPlugin {
             .add_systems(Update, sync_board_geometry.in_set(FrontendSet::BoardSync))
             .add_systems(
                 Update,
-                update_square_materials.in_set(FrontendSet::Highlights),
+                update_square_highlights.in_set(FrontendSet::Highlights),
             );
     }
 }
 
 #[derive(Resource)]
 struct BoardAssets {
-    square_materials: SquareMaterials,
+    square_materials: [Handle<PlanarBoardMaterial>; 2],
+    highlight_materials: HighlightMaterials,
     wood_material: Handle<StandardMaterial>,
 }
 
-struct SquareMaterials {
-    normal: [Handle<PlanarBoardMaterial>; 2],
-    selected: [Handle<PlanarBoardMaterial>; 2],
-    legal: [Handle<PlanarBoardMaterial>; 2],
-    capture: [Handle<PlanarBoardMaterial>; 2],
-    last: [Handle<PlanarBoardMaterial>; 2],
-    check: [Handle<PlanarBoardMaterial>; 2],
+struct HighlightMaterials {
+    selected: [Handle<StandardMaterial>; 2],
+    legal: [Handle<StandardMaterial>; 2],
+    capture: [Handle<StandardMaterial>; 2],
+    last: Handle<StandardMaterial>,
+    check: [Handle<StandardMaterial>; 2],
 }
 
 #[derive(Resource, Default)]
@@ -64,6 +79,9 @@ struct BoardRenderState {
 
 #[derive(Component, Clone, Copy)]
 struct BoardSquare(Square);
+
+#[derive(Component, Clone, Copy)]
+struct BoardHighlight(Square);
 
 #[derive(Component)]
 struct BoardPart;
@@ -81,6 +99,7 @@ fn setup_board_assets(
     reflection_image: Res<PlanarReflectionImage>,
     mut marble_materials: ResMut<Assets<PlanarBoardMaterial>>,
     mut standard_materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     let white_marble = asset_server.load("textures/white_marble_color.jpg");
     let black_marble = asset_server.load("textures/black_marble_color.jpg");
@@ -100,65 +119,49 @@ fn setup_board_assets(
     let wood_roughness =
         load_repeating_texture(&asset_server, "textures/wood_roughness.jpg", false);
 
-    let square_materials = SquareMaterials {
-        normal: marble_material_pair(
-            &mut marble_materials,
-            &reflection_image.0,
-            marble_textures,
-            marble_normals,
-            marble_roughness,
-            Color::WHITE,
-            LinearRgba::BLACK,
+    let square_materials = marble_material_pair(
+        &mut marble_materials,
+        &reflection_image.0,
+        marble_textures,
+        marble_normals,
+        marble_roughness,
+    );
+    // Empty destinations use a compact circle. Occupied squares and the last
+    // move use a square edge gradient that leaves the piece itself unobscured.
+    let highlight_masks = [
+        images.add(radial_highlight_mask(SMALL_HIGHLIGHT_RADIUS)),
+        images.add(square_edge_highlight_mask()),
+    ];
+    let highlight_materials = HighlightMaterials {
+        selected: masked_highlight_materials(
+            &mut standard_materials,
+            &highlight_masks,
+            Color::srgb(1.0, 0.48, 0.01),
         ),
-        selected: marble_material_pair(
-            &mut marble_materials,
-            &reflection_image.0,
-            marble_textures,
-            marble_normals,
-            marble_roughness,
-            Color::srgb(1.0, 0.66, 0.08),
-            LinearRgba::rgb(0.7, 0.28, 0.01),
+        legal: masked_highlight_materials(
+            &mut standard_materials,
+            &highlight_masks,
+            Color::srgb(0.98, 0.08, 0.46),
         ),
-        legal: marble_material_pair(
-            &mut marble_materials,
-            &reflection_image.0,
-            marble_textures,
-            marble_normals,
-            marble_roughness,
-            Color::srgb(0.23, 0.72, 0.37),
-            LinearRgba::rgb(0.02, 0.35, 0.05),
+        capture: masked_highlight_materials(
+            &mut standard_materials,
+            &highlight_masks,
+            Color::srgb(1.0, 0.015, 0.01),
         ),
-        capture: marble_material_pair(
-            &mut marble_materials,
-            &reflection_image.0,
-            marble_textures,
-            marble_normals,
-            marble_roughness,
-            Color::srgb(0.88, 0.22, 0.2),
-            LinearRgba::rgb(0.45, 0.015, 0.01),
-        ),
-        last: marble_material_pair(
-            &mut marble_materials,
-            &reflection_image.0,
-            marble_textures,
-            marble_normals,
-            marble_roughness,
-            Color::srgb(0.2, 0.52, 0.9),
-            LinearRgba::rgb(0.015, 0.12, 0.45),
-        ),
-        check: marble_material_pair(
-            &mut marble_materials,
-            &reflection_image.0,
-            marble_textures,
-            marble_normals,
-            marble_roughness,
-            Color::srgb(0.86, 0.04, 0.08),
-            LinearRgba::rgb(0.8, 0.0, 0.01),
+        last: standard_materials.add(highlight_material(
+            Color::srgb(0.025, 0.3, 1.0),
+            Some(highlight_masks[1].clone()),
+        )),
+        check: masked_highlight_materials(
+            &mut standard_materials,
+            &highlight_masks,
+            Color::srgb(1.0, 0.0, 0.015),
         ),
     };
 
     commands.insert_resource(BoardAssets {
         square_materials,
+        highlight_materials,
         wood_material: standard_materials.add(StandardMaterial {
             base_color: Color::WHITE,
             base_color_texture: Some(wood_color),
@@ -179,13 +182,11 @@ fn marble_material_pair(
     color_textures: [&Handle<Image>; 2],
     normal_maps: [&Handle<Image>; 2],
     roughness_maps: [&Handle<Image>; 2],
-    tint: Color,
-    emissive: LinearRgba,
 ) -> [Handle<PlanarBoardMaterial>; 2] {
     std::array::from_fn(|index| {
         materials.add(ExtendedMaterial {
             base: StandardMaterial {
-                base_color: tint,
+                base_color: Color::WHITE,
                 base_color_texture: Some(color_textures[index].clone()),
                 normal_map_texture: Some(normal_maps[index].clone()),
                 metallic_roughness_texture: Some(roughness_maps[index].clone()),
@@ -197,9 +198,110 @@ fn marble_material_pair(
                 clearcoat_perceptual_roughness: 0.18,
                 ..default()
             },
-            extension: PlanarReflectionExtension::new(emissive, MARBLE_REFLECTION_STRENGTH),
+            extension: PlanarReflectionExtension::new(MARBLE_REFLECTION_STRENGTH),
         })
     })
+}
+
+fn masked_highlight_materials(
+    materials: &mut Assets<StandardMaterial>,
+    masks: &[Handle<Image>; 2],
+    color: Color,
+) -> [Handle<StandardMaterial>; 2] {
+    std::array::from_fn(|index| {
+        materials.add(highlight_material(color, Some(masks[index].clone())))
+    })
+}
+
+fn highlight_material(color: Color, mask: Option<Handle<Image>>) -> StandardMaterial {
+    StandardMaterial {
+        base_color: color,
+        base_color_texture: mask,
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        fog_enabled: false,
+        ..default()
+    }
+}
+
+fn radial_highlight_mask(core_radius: f32) -> Image {
+    let mut image = Image::new_fill(
+        Extent3d {
+            width: HIGHLIGHT_MASK_SIZE,
+            height: HIGHLIGHT_MASK_SIZE,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &[u8::MAX; 4],
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    );
+    let size = HIGHLIGHT_MASK_SIZE as f32;
+    let pixels = image
+        .data
+        .as_mut()
+        .expect("a newly filled highlight image has pixel data");
+    for y in 0..HIGHLIGHT_MASK_SIZE {
+        for x in 0..HIGHLIGHT_MASK_SIZE {
+            let uv = Vec2::new((x as f32 + 0.5) / size, (y as f32 + 0.5) / size);
+            let distance = (uv - Vec2::splat(0.5)).length();
+            let alpha = radial_highlight_alpha(distance, core_radius);
+            let offset = ((y * HIGHLIGHT_MASK_SIZE + x) * 4 + 3) as usize;
+            pixels[offset] = (alpha * f32::from(u8::MAX)).round() as u8;
+        }
+    }
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor::linear());
+    image
+}
+
+fn radial_highlight_alpha(distance: f32, core_radius: f32) -> f32 {
+    let feather_progress = ((distance - core_radius) / HIGHLIGHT_FEATHER).clamp(0.0, 1.0);
+    let smooth = feather_progress * feather_progress * (3.0 - 2.0 * feather_progress);
+    1.0 - smooth * (1.0 - HIGHLIGHT_HALO_ALPHA)
+}
+
+fn square_edge_highlight_mask() -> Image {
+    let mut image = Image::new_fill(
+        Extent3d {
+            width: HIGHLIGHT_MASK_SIZE,
+            height: HIGHLIGHT_MASK_SIZE,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &[u8::MAX; 4],
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    );
+    let size = HIGHLIGHT_MASK_SIZE as f32;
+    let pixels = image
+        .data
+        .as_mut()
+        .expect("a newly filled highlight image has pixel data");
+    for y in 0..HIGHLIGHT_MASK_SIZE {
+        for x in 0..HIGHLIGHT_MASK_SIZE {
+            let uv = Vec2::new((x as f32 + 0.5) / size, (y as f32 + 0.5) / size);
+            let centered = (uv - Vec2::splat(0.5)).abs();
+            let alpha = square_edge_highlight_alpha(centered);
+            let offset = ((y * HIGHLIGHT_MASK_SIZE + x) * 4 + 3) as usize;
+            pixels[offset] = (alpha * f32::from(u8::MAX)).round() as u8;
+        }
+    }
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor::linear());
+    image
+}
+
+fn square_edge_highlight_alpha(centered: Vec2) -> f32 {
+    let edge_fade = smoothstep(SQUARE_HIGHLIGHT_FADE_START, 0.5, centered.max_element());
+    let corner = smoothstep(SQUARE_HIGHLIGHT_CORNER_START, 0.5, centered.x)
+        * smoothstep(SQUARE_HIGHLIGHT_CORNER_START, 0.5, centered.y);
+    let opacity = SQUARE_HIGHLIGHT_EDGE_OPACITY
+        + (SQUARE_HIGHLIGHT_CORNER_OPACITY - SQUARE_HIGHLIGHT_EDGE_OPACITY) * corner;
+    edge_fade * opacity
+}
+
+fn smoothstep(start: f32, end: f32, value: f32) -> f32 {
+    let progress = ((value - start) / (end - start)).clamp(0.0, 1.0);
+    progress * progress * (3.0 - 2.0 * progress)
 }
 
 fn load_linear_texture(asset_server: &AssetServer, path: &'static str) -> Handle<Image> {
@@ -268,6 +370,11 @@ fn spawn_board(
     let depth = f32::from(size.ranks());
     let outer_width = width + 0.8;
     let outer_depth = depth + 0.8;
+    let highlight_mesh = meshes.add(
+        Plane3d::default()
+            .mesh()
+            .size(HIGHLIGHT_PLANE_SIZE, HIGHLIGHT_PLANE_SIZE),
+    );
 
     let base_mesh = meshes.add(wood_mesh(Vec3::new(outer_width, 0.18, outer_depth)));
     spawn_wood_part(
@@ -301,7 +408,7 @@ fn spawn_board(
     for rank in 0..size.ranks() {
         for file in 0..size.files() {
             let square = Square::new(file, rank);
-            let material = assets.square_materials.normal[material_index(square)].clone();
+            let material = assets.square_materials[material_index(square)].clone();
             commands
                 .spawn((
                     Mesh3d(meshes.add(square_mesh(square, size))),
@@ -310,6 +417,18 @@ fn spawn_board(
                     BoardSquare(square),
                 ))
                 .observe(on_square_click);
+            commands.spawn((
+                Mesh3d(highlight_mesh.clone()),
+                MeshMaterial3d(assets.highlight_materials.legal[0].clone()),
+                Transform::from_translation(
+                    square_world(square, size) + Vec3::Y * HIGHLIGHT_PLANE_HEIGHT,
+                ),
+                Visibility::Hidden,
+                Pickable::IGNORE,
+                NotShadowCaster,
+                BoardHighlight(square),
+                BoardPart,
+            ));
         }
     }
 }
@@ -409,10 +528,14 @@ fn on_square_click(
     handle_square_selection(&mut chess_match, clicked.0);
 }
 
-fn update_square_materials(
+fn update_square_highlights(
     chess_match: Res<ChessMatch>,
     assets: Res<BoardAssets>,
-    mut squares: Query<(&BoardSquare, &mut MeshMaterial3d<PlanarBoardMaterial>)>,
+    mut highlights: Query<(
+        &BoardHighlight,
+        &mut MeshMaterial3d<StandardMaterial>,
+        &mut Visibility,
+    )>,
 ) {
     let position = chess_match.game.position();
     let selected_moves = chess_match.selected.map_or_else(Vec::new, |selected| {
@@ -426,13 +549,13 @@ fn update_square_materials(
         .then(|| position.board().king_square(position.side_to_move()))
         .flatten();
 
-    for (board_square, mut material) in &mut squares {
-        let square = board_square.0;
-        let index = material_index(square);
-        material.0 = if checked_king == Some(square) {
-            assets.square_materials.check[index].clone()
+    for (board_highlight, mut material, mut visibility) in &mut highlights {
+        let square = board_highlight.0;
+        let occupied_index = usize::from(position.board().piece_at(square).is_some());
+        let highlighted_material = if checked_king == Some(square) {
+            Some(&assets.highlight_materials.check[occupied_index])
         } else if chess_match.selected == Some(square) {
-            assets.square_materials.selected[index].clone()
+            Some(&assets.highlight_materials.selected[occupied_index])
         } else if let Some(chess_move) = selected_moves
             .iter()
             .find(|chess_move| chess_move.to == square)
@@ -440,18 +563,24 @@ fn update_square_materials(
             if matches!(chess_move.kind, MoveKind::EnPassant)
                 || position.board().piece_at(square).is_some()
             {
-                assets.square_materials.capture[index].clone()
+                Some(&assets.highlight_materials.capture[occupied_index])
             } else {
-                assets.square_materials.legal[index].clone()
+                Some(&assets.highlight_materials.legal[occupied_index])
             }
         } else if chess_match
             .last_move
             .is_some_and(|last| last.from == square || last.to == square)
         {
-            assets.square_materials.last[index].clone()
+            Some(&assets.highlight_materials.last)
         } else {
-            assets.square_materials.normal[index].clone()
+            None
         };
+        if let Some(highlighted_material) = highlighted_material {
+            material.0 = highlighted_material.clone();
+            *visibility = Visibility::Visible;
+        } else {
+            *visibility = Visibility::Hidden;
+        }
     }
 }
 
@@ -513,5 +642,44 @@ mod tests {
                 f32::from(square.rank() + 1) / f32::from(size.ranks()),
             )
         );
+    }
+
+    #[test]
+    fn highlights_use_a_surface_independent_unlit_overlay() {
+        let material = highlight_material(Color::srgba(0.1, 0.8, 0.2, 0.5), None);
+        assert!(material.unlit);
+        assert_eq!(material.alpha_mode, AlphaMode::Blend);
+        assert!(!material.fog_enabled);
+    }
+
+    #[test]
+    fn radial_highlight_has_an_opaque_core_and_transparent_cell_halo() {
+        assert_eq!(radial_highlight_alpha(0.0, SMALL_HIGHLIGHT_RADIUS), 1.0);
+        assert!(
+            (radial_highlight_alpha(1.0, SMALL_HIGHLIGHT_RADIUS) - HIGHLIGHT_HALO_ALPHA).abs()
+                < f32::EPSILON
+        );
+        let feather = radial_highlight_alpha(
+            SMALL_HIGHLIGHT_RADIUS + HIGHLIGHT_FEATHER * 0.5,
+            SMALL_HIGHLIGHT_RADIUS,
+        );
+        assert!(feather > HIGHLIGHT_HALO_ALPHA && feather < 1.0);
+    }
+
+    #[test]
+    fn occupied_highlight_is_subtle_at_edges_and_dense_only_in_corners() {
+        assert_eq!(square_edge_highlight_alpha(Vec2::ZERO), 0.0);
+        assert_eq!(
+            square_edge_highlight_alpha(Vec2::new(0.5, 0.0)),
+            SQUARE_HIGHLIGHT_EDGE_OPACITY
+        );
+        assert_eq!(
+            square_edge_highlight_alpha(Vec2::splat(0.5)),
+            SQUARE_HIGHLIGHT_CORNER_OPACITY
+        );
+
+        let inner_corner = square_edge_highlight_alpha(Vec2::splat(0.4));
+        assert!(inner_corner > SQUARE_HIGHLIGHT_EDGE_OPACITY);
+        assert!(inner_corner < SQUARE_HIGHLIGHT_CORNER_OPACITY);
     }
 }
