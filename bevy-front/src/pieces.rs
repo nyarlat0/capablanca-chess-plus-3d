@@ -1,12 +1,16 @@
 use std::f32::consts::PI;
 
-use bevy::{gltf::GltfAssetLabel, prelude::*, world_serialization::WorldInstanceReady};
+use bevy::{
+    camera::visibility::RenderLayers, gltf::GltfAssetLabel, prelude::*,
+    world_serialization::WorldInstanceReady,
+};
 use capablanca_chess_plus::{Color as Side, MoveKind, Piece, PieceKind, Square};
 
 use crate::{
     app::FrontendSet,
     board::square_world,
     game::{ChessMatch, piece_name, side_name},
+    reflection::ReflectedPieceMesh,
 };
 
 const MOVE_ANIMATION_SECONDS: f32 = 0.38;
@@ -52,7 +56,7 @@ impl Default for PieceRenderState {
 }
 
 #[derive(Component)]
-struct PieceRoot;
+pub(crate) struct PieceRoot;
 
 #[derive(Component)]
 struct PieceMaterial(Handle<StandardMaterial>);
@@ -209,9 +213,12 @@ fn apply_piece_material(
 
     for descendant in children.iter_descendants(scene_ready.entity) {
         if meshes.contains(descendant) {
-            commands
-                .entity(descendant)
-                .insert((MeshMaterial3d(material.0.clone()), Pickable::IGNORE));
+            commands.entity(descendant).insert((
+                MeshMaterial3d(material.0.clone()),
+                RenderLayers::layer(0).with(1),
+                ReflectedPieceMesh,
+                Pickable::IGNORE,
+            ));
         }
     }
 }

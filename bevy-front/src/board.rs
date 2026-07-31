@@ -3,6 +3,7 @@ use bevy::{
     ecs::system::SystemParam,
     image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor},
     mesh::VertexAttributeValues,
+    pbr::ExtendedMaterial,
     prelude::*,
 };
 use bevy_panorbit_camera::PanOrbitCamera;
@@ -11,12 +12,17 @@ use capablanca_chess_plus::{BoardSize, GameOutcome, MoveKind, Square};
 use crate::{
     app::FrontendSet,
     game::{ChessMatch, handle_square_selection},
+    reflection::{
+        PlanarBoardMaterial, PlanarReflectionExtension, PlanarReflectionImage,
+        PlanarReflectionStartup,
+    },
 };
 
 // The source maps have different average levels. These factors keep both marble
 // colors near the same polished-but-stable roughness and prevent normal-map
 // details from turning into mirror-like speckles. Order: black, white.
 const MARBLE_ROUGHNESS_FACTORS: [f32; 2] = [1.6, 2.4];
+const MARBLE_REFLECTION_STRENGTH: f32 = 0.72;
 const WOOD_ROUGHNESS_FACTOR: f32 = 1.45;
 const WOOD_TEXTURE_WORLD_SIZE: f32 = 3.0;
 
@@ -25,7 +31,7 @@ pub(crate) struct BoardPlugin;
 impl Plugin for BoardPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BoardRenderState>()
-            .add_systems(Startup, setup_board_assets)
+            .add_systems(Startup, setup_board_assets.after(PlanarReflectionStartup))
             .add_systems(Update, sync_board_geometry.in_set(FrontendSet::BoardSync))
             .add_systems(
                 Update,
@@ -41,12 +47,12 @@ struct BoardAssets {
 }
 
 struct SquareMaterials {
-    normal: [Handle<StandardMaterial>; 2],
-    selected: [Handle<StandardMaterial>; 2],
-    legal: [Handle<StandardMaterial>; 2],
-    capture: [Handle<StandardMaterial>; 2],
-    last: [Handle<StandardMaterial>; 2],
-    check: [Handle<StandardMaterial>; 2],
+    normal: [Handle<PlanarBoardMaterial>; 2],
+    selected: [Handle<PlanarBoardMaterial>; 2],
+    legal: [Handle<PlanarBoardMaterial>; 2],
+    capture: [Handle<PlanarBoardMaterial>; 2],
+    last: [Handle<PlanarBoardMaterial>; 2],
+    check: [Handle<PlanarBoardMaterial>; 2],
 }
 
 #[derive(Resource, Default)]
@@ -70,7 +76,9 @@ struct BoardScene<'w, 's> {
 fn setup_board_assets(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    reflection_image: Res<PlanarReflectionImage>,
+    mut marble_materials: ResMut<Assets<PlanarBoardMaterial>>,
+    mut standard_materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let white_marble = asset_server.load("textures/white_marble_color.jpg");
     let black_marble = asset_server.load("textures/black_marble_color.jpg");
@@ -92,7 +100,8 @@ fn setup_board_assets(
 
     let square_materials = SquareMaterials {
         normal: marble_material_pair(
-            &mut materials,
+            &mut marble_materials,
+            &reflection_image.0,
             marble_textures,
             marble_normals,
             marble_roughness,
@@ -100,7 +109,8 @@ fn setup_board_assets(
             LinearRgba::BLACK,
         ),
         selected: marble_material_pair(
-            &mut materials,
+            &mut marble_materials,
+            &reflection_image.0,
             marble_textures,
             marble_normals,
             marble_roughness,
@@ -108,7 +118,8 @@ fn setup_board_assets(
             LinearRgba::rgb(0.7, 0.28, 0.01),
         ),
         legal: marble_material_pair(
-            &mut materials,
+            &mut marble_materials,
+            &reflection_image.0,
             marble_textures,
             marble_normals,
             marble_roughness,
@@ -116,7 +127,8 @@ fn setup_board_assets(
             LinearRgba::rgb(0.02, 0.35, 0.05),
         ),
         capture: marble_material_pair(
-            &mut materials,
+            &mut marble_materials,
+            &reflection_image.0,
             marble_textures,
             marble_normals,
             marble_roughness,
@@ -124,7 +136,8 @@ fn setup_board_assets(
             LinearRgba::rgb(0.45, 0.015, 0.01),
         ),
         last: marble_material_pair(
-            &mut materials,
+            &mut marble_materials,
+            &reflection_image.0,
             marble_textures,
             marble_normals,
             marble_roughness,
@@ -132,7 +145,8 @@ fn setup_board_assets(
             LinearRgba::rgb(0.015, 0.12, 0.45),
         ),
         check: marble_material_pair(
-            &mut materials,
+            &mut marble_materials,
+            &reflection_image.0,
             marble_textures,
             marble_normals,
             marble_roughness,
@@ -143,7 +157,7 @@ fn setup_board_assets(
 
     commands.insert_resource(BoardAssets {
         square_materials,
-        wood_material: materials.add(StandardMaterial {
+        wood_material: standard_materials.add(StandardMaterial {
             base_color: Color::WHITE,
             base_color_texture: Some(wood_color),
             normal_map_texture: Some(wood_normal),
@@ -158,26 +172,30 @@ fn setup_board_assets(
 }
 
 fn marble_material_pair(
-    materials: &mut Assets<StandardMaterial>,
+    materials: &mut Assets<PlanarBoardMaterial>,
+    reflection_image: &Handle<Image>,
     color_textures: [&Handle<Image>; 2],
     normal_maps: [&Handle<Image>; 2],
     roughness_maps: [&Handle<Image>; 2],
     tint: Color,
     emissive: LinearRgba,
-) -> [Handle<StandardMaterial>; 2] {
+) -> [Handle<PlanarBoardMaterial>; 2] {
     std::array::from_fn(|index| {
-        materials.add(StandardMaterial {
-            base_color: tint,
-            base_color_texture: Some(color_textures[index].clone()),
-            normal_map_texture: Some(normal_maps[index].clone()),
-            metallic_roughness_texture: Some(roughness_maps[index].clone()),
-            emissive,
-            metallic: 0.0,
-            perceptual_roughness: MARBLE_ROUGHNESS_FACTORS[index],
-            reflectance: 0.45,
-            clearcoat: 0.25,
-            clearcoat_perceptual_roughness: 0.18,
-            ..default()
+        materials.add(ExtendedMaterial {
+            base: StandardMaterial {
+                base_color: tint,
+                base_color_texture: Some(color_textures[index].clone()),
+                normal_map_texture: Some(normal_maps[index].clone()),
+                metallic_roughness_texture: Some(roughness_maps[index].clone()),
+                emissive_texture: Some(reflection_image.clone()),
+                metallic: 0.0,
+                perceptual_roughness: MARBLE_ROUGHNESS_FACTORS[index],
+                reflectance: 0.45,
+                clearcoat: 0.25,
+                clearcoat_perceptual_roughness: 0.18,
+                ..default()
+            },
+            extension: PlanarReflectionExtension::new(emissive, MARBLE_REFLECTION_STRENGTH),
         })
     })
 }
@@ -387,7 +405,7 @@ fn on_square_click(
 fn update_square_materials(
     chess_match: Res<ChessMatch>,
     assets: Res<BoardAssets>,
-    mut squares: Query<(&BoardSquare, &mut MeshMaterial3d<StandardMaterial>)>,
+    mut squares: Query<(&BoardSquare, &mut MeshMaterial3d<PlanarBoardMaterial>)>,
 ) {
     let position = chess_match.game.position();
     let selected_moves = chess_match.selected.map_or_else(Vec::new, |selected| {
