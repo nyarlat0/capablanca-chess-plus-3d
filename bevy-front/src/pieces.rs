@@ -4,19 +4,24 @@ use bevy::{
     camera::visibility::RenderLayers, gltf::GltfAssetLabel, prelude::*,
     world_serialization::WorldInstanceReady,
 };
-use capablanca_chess_plus::{Color as Side, MoveKind, Piece, PieceKind, Square};
+use capablanca_chess_plus::{BoardSize, Color as Side, MoveKind, Piece, PieceKind, Square};
 
 use crate::{
     app::FrontendSet,
-    board::square_world,
+    board::{BOARD_BASE_BOTTOM_Y, square_world},
     game::{ChessMatch, piece_name, side_name},
     reflection::ReflectedPieceMesh,
 };
 
 const MOVE_ANIMATION_SECONDS: f32 = 0.38;
 const MOVE_ARC_HEIGHT: f32 = 0.9;
+const CAPTURE_ANIMATION_SECONDS: f32 = 0.72;
+const CAPTURE_ARC_HEIGHT: f32 = 1.25;
+const CAPTURED_PIECE_SCALE: f32 = 0.72;
+const CAPTURE_TRAY_EDGE_GAP: f32 = 0.85;
+const CAPTURE_TRAY_COLUMN_GAP: f32 = 0.72;
 // User-facing size multiplier for every piece. 1.0 is the original GLB size
-// after unit conversion; 1.2 makes all pieces 20% larger on the board.
+// after unit conversion; the current 1.3 makes every piece 30% larger.
 const PIECE_SCALE: f32 = 1.3;
 const GLB_TO_BOARD_SCALE: f32 = 0.018;
 
@@ -33,7 +38,7 @@ impl Plugin for PiecesPlugin {
 }
 
 #[derive(Resource)]
-struct PieceAssets {
+pub(crate) struct PieceAssets {
     pawn: Handle<WorldAsset>,
     knight: Handle<WorldAsset>,
     bishop: Handle<WorldAsset>,
@@ -44,6 +49,29 @@ struct PieceAssets {
     chancellor: Handle<WorldAsset>,
     white_material: Handle<StandardMaterial>,
     black_material: Handle<StandardMaterial>,
+}
+
+impl PieceAssets {
+    pub(crate) fn scene(&self, kind: PieceKind) -> Handle<WorldAsset> {
+        match kind {
+            PieceKind::Pawn => &self.pawn,
+            PieceKind::Knight => &self.knight,
+            PieceKind::Bishop => &self.bishop,
+            PieceKind::Rook => &self.rook,
+            PieceKind::Queen => &self.queen,
+            PieceKind::King => &self.king,
+            PieceKind::Archbishop => &self.archbishop,
+            PieceKind::Chancellor => &self.chancellor,
+        }
+        .clone()
+    }
+
+    pub(crate) fn material(&self, side: Side) -> Handle<StandardMaterial> {
+        match side {
+            Side::White => self.white_material.clone(),
+            Side::Black => self.black_material.clone(),
+        }
+    }
 }
 
 #[derive(Resource)]
@@ -82,14 +110,44 @@ impl PieceAnimationState {
 pub(crate) struct PieceRoot;
 
 #[derive(Component)]
-struct PieceMaterial(Handle<StandardMaterial>);
+pub(crate) struct PieceMaterial {
+    material: Handle<StandardMaterial>,
+    layers: RenderLayers,
+    reflected: bool,
+}
+
+impl PieceMaterial {
+    fn board(material: Handle<StandardMaterial>) -> Self {
+        Self {
+            material,
+            layers: RenderLayers::layer(0).with(1),
+            reflected: true,
+        }
+    }
+
+    pub(crate) fn preview(material: Handle<StandardMaterial>, layer: usize) -> Self {
+        Self {
+            material,
+            layers: RenderLayers::layer(layer),
+            reflected: false,
+        }
+    }
+}
 
 #[derive(Component)]
 struct PieceMotion {
     start: Vec3,
     end: Vec3,
+    start_scale: Vec3,
+    end_scale: Vec3,
+    duration: f32,
+    arc_height: f32,
     elapsed: f32,
     generation: u64,
+}
+
+pub(crate) const fn piece_model_scale() -> f32 {
+    GLB_TO_BOARD_SCALE * PIECE_SCALE
 }
 
 fn setup_piece_assets(
@@ -160,6 +218,22 @@ fn sync_pieces(
             chess_match.generation,
         ));
     }
+    for captured_by in Side::ALL {
+        for captured in chess_match
+            .captured_pieces
+            .iter()
+            .filter(|captured| captured.captured_by == captured_by)
+        {
+            active_motions += usize::from(spawn_captured_piece(
+                &mut commands,
+                &assets,
+                captured,
+                captured.tray_slot,
+                size,
+                chess_match.generation,
+            ));
+        }
+    }
     animation.begin_generation(chess_match.generation, active_motions);
 }
 
@@ -189,21 +263,18 @@ fn spawn_piece(
     target: Vec3,
     generation: u64,
 ) -> bool {
-    let material = match piece.color {
-        Side::White => assets.white_material.clone(),
-        Side::Black => assets.black_material.clone(),
-    };
+    let scale = Vec3::splat(piece_model_scale());
     let mut entity = commands.spawn((
-        WorldAssetRoot(piece_scene(piece.kind, assets)),
+        WorldAssetRoot(assets.scene(piece.kind)),
         Transform::from_translation(start)
             .with_rotation(Quat::from_rotation_y(if piece.color == Side::Black {
                 PI
             } else {
                 0.0
             }))
-            .with_scale(Vec3::splat(GLB_TO_BOARD_SCALE * PIECE_SCALE)),
+            .with_scale(scale),
         PieceRoot,
-        PieceMaterial(material),
+        PieceMaterial::board(assets.material(piece.color)),
         Name::new(format!(
             "{} {} on {}",
             side_name(piece.color),
@@ -216,6 +287,10 @@ fn spawn_piece(
         entity.insert(PieceMotion {
             start,
             end: target,
+            start_scale: scale,
+            end_scale: scale,
+            duration: MOVE_ANIMATION_SECONDS,
+            arc_height: MOVE_ARC_HEIGHT,
             elapsed: 0.0,
             generation,
         });
@@ -223,18 +298,76 @@ fn spawn_piece(
     animated
 }
 
-fn piece_scene(kind: PieceKind, assets: &PieceAssets) -> Handle<WorldAsset> {
-    match kind {
-        PieceKind::Pawn => &assets.pawn,
-        PieceKind::Knight => &assets.knight,
-        PieceKind::Bishop => &assets.bishop,
-        PieceKind::Rook => &assets.rook,
-        PieceKind::Queen => &assets.queen,
-        PieceKind::King => &assets.king,
-        PieceKind::Archbishop => &assets.archbishop,
-        PieceKind::Chancellor => &assets.chancellor,
+fn spawn_captured_piece(
+    commands: &mut Commands,
+    assets: &PieceAssets,
+    captured: &crate::game::CapturedPiece,
+    slot: usize,
+    size: BoardSize,
+    generation: u64,
+) -> bool {
+    let target = captured_piece_world(captured.captured_by, slot, size);
+    let is_new_capture = captured.generation == generation;
+    let start = if is_new_capture {
+        square_world(captured.from, size)
+    } else {
+        target
+    };
+    let full_scale = Vec3::splat(piece_model_scale());
+    let tray_scale = full_scale * CAPTURED_PIECE_SCALE;
+    let start_scale = if is_new_capture {
+        full_scale
+    } else {
+        tray_scale
+    };
+    let piece = captured.piece;
+    let mut entity = commands.spawn((
+        WorldAssetRoot(assets.scene(piece.kind)),
+        Transform::from_translation(start)
+            .with_rotation(Quat::from_rotation_y(if piece.color == Side::Black {
+                PI
+            } else {
+                0.0
+            }))
+            .with_scale(start_scale),
+        PieceRoot,
+        PieceMaterial::board(assets.material(piece.color)),
+        Name::new(format!(
+            "Captured {} {} #{}",
+            side_name(piece.color),
+            piece_name(piece.kind),
+            captured.id
+        )),
+    ));
+    if is_new_capture {
+        entity.insert(PieceMotion {
+            start,
+            end: target,
+            start_scale,
+            end_scale: tray_scale,
+            duration: CAPTURE_ANIMATION_SECONDS,
+            arc_height: CAPTURE_ARC_HEIGHT,
+            elapsed: 0.0,
+            generation,
+        });
     }
-    .clone()
+    is_new_capture
+}
+
+fn captured_piece_world(captured_by: Side, slot: usize, size: BoardSize) -> Vec3 {
+    let rows = usize::from(size.ranks());
+    let row = slot % rows;
+    let column = slot / rows;
+    let width = f32::from(size.files());
+    let depth = f32::from(size.ranks());
+    let x_offset = width * 0.5 + CAPTURE_TRAY_EDGE_GAP + column as f32 * CAPTURE_TRAY_COLUMN_GAP;
+    let z_from_white_side = row as f32 - (depth - 1.0) * 0.5;
+    match captured_by {
+        // A camera facing the board from White's side has world -X on its
+        // right; from Black's side that direction is world +X.
+        Side::White => Vec3::new(-x_offset, BOARD_BASE_BOTTOM_Y, z_from_white_side),
+        Side::Black => Vec3::new(x_offset, BOARD_BASE_BOTTOM_Y, -z_from_white_side),
+    }
 }
 
 fn apply_piece_material(
@@ -244,18 +377,23 @@ fn apply_piece_material(
     piece_materials: Query<&PieceMaterial>,
     meshes: Query<(), With<Mesh3d>>,
 ) {
-    let Ok(material) = piece_materials.get(scene_ready.entity) else {
+    let Ok(presentation) = piece_materials.get(scene_ready.entity) else {
         return;
     };
 
     for descendant in children.iter_descendants(scene_ready.entity) {
         if meshes.contains(descendant) {
-            commands.entity(descendant).insert((
-                MeshMaterial3d(material.0.clone()),
-                RenderLayers::layer(0).with(1),
-                ReflectedPieceMesh,
+            let mut entity = commands.entity(descendant);
+            entity.insert((
+                MeshMaterial3d(presentation.material.clone()),
+                presentation.layers.clone(),
                 Pickable::IGNORE,
             ));
+            if presentation.reflected {
+                entity.insert(ReflectedPieceMesh);
+            } else {
+                entity.remove::<ReflectedPieceMesh>();
+            }
         }
     }
 }
@@ -268,12 +406,14 @@ fn animate_pieces(
 ) {
     for (entity, mut transform, mut motion) in &mut pieces {
         motion.elapsed += time.delta_secs();
-        let t = (motion.elapsed / MOVE_ANIMATION_SECONDS).min(1.0);
+        let t = (motion.elapsed / motion.duration).min(1.0);
         let eased = t * t * (3.0 - 2.0 * t);
         transform.translation = motion.start.lerp(motion.end, eased);
-        transform.translation.y += MOVE_ARC_HEIGHT * 4.0 * t * (1.0 - t);
+        transform.translation.y += motion.arc_height * 4.0 * t * (1.0 - t);
+        transform.scale = motion.start_scale.lerp(motion.end_scale, eased);
         if t >= 1.0 {
             transform.translation = motion.end;
+            transform.scale = motion.end_scale;
             animation.finish_motion(motion.generation);
             commands.entity(entity).remove::<PieceMotion>();
         }
@@ -296,5 +436,18 @@ mod tests {
 
         state.finish_motion(7);
         assert!(state.is_settled(7));
+    }
+
+    #[test]
+    fn captured_pieces_are_placed_on_the_capturers_right() {
+        let size = BoardSize::CAPABLANCA;
+        let white_capture = captured_piece_world(Side::White, 0, size);
+        let black_capture = captured_piece_world(Side::Black, 0, size);
+
+        assert!(white_capture.x < -f32::from(size.files()) * 0.5);
+        assert!(black_capture.x > f32::from(size.files()) * 0.5);
+        assert_eq!(white_capture.y, BOARD_BASE_BOTTOM_Y);
+        assert_eq!(black_capture.y, BOARD_BASE_BOTTOM_Y);
+        assert_eq!(white_capture.z, -black_capture.z);
     }
 }

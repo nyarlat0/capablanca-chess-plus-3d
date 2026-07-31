@@ -3,8 +3,8 @@ use bevy_panorbit_camera::PanOrbitCameraPlugin;
 
 use crate::{
     ai::AiPlugin, board::BoardPlugin, game::GamePlugin, hud::HudPlugin, input::InputPlugin,
-    menu::GameMenuPlugin, pieces::PiecesPlugin, reflection::PlanarReflectionPlugin,
-    scene::EnvironmentPlugin,
+    menu::GameMenuPlugin, pieces::PiecesPlugin, promotion::PromotionPlugin,
+    reflection::PlanarReflectionPlugin, scene::EnvironmentPlugin,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, SystemSet)]
@@ -50,6 +50,7 @@ impl Plugin for FrontendPlugin {
             PlanarReflectionPlugin,
             BoardPlugin,
             PiecesPlugin,
+            PromotionPlugin,
             HudPlugin,
         ));
     }

@@ -25,6 +25,7 @@ impl Plugin for HudPlugin {
                 (
                     handle_hud_toggle,
                     handle_open_menu,
+                    open_hud_on_game_end,
                     sync_hud_visibility,
                     update_hud,
                     style_open_menu_button,
@@ -36,9 +37,19 @@ impl Plugin for HudPlugin {
     }
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 struct HudState {
     expanded: bool,
+    last_outcome: GameOutcome,
+}
+
+impl Default for HudState {
+    fn default() -> Self {
+        Self {
+            expanded: false,
+            last_outcome: GameOutcome::Ongoing,
+        }
+    }
 }
 
 #[derive(Component)]
@@ -203,6 +214,19 @@ fn handle_open_menu(
     ai_task.cancel();
 }
 
+fn open_hud_on_game_end(chess_match: Res<ChessMatch>, mut hud: ResMut<HudState>) {
+    let outcome = chess_match.game.outcome();
+    if outcome == hud.last_outcome {
+        return;
+    }
+
+    let game_just_ended = is_playable(hud.last_outcome) && !is_playable(outcome);
+    hud.last_outcome = outcome;
+    if game_just_ended && !hud.expanded {
+        hud.expanded = true;
+    }
+}
+
 fn sync_hud_visibility(
     menu: Res<GameMenuState>,
     hud: Res<HudState>,
@@ -311,7 +335,7 @@ fn style_hud_toggle(
 
 #[cfg(test)]
 mod tests {
-    use capablanca_chess_plus::{Color as Side, DrawReason};
+    use capablanca_chess_plus::{Color as Side, DrawReason, Game, Position, Variant};
 
     use super::*;
 
@@ -347,5 +371,28 @@ mod tests {
             ),
             "Capablanca Chess\nLocal · two players\n\nDraw by stalemate."
         );
+    }
+
+    #[test]
+    fn finishing_a_game_opens_the_hud_once() {
+        let mut app = App::new();
+        app.init_resource::<ChessMatch>()
+            .init_resource::<HudState>()
+            .add_systems(Update, open_hud_on_game_end);
+        app.update();
+        assert!(!app.world().resource::<HudState>().expanded);
+
+        let checkmate = Position::from_fen(
+            Variant::Capablanca.rules(),
+            "k9/1Q8/2K7/10/10/10/10/10 b - - 0 1",
+        )
+        .expect("test checkmate position is valid");
+        app.world_mut().resource_mut::<ChessMatch>().game = Game::new(checkmate);
+        app.update();
+        assert!(app.world().resource::<HudState>().expanded);
+
+        app.world_mut().resource_mut::<HudState>().expanded = false;
+        app.update();
+        assert!(!app.world().resource::<HudState>().expanded);
     }
 }

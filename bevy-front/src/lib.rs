@@ -6,6 +6,7 @@ mod hud;
 mod input;
 mod menu;
 mod pieces;
+mod promotion;
 mod reflection;
 mod scene;
 

@@ -26,8 +26,10 @@ pub(crate) struct ChessMatch {
     pub(crate) selected: Option<Square>,
     pub(crate) pending_promotion: Option<PendingPromotion>,
     pub(crate) last_move: Option<Move>,
+    pub(crate) captured_pieces: Vec<CapturedPiece>,
     pub(crate) status: String,
     pub(crate) generation: u64,
+    next_capture_id: u64,
 }
 
 impl Default for ChessMatch {
@@ -40,10 +42,22 @@ impl Default for ChessMatch {
             selected: None,
             pending_promotion: None,
             last_move: None,
+            captured_pieces: Vec::new(),
             status: "White to move.".to_owned(),
             generation: 0,
+            next_capture_id: 0,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CapturedPiece {
+    pub(crate) id: u64,
+    pub(crate) piece: Piece,
+    pub(crate) captured_by: Side,
+    pub(crate) from: Square,
+    pub(crate) tray_slot: usize,
+    pub(crate) generation: u64,
 }
 
 #[derive(Clone)]
@@ -57,6 +71,8 @@ pub(crate) fn restart_match(chess_match: &mut ChessMatch, variant: Variant) {
     chess_match.selected = None;
     chess_match.pending_promotion = None;
     chess_match.last_move = None;
+    chess_match.captured_pieces.clear();
+    chess_match.next_capture_id = 0;
     chess_match.status = format!("New {} game. White to move.", variant.rules().name());
     chess_match.generation = chess_match.generation.wrapping_add(1);
 }
@@ -93,9 +109,11 @@ pub(crate) fn handle_square_selection(chess_match: &mut ChessMatch, square: Squa
                     chess_match.status = format!("{square} is not a legal destination.");
                 }
             }
-            [chess_move] => apply_move(chess_match, *chess_move, None),
+            [chess_move] if chess_move.promotion.is_none() => {
+                apply_move(chess_match, *chess_move, None);
+            }
             _ => {
-                chess_match.status = promotion_prompt(&candidates);
+                chess_match.status = "Choose a promotion.".to_owned();
                 chess_match.pending_promotion = Some(PendingPromotion { moves: candidates });
             }
         }
@@ -144,6 +162,12 @@ pub(crate) fn apply_move(
         .expect("a legal move has a source piece");
     let is_capture = matches!(chess_move.kind, MoveKind::EnPassant)
         || position.board().piece_at(chess_move.to).is_some();
+    let captured_square = match chess_move.kind {
+        MoveKind::EnPassant => Some(Square::new(chess_move.to.file(), chess_move.from.rank())),
+        _ if is_capture => Some(chess_move.to),
+        _ => None,
+    };
+    let captured_piece = captured_square.and_then(|square| position.board().piece_at(square));
     let description = describe_move(moving_piece, chess_move, is_capture);
 
     chess_match
@@ -154,6 +178,28 @@ pub(crate) fn apply_move(
     chess_match.pending_promotion = None;
     chess_match.last_move = Some(chess_move);
     chess_match.generation = chess_match.generation.wrapping_add(1);
+    if let (Some(piece), Some(from)) = (captured_piece, captured_square) {
+        let tray_slot = first_free_capture_slot(&chess_match.captured_pieces, moving_piece.color);
+        let id = chess_match.next_capture_id;
+        chess_match.captured_pieces.push(CapturedPiece {
+            id,
+            piece,
+            captured_by: moving_piece.color,
+            from,
+            tray_slot,
+            generation: chess_match.generation,
+        });
+        chess_match.next_capture_id = chess_match.next_capture_id.wrapping_add(1);
+    }
+    if chess_match.variant == Variant::Grand
+        && let Some(promoted_kind) = chess_move.promotion
+    {
+        remove_resurrected_piece(
+            &mut chess_match.captured_pieces,
+            moving_piece.color,
+            promoted_kind,
+        );
+    }
 
     let analysis_text = analysis.map_or_else(String::new, |result| {
         format!(
@@ -165,6 +211,29 @@ pub(crate) fn apply_move(
     });
     let outcome = chess_match.game.outcome();
     chess_match.status = format!("{description}.{analysis_text} {}", outcome_message(outcome));
+}
+
+fn first_free_capture_slot(captured_pieces: &[CapturedPiece], captured_by: Side) -> usize {
+    (0..)
+        .find(|slot| {
+            !captured_pieces
+                .iter()
+                .any(|captured| captured.captured_by == captured_by && captured.tray_slot == *slot)
+        })
+        .expect("the finite piece set always has a free capture-tray slot")
+}
+
+fn remove_resurrected_piece(
+    captured_pieces: &mut Vec<CapturedPiece>,
+    resurrected_side: Side,
+    resurrected_kind: PieceKind,
+) {
+    if let Some(index) = captured_pieces
+        .iter()
+        .rposition(|captured| captured.piece == Piece::new(resurrected_side, resurrected_kind))
+    {
+        captured_pieces.remove(index);
+    }
 }
 
 fn describe_move(piece: Piece, chess_move: Move, capture: bool) -> String {
@@ -237,42 +306,98 @@ pub(crate) fn outcome_message(outcome: GameOutcome) -> String {
     }
 }
 
-pub(crate) fn promotion_prompt(moves: &[Move]) -> String {
-    let mut choices = Vec::new();
-    for chess_move in moves {
-        let choice = match chess_move.promotion {
-            Some(PieceKind::Queen) => "Q queen",
-            Some(PieceKind::Chancellor) => "C chancellor",
-            Some(PieceKind::Archbishop) => "A archbishop",
-            Some(PieceKind::Rook) => "R rook",
-            Some(PieceKind::Bishop) => "B bishop",
-            Some(PieceKind::Knight) => "N knight",
-            Some(PieceKind::Pawn | PieceKind::King) => continue,
-            None => "Space no promotion",
-        };
-        if !choices.contains(&choice) {
-            choices.push(choice);
-        }
-    }
-    format!("Choose promotion: {}.", choices.join(", "))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn promotion_prompt_exposes_compound_piece_keys() {
-        let from = Square::new(0, 6);
-        let to = Square::new(0, 7);
-        let moves = [
-            Move::promotion(from, to, PieceKind::Queen),
-            Move::promotion(from, to, PieceKind::Chancellor),
-            Move::promotion(from, to, PieceKind::Archbishop),
+    fn applying_a_capture_records_its_piece_square_and_capturer() {
+        let position = capablanca_chess_plus::Position::from_fen(
+            Variant::Gothic.rules(),
+            "9k/10/10/10/10/10/1n8/KR8 w - - 0 1",
+        )
+        .expect("test position is valid");
+        let chess_move = position
+            .parse_uci_move("b1b2")
+            .expect("rook capture is legal");
+        let mut chess_match = ChessMatch {
+            game: Game::new(position),
+            ..default()
+        };
+
+        apply_move(&mut chess_match, chess_move, None);
+
+        let [captured] = chess_match.captured_pieces.as_slice() else {
+            panic!("exactly one piece should have been captured");
+        };
+        assert_eq!(captured.piece, Piece::new(Side::Black, PieceKind::Knight));
+        assert_eq!(captured.captured_by, Side::White);
+        assert_eq!(captured.from, Square::new(1, 1));
+        assert_eq!(captured.tray_slot, 0);
+        assert_eq!(captured.generation, chess_match.generation);
+    }
+
+    #[test]
+    fn grand_resurrection_removes_the_matching_captured_piece() {
+        let mut captured = vec![
+            CapturedPiece {
+                id: 0,
+                piece: Piece::new(Side::White, PieceKind::Queen),
+                captured_by: Side::Black,
+                from: Square::new(3, 1),
+                tray_slot: 0,
+                generation: 1,
+            },
+            CapturedPiece {
+                id: 1,
+                piece: Piece::new(Side::Black, PieceKind::Queen),
+                captured_by: Side::White,
+                from: Square::new(3, 8),
+                tray_slot: 0,
+                generation: 2,
+            },
         ];
-        let prompt = promotion_prompt(&moves);
-        assert!(prompt.contains("Q queen"));
-        assert!(prompt.contains("C chancellor"));
-        assert!(prompt.contains("A archbishop"));
+
+        remove_resurrected_piece(&mut captured, Side::White, PieceKind::Queen);
+
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].piece.color, Side::Black);
+    }
+
+    #[test]
+    fn grand_promotion_resurrects_a_piece_in_an_actual_game() {
+        let position = capablanca_chess_plus::Position::from_fen(
+            Variant::Grand.rules(),
+            "9k/10/10/P9/10/10/10/10/10/K9 w - - 0 1",
+        )
+        .expect("test Grand position is valid");
+        let chess_move = position
+            .parse_uci_move("a7a8q")
+            .expect("Grand queen resurrection is legal");
+        let mut chess_match = ChessMatch {
+            game: Game::new(position),
+            variant: Variant::Grand,
+            ..default()
+        };
+        chess_match.captured_pieces.push(CapturedPiece {
+            id: 0,
+            piece: Piece::new(Side::White, PieceKind::Queen),
+            captured_by: Side::Black,
+            from: Square::new(4, 1),
+            tray_slot: 0,
+            generation: 1,
+        });
+
+        apply_move(&mut chess_match, chess_move, None);
+
+        assert!(chess_match.captured_pieces.is_empty());
+        assert_eq!(
+            chess_match
+                .game
+                .position()
+                .board()
+                .piece_at(Square::new(0, 7)),
+            Some(Piece::new(Side::White, PieceKind::Queen))
+        );
     }
 }

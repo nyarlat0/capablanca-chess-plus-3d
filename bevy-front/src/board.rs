@@ -27,6 +27,9 @@ use crate::{
 // details from turning into mirror-like speckles. Order: black, white.
 const MARBLE_ROUGHNESS_FACTORS: [f32; 2] = [1.6, 2.4];
 const MARBLE_REFLECTION_STRENGTH: f32 = 0.72;
+const BOARD_BASE_HEIGHT: f32 = 0.18;
+const BOARD_BASE_CENTER_Y: f32 = -0.2;
+pub(crate) const BOARD_BASE_BOTTOM_Y: f32 = BOARD_BASE_CENTER_Y - BOARD_BASE_HEIGHT * 0.5;
 const HIGHLIGHT_PLANE_SIZE: f32 = 0.98;
 const HIGHLIGHT_PLANE_HEIGHT: f32 = 0.003;
 const HIGHLIGHT_MASK_SIZE: u32 = 128;
@@ -376,12 +379,16 @@ fn spawn_board(
             .size(HIGHLIGHT_PLANE_SIZE, HIGHLIGHT_PLANE_SIZE),
     );
 
-    let base_mesh = meshes.add(wood_mesh(Vec3::new(outer_width, 0.18, outer_depth)));
+    let base_mesh = meshes.add(wood_mesh(Vec3::new(
+        outer_width,
+        BOARD_BASE_HEIGHT,
+        outer_depth,
+    )));
     spawn_wood_part(
         commands,
         assets,
         base_mesh,
-        Transform::from_xyz(0.0, -0.2, 0.0),
+        Transform::from_xyz(0.0, BOARD_BASE_CENTER_Y, 0.0),
     );
 
     let horizontal_rail = meshes.add(wood_mesh(Vec3::new(outer_width, 0.16, 0.4)));
