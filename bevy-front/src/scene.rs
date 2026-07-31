@@ -14,6 +14,8 @@ use crate::{
 // Duration of the automatic half-turn after a move or starting a game.
 // This does not affect mouse-controlled camera movement.
 const AUTO_TURN_SECONDS: f32 = 1.4;
+// Recentring should finish sooner than the turn, but still ease in and out.
+const AUTO_RECENTER_SECONDS: f32 = 0.5;
 
 pub(crate) struct EnvironmentPlugin;
 
@@ -42,6 +44,7 @@ pub(crate) struct CameraAutoTurn {
 struct AutomaticCameraTurn {
     start_yaw: f32,
     end_yaw: f32,
+    start_focus: Vec3,
     elapsed: f32,
 }
 
@@ -169,14 +172,16 @@ pub(crate) fn start_camera_turn(
         Side::Black => 0.0,
     };
     let current_yaw = camera.yaw.unwrap_or(camera.target_yaw);
+    let current_focus = camera.focus;
 
     // Pan-orbit yaw is unbounded. Pick the equivalent side angle closest to
     // the current camera so opening a game never causes a needless full turn.
     let end_yaw = nearest_equivalent_angle(base_yaw, current_yaw);
-    camera.target_focus = Vec3::ZERO;
-    if (end_yaw - current_yaw).abs() < 0.001 {
+    if (end_yaw - current_yaw).abs() < 0.001 && current_focus.length_squared() < 0.000_001 {
         camera.yaw = Some(end_yaw);
         camera.target_yaw = end_yaw;
+        camera.focus = Vec3::ZERO;
+        camera.target_focus = Vec3::ZERO;
         camera.enabled = true;
         camera.force_update = true;
         auto_turn.active = None;
@@ -184,11 +189,13 @@ pub(crate) fn start_camera_turn(
     }
 
     camera.target_yaw = current_yaw;
+    camera.target_focus = current_focus;
     camera.enabled = false;
     camera.force_update = true;
     auto_turn.active = Some(AutomaticCameraTurn {
         start_yaw: current_yaw,
         end_yaw,
+        start_focus: current_focus,
         elapsed: 0.0,
     });
 }
@@ -208,14 +215,22 @@ fn animate_automatic_camera_turn(
     };
 
     turn.elapsed += time.delta_secs();
-    let progress = (turn.elapsed / AUTO_TURN_SECONDS).min(1.0);
-    let yaw = turn.start_yaw.lerp(turn.end_yaw, smootherstep(progress));
+    let turn_progress = (turn.elapsed / AUTO_TURN_SECONDS).min(1.0);
+    let recenter_progress = (turn.elapsed / AUTO_RECENTER_SECONDS).min(1.0);
+    let yaw = turn
+        .start_yaw
+        .lerp(turn.end_yaw, smootherstep(turn_progress));
+    let focus = turn
+        .start_focus
+        .lerp(Vec3::ZERO, smootherstep(recenter_progress));
     camera.yaw = Some(yaw);
     camera.target_yaw = yaw;
-    camera.enabled = progress >= 1.0;
+    camera.focus = focus;
+    camera.target_focus = focus;
+    camera.enabled = turn_progress >= 1.0 && recenter_progress >= 1.0;
     camera.force_update = true;
 
-    if progress >= 1.0 {
+    if camera.enabled {
         auto_turn.active = None;
     }
 }

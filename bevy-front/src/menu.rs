@@ -308,8 +308,9 @@ fn handle_menu_interactions(
             MenuAction::Side(side) => menu.selected_side = side,
             MenuAction::Multiplayer => {}
             MenuAction::Start => {
-                let side = resolve_side(menu.selected_side, time.elapsed().as_nanos());
                 let mode = menu.selected_mode;
+                let side =
+                    starting_camera_side(mode, menu.selected_side, time.elapsed().as_nanos());
                 let variant = menu.selected_variant;
                 restart_match(&mut chess_match, variant);
                 chess_match.controllers = controllers_for(mode, side);
@@ -425,6 +426,15 @@ fn resolve_side(choice: SideChoice, entropy: u128) -> Side {
     }
 }
 
+fn starting_camera_side(mode: GameMode, choice: SideChoice, entropy: u128) -> Side {
+    match mode {
+        // Pass-and-play always starts from White, who makes the first move.
+        // The camera will switch to the other side after that move finishes.
+        GameMode::Local => Side::White,
+        GameMode::Ai => resolve_side(choice, entropy),
+    }
+}
+
 fn controllers_for(mode: GameMode, human_side: Side) -> [Controller; 2] {
     match mode {
         GameMode::Local => [Controller::Human, Controller::Human],
@@ -471,6 +481,28 @@ mod tests {
         assert_eq!(
             controllers_for(GameMode::Ai, Side::Black),
             [Controller::Computer, Controller::Human]
+        );
+    }
+
+    #[test]
+    fn local_always_starts_from_the_white_side() {
+        for choice in [SideChoice::Random, SideChoice::White, SideChoice::Black] {
+            assert_eq!(
+                starting_camera_side(GameMode::Local, choice, 1),
+                Side::White
+            );
+        }
+    }
+
+    #[test]
+    fn ai_starting_side_respects_the_players_choice() {
+        assert_eq!(
+            starting_camera_side(GameMode::Ai, SideChoice::White, 1),
+            Side::White
+        );
+        assert_eq!(
+            starting_camera_side(GameMode::Ai, SideChoice::Black, 0),
+            Side::Black
         );
     }
 }
