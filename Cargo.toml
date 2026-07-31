@@ -7,11 +7,15 @@ members = [
 
 [workspace.dependencies]
 
-[profile.dev]
-opt-level = 2
-
 [profile.release]
 opt-level = 2
 strip = true
 lto = false
 panic = "abort"
+
+[profile.dev]
+opt-level = 2
+debug = 1
+
+[profile.dev.package."*"]
+debug = 0
