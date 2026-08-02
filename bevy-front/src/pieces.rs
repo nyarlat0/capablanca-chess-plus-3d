@@ -8,7 +8,7 @@ use capablanca_chess_plus::{BoardSize, Color as Side, MoveKind, Piece, PieceKind
 
 use crate::{
     app::FrontendSet,
-    board::{BOARD_BASE_BOTTOM_Y, square_world},
+    board::{BOARD_BASE_BOTTOM_Y, SQUARE_SIZE, board_world_size, square_world},
     game::{ChessMatch, piece_name, side_name},
     reflection::ReflectedPieceMesh,
 };
@@ -358,10 +358,11 @@ fn captured_piece_world(captured_by: Side, slot: usize, size: BoardSize) -> Vec3
     let rows = usize::from(size.ranks());
     let row = slot % rows;
     let column = slot / rows;
-    let width = f32::from(size.files());
-    let depth = f32::from(size.ranks());
+    let board_size = board_world_size(size);
+    let width = board_size.x;
+    let depth = board_size.y;
     let x_offset = width * 0.5 + CAPTURE_TRAY_EDGE_GAP + column as f32 * CAPTURE_TRAY_COLUMN_GAP;
-    let z_from_white_side = row as f32 - (depth - 1.0) * 0.5;
+    let z_from_white_side = row as f32 * SQUARE_SIZE - (depth - SQUARE_SIZE) * 0.5;
     match captured_by {
         // A camera facing the board from White's side has world -X on its
         // right; from Black's side that direction is world +X.
@@ -443,9 +444,10 @@ mod tests {
         let size = BoardSize::CAPABLANCA;
         let white_capture = captured_piece_world(Side::White, 0, size);
         let black_capture = captured_piece_world(Side::Black, 0, size);
+        let board_size = board_world_size(size);
 
-        assert!(white_capture.x < -f32::from(size.files()) * 0.5);
-        assert!(black_capture.x > f32::from(size.files()) * 0.5);
+        assert!(white_capture.x < -board_size.x * 0.5);
+        assert!(black_capture.x > board_size.x * 0.5);
         assert_eq!(white_capture.y, BOARD_BASE_BOTTOM_Y);
         assert_eq!(black_capture.y, BOARD_BASE_BOTTOM_Y);
         assert_eq!(white_capture.z, -black_capture.z);

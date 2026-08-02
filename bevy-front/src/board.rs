@@ -27,10 +27,14 @@ use crate::{
 // details from turning into mirror-like speckles. Order: black, white.
 const MARBLE_ROUGHNESS_FACTORS: [f32; 2] = [1.6, 2.4];
 const MARBLE_REFLECTION_STRENGTH: f32 = 0.72;
+pub(crate) const SQUARE_SIZE: f32 = 1.0;
+const SQUARE_HEIGHT: f32 = 0.12;
+const BOARD_RAIL_WIDTH: f32 = 0.4;
+const BOARD_RAIL_HEIGHT: f32 = 0.16;
 const BOARD_BASE_HEIGHT: f32 = 0.18;
 const BOARD_BASE_CENTER_Y: f32 = -0.2;
 pub(crate) const BOARD_BASE_BOTTOM_Y: f32 = BOARD_BASE_CENTER_Y - BOARD_BASE_HEIGHT * 0.5;
-const HIGHLIGHT_PLANE_SIZE: f32 = 0.98;
+const HIGHLIGHT_PLANE_SIZE: f32 = SQUARE_SIZE;
 const HIGHLIGHT_PLANE_HEIGHT: f32 = 0.003;
 const HIGHLIGHT_MASK_SIZE: u32 = 128;
 const SMALL_HIGHLIGHT_RADIUS: f32 = 0.13;
@@ -390,7 +394,7 @@ fn sync_board_geometry(
     pointer.hovered_square = None;
 
     if let Ok(mut camera) = scene.cameras.single_mut() {
-        let radius = f32::from(size.files().max(size.ranks())) * 1.42;
+        let radius = board_world_size(size).max_element() * 1.42;
         camera.target_focus = Vec3::ZERO;
         camera.target_radius = radius;
         camera.zoom_upper_limit = Some(radius * 1.8);
@@ -405,10 +409,11 @@ fn spawn_board(
     meshes: &mut Assets<Mesh>,
     size: BoardSize,
 ) {
-    let width = f32::from(size.files());
-    let depth = f32::from(size.ranks());
-    let outer_width = width + 0.8;
-    let outer_depth = depth + 0.8;
+    let board_size = board_world_size(size);
+    let width = board_size.x;
+    let depth = board_size.y;
+    let outer_width = width + BOARD_RAIL_WIDTH * 2.0;
+    let outer_depth = depth + BOARD_RAIL_WIDTH * 2.0;
     let highlight_mesh = meshes.add(
         Plane3d::default()
             .mesh()
@@ -427,8 +432,13 @@ fn spawn_board(
         Transform::from_xyz(0.0, BOARD_BASE_CENTER_Y, 0.0),
     );
 
-    let horizontal_rail = meshes.add(wood_mesh(Vec3::new(outer_width, 0.16, 0.4)));
-    for z in [-depth * 0.5 - 0.2, depth * 0.5 + 0.2] {
+    let horizontal_rail = meshes.add(wood_mesh(Vec3::new(
+        outer_width,
+        BOARD_RAIL_HEIGHT,
+        BOARD_RAIL_WIDTH,
+    )));
+    let horizontal_rail_offset = depth * 0.5 + BOARD_RAIL_WIDTH * 0.5;
+    for z in [-horizontal_rail_offset, horizontal_rail_offset] {
         spawn_wood_part(
             commands,
             assets,
@@ -437,8 +447,13 @@ fn spawn_board(
         );
     }
 
-    let vertical_rail = meshes.add(wood_mesh(Vec3::new(depth, 0.16, 0.4)));
-    for x in [-width * 0.5 - 0.2, width * 0.5 + 0.2] {
+    let vertical_rail = meshes.add(wood_mesh(Vec3::new(
+        depth,
+        BOARD_RAIL_HEIGHT,
+        BOARD_RAIL_WIDTH,
+    )));
+    let vertical_rail_offset = width * 0.5 + BOARD_RAIL_WIDTH * 0.5;
+    for x in [-vertical_rail_offset, vertical_rail_offset] {
         spawn_wood_part(
             commands,
             assets,
@@ -456,7 +471,9 @@ fn spawn_board(
                 .spawn((
                     Mesh3d(meshes.add(square_mesh(square, size))),
                     MeshMaterial3d(material),
-                    Transform::from_translation(square_world(square, size) - Vec3::Y * 0.06),
+                    Transform::from_translation(
+                        square_world(square, size) - Vec3::Y * (SQUARE_HEIGHT * 0.5),
+                    ),
                     BoardSquare(square),
                 ))
                 .observe(on_square_click)
@@ -494,7 +511,7 @@ fn spawn_wood_part(
 }
 
 fn square_mesh(square: Square, size: BoardSize) -> Mesh {
-    let mut mesh = Mesh::from(Cuboid::new(0.98, 0.12, 0.98));
+    let mut mesh = Mesh::from(Cuboid::new(SQUARE_SIZE, SQUARE_HEIGHT, SQUARE_SIZE));
     let VertexAttributeValues::Float32x2(uvs) = mesh
         .attribute_mut(Mesh::ATTRIBUTE_UV_0)
         .expect("a cuboid has UV coordinates")
@@ -663,9 +680,16 @@ fn material_index(square: Square) -> usize {
 
 pub(crate) fn square_world(square: Square, size: BoardSize) -> Vec3 {
     Vec3::new(
-        f32::from(square.file()) - (f32::from(size.files()) - 1.0) * 0.5,
+        (f32::from(square.file()) - (f32::from(size.files()) - 1.0) * 0.5) * SQUARE_SIZE,
         0.0,
-        f32::from(square.rank()) - (f32::from(size.ranks()) - 1.0) * 0.5,
+        (f32::from(square.rank()) - (f32::from(size.ranks()) - 1.0) * 0.5) * SQUARE_SIZE,
+    )
+}
+
+pub(crate) fn board_world_size(size: BoardSize) -> Vec2 {
+    Vec2::new(
+        f32::from(size.files()) * SQUARE_SIZE,
+        f32::from(size.ranks()) * SQUARE_SIZE,
     )
 }
 
@@ -680,6 +704,45 @@ mod tests {
             let upper = square_world(Square::new(size.files() - 1, size.ranks() - 1), size);
             assert_eq!(lower + upper, Vec3::ZERO);
         }
+    }
+
+    #[test]
+    fn adjacent_squares_and_highlights_meet_exactly_at_their_edges() {
+        for size in [BoardSize::CAPABLANCA, BoardSize::GRAND] {
+            let lower = square_world(Square::new(0, 0), size);
+            let right = square_world(Square::new(1, 0), size);
+            let forward = square_world(Square::new(0, 1), size);
+            let world_size = board_world_size(size);
+
+            assert_eq!(right.x - lower.x, SQUARE_SIZE);
+            assert_eq!(forward.z - lower.z, SQUARE_SIZE);
+            assert_eq!(lower.x - SQUARE_SIZE * 0.5, -world_size.x * 0.5);
+            assert_eq!(lower.z - SQUARE_SIZE * 0.5, -world_size.y * 0.5);
+            assert_eq!(HIGHLIGHT_PLANE_SIZE, SQUARE_SIZE);
+        }
+    }
+
+    #[test]
+    fn square_mesh_fills_the_complete_cell_footprint() {
+        let mesh = square_mesh(Square::new(0, 0), BoardSize::CAPABLANCA);
+        let VertexAttributeValues::Float32x3(positions) = mesh
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .expect("a square mesh has vertex positions")
+        else {
+            panic!("square mesh positions use an unexpected format");
+        };
+        let (minimum, maximum) = positions.iter().fold(
+            (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+            |(minimum, maximum), position| {
+                let position = Vec3::from_array(*position);
+                (minimum.min(position), maximum.max(position))
+            },
+        );
+        let extent = maximum - minimum;
+
+        assert_eq!(extent.x, SQUARE_SIZE);
+        assert_eq!(extent.y, SQUARE_HEIGHT);
+        assert_eq!(extent.z, SQUARE_SIZE);
     }
 
     #[test]
