@@ -36,6 +36,10 @@ const HIGHLIGHT_MASK_SIZE: u32 = 128;
 const SMALL_HIGHLIGHT_RADIUS: f32 = 0.13;
 const HIGHLIGHT_FEATHER: f32 = 0.1;
 const HIGHLIGHT_HALO_ALPHA: f32 = 0.14;
+const LEGAL_HIGHLIGHT_COLOR: Color = Color::srgb(0.98, 0.08, 0.46);
+const LEGAL_HOVER_COLOR: Color = Color::srgb(1.0, 0.4, 0.7);
+const CAPTURE_HIGHLIGHT_COLOR: Color = Color::srgb(1.0, 0.015, 0.01);
+const CAPTURE_HOVER_COLOR: Color = Color::srgb(1.0, 0.28, 0.2);
 // Square highlight tuning. Distances are measured from the cell center: 0.0 is
 // the center and 0.5 is an edge. The straight perimeter stays subtle, while
 // both axes must approach an edge before the denser corner accent appears.
@@ -51,6 +55,7 @@ pub(crate) struct BoardPlugin;
 impl Plugin for BoardPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BoardRenderState>()
+            .init_resource::<BoardPointerState>()
             .add_systems(Startup, setup_board_assets.after(PlanarReflectionStartup))
             .add_systems(Update, sync_board_geometry.in_set(FrontendSet::BoardSync))
             .add_systems(
@@ -70,7 +75,9 @@ struct BoardAssets {
 struct HighlightMaterials {
     selected: [Handle<StandardMaterial>; 2],
     legal: [Handle<StandardMaterial>; 2],
+    legal_hover: [Handle<StandardMaterial>; 2],
     capture: [Handle<StandardMaterial>; 2],
+    capture_hover: [Handle<StandardMaterial>; 2],
     last: Handle<StandardMaterial>,
     check: [Handle<StandardMaterial>; 2],
 }
@@ -78,6 +85,23 @@ struct HighlightMaterials {
 #[derive(Resource, Default)]
 struct BoardRenderState {
     size: Option<BoardSize>,
+}
+
+#[derive(Resource, Default)]
+struct BoardPointerState {
+    hovered_square: Option<Square>,
+}
+
+impl BoardPointerState {
+    fn enter(&mut self, square: Square) {
+        self.hovered_square = Some(square);
+    }
+
+    fn leave(&mut self, square: Square) {
+        if self.hovered_square == Some(square) {
+            self.hovered_square = None;
+        }
+    }
 }
 
 #[derive(Component, Clone, Copy)]
@@ -144,12 +168,22 @@ fn setup_board_assets(
         legal: masked_highlight_materials(
             &mut standard_materials,
             &highlight_masks,
-            Color::srgb(0.98, 0.08, 0.46),
+            LEGAL_HIGHLIGHT_COLOR,
+        ),
+        legal_hover: masked_highlight_materials(
+            &mut standard_materials,
+            &highlight_masks,
+            LEGAL_HOVER_COLOR,
         ),
         capture: masked_highlight_materials(
             &mut standard_materials,
             &highlight_masks,
-            Color::srgb(1.0, 0.015, 0.01),
+            CAPTURE_HIGHLIGHT_COLOR,
+        ),
+        capture_hover: masked_highlight_materials(
+            &mut standard_materials,
+            &highlight_masks,
+            CAPTURE_HOVER_COLOR,
         ),
         last: standard_materials.add(highlight_material(
             Color::srgb(0.025, 0.3, 1.0),
@@ -337,6 +371,7 @@ fn sync_board_geometry(
     chess_match: Res<ChessMatch>,
     assets: Res<BoardAssets>,
     mut rendered: ResMut<BoardRenderState>,
+    mut pointer: ResMut<BoardPointerState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut scene: BoardScene,
 ) {
@@ -352,6 +387,7 @@ fn sync_board_geometry(
         commands.entity(entity).despawn();
     }
     spawn_board(&mut commands, &assets, &mut meshes, size);
+    pointer.hovered_square = None;
 
     if let Ok(mut camera) = scene.cameras.single_mut() {
         let radius = f32::from(size.files().max(size.ranks())) * 1.42;
@@ -423,7 +459,9 @@ fn spawn_board(
                     Transform::from_translation(square_world(square, size) - Vec3::Y * 0.06),
                     BoardSquare(square),
                 ))
-                .observe(on_square_click);
+                .observe(on_square_click)
+                .observe(on_square_over)
+                .observe(on_square_out);
             commands.spawn((
                 Mesh3d(highlight_mesh.clone()),
                 MeshMaterial3d(assets.highlight_materials.legal[0].clone()),
@@ -535,8 +573,31 @@ fn on_square_click(
     handle_square_selection(&mut chess_match, clicked.0);
 }
 
+fn on_square_over(
+    over: On<Pointer<Over>>,
+    squares: Query<&BoardSquare>,
+    mut pointer: ResMut<BoardPointerState>,
+) {
+    if let Ok(square) = squares.get(over.entity) {
+        pointer.enter(square.0);
+    }
+}
+
+fn on_square_out(
+    out: On<Pointer<Out>>,
+    squares: Query<&BoardSquare>,
+    mut pointer: ResMut<BoardPointerState>,
+) {
+    let Ok(square) = squares.get(out.entity) else {
+        return;
+    };
+    pointer.leave(square.0);
+}
+
 fn update_square_highlights(
     chess_match: Res<ChessMatch>,
+    menu: Res<GameMenuState>,
+    pointer: Res<BoardPointerState>,
     assets: Res<BoardAssets>,
     mut highlights: Query<(
         &BoardHighlight,
@@ -567,10 +628,15 @@ fn update_square_highlights(
             .iter()
             .find(|chess_move| chess_move.to == square)
         {
-            if matches!(chess_move.kind, MoveKind::EnPassant)
-                || position.board().piece_at(square).is_some()
-            {
+            let hovered = !menu.open && pointer.hovered_square == Some(square);
+            let capture = matches!(chess_move.kind, MoveKind::EnPassant)
+                || position.board().piece_at(square).is_some();
+            if capture && hovered {
+                Some(&assets.highlight_materials.capture_hover[occupied_index])
+            } else if capture {
                 Some(&assets.highlight_materials.capture[occupied_index])
+            } else if hovered {
+                Some(&assets.highlight_materials.legal_hover[occupied_index])
             } else {
                 Some(&assets.highlight_materials.legal[occupied_index])
             }
@@ -689,5 +755,20 @@ mod tests {
         let farther_from_corner = square_edge_highlight_alpha(Vec2::splat(0.3));
         assert!(inner_corner > farther_from_corner);
         assert!(inner_corner < SQUARE_HIGHLIGHT_CORNER_OPACITY);
+    }
+
+    #[test]
+    fn leaving_an_old_square_does_not_clear_the_new_hover() {
+        let first = Square::new(2, 2);
+        let second = Square::new(3, 2);
+        let mut pointer = BoardPointerState::default();
+
+        pointer.enter(first);
+        pointer.enter(second);
+        pointer.leave(first);
+        assert_eq!(pointer.hovered_square, Some(second));
+
+        pointer.leave(second);
+        assert_eq!(pointer.hovered_square, None);
     }
 }
