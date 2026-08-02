@@ -35,7 +35,9 @@ const BOARD_BASE_HEIGHT: f32 = 0.18;
 const BOARD_BASE_CENTER_Y: f32 = -0.2;
 pub(crate) const BOARD_BASE_BOTTOM_Y: f32 = BOARD_BASE_CENTER_Y - BOARD_BASE_HEIGHT * 0.5;
 const HIGHLIGHT_PLANE_SIZE: f32 = SQUARE_SIZE;
-const HIGHLIGHT_PLANE_HEIGHT: f32 = 0.003;
+// Highlights are exactly coplanar with the marble. Render depth bias keeps
+// them on top without the parallax seam caused by a physically raised plane.
+const HIGHLIGHT_DEPTH_BIAS: f32 = 2.0;
 const HIGHLIGHT_MASK_SIZE: u32 = 128;
 const SMALL_HIGHLIGHT_RADIUS: f32 = 0.13;
 const HIGHLIGHT_FEATHER: f32 = 0.1;
@@ -259,6 +261,7 @@ fn highlight_material(color: Color, mask: Option<Handle<Image>>) -> StandardMate
         base_color: color,
         base_color_texture: mask,
         alpha_mode: AlphaMode::Blend,
+        depth_bias: HIGHLIGHT_DEPTH_BIAS,
         unlit: true,
         fog_enabled: false,
         ..default()
@@ -482,9 +485,7 @@ fn spawn_board(
             commands.spawn((
                 Mesh3d(highlight_mesh.clone()),
                 MeshMaterial3d(assets.highlight_materials.legal[0].clone()),
-                Transform::from_translation(
-                    square_world(square, size) + Vec3::Y * HIGHLIGHT_PLANE_HEIGHT,
-                ),
+                Transform::from_translation(square_world(square, size)),
                 Visibility::Hidden,
                 Pickable::IGNORE,
                 NotShadowCaster,
@@ -785,6 +786,7 @@ mod tests {
         let material = highlight_material(Color::srgba(0.1, 0.8, 0.2, 0.5), None);
         assert!(material.unlit);
         assert_eq!(material.alpha_mode, AlphaMode::Blend);
+        assert!(material.depth_bias > 0.0);
         assert!(!material.fog_enabled);
     }
 
