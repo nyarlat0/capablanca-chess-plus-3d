@@ -1,6 +1,14 @@
 use std::f32::consts::{PI, TAU};
 
-use bevy::{camera::visibility::RenderLayers, prelude::*};
+use bevy::{
+    anti_alias::smaa::{Smaa, SmaaPreset},
+    camera::{Hdr, visibility::RenderLayers},
+    core_pipeline::tonemapping::Tonemapping,
+    light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap},
+    post_process::{bloom::Bloom, effect_stack::Vignette},
+    prelude::*,
+    render::view::{ColorGrading, ColorGradingGlobal},
+};
 use bevy_panorbit_camera::PanOrbitCamera;
 use capablanca_chess_plus::Color as Side;
 
@@ -9,6 +17,14 @@ use crate::{
     game::ChessMatch,
     menu::{GameMenuState, GameMode},
     pieces::PieceAnimationState,
+    render_tuning::{
+        AMBIENT_LIGHT_BRIGHTNESS, AMBIENT_LIGHT_COLOR, BLOOM_HIGH_PASS_FREQUENCY, BLOOM_INTENSITY,
+        BLOOM_LOW_FREQUENCY_BOOST, BLOOM_MAX_MIP_DIMENSION, COLOR_GRADING_EXPOSURE,
+        COLOR_GRADING_SATURATION, COLOR_GRADING_TINT, COSMIC_FILL_COLOR, COSMIC_FILL_ILLUMINANCE,
+        DIRECTIONAL_SHADOW_MAP_SIZE, NEBULA_KEY_COLOR, NEBULA_KEY_ILLUMINANCE,
+        SHADOW_MAXIMUM_DISTANCE, SHADOW_MINIMUM_DISTANCE, VIGNETTE_INTENSITY, VIGNETTE_RADIUS,
+        VIGNETTE_SMOOTHNESS,
+    },
 };
 
 // Duration of the automatic half-turn after a move or starting a game.
@@ -17,32 +33,25 @@ const AUTO_TURN_SECONDS: f32 = 1.4;
 // Recentring should finish sooner than the turn, but still ease in and out.
 const AUTO_RECENTER_SECONDS: f32 = 0.5;
 
-// Scene-lighting palette. The main light follows the bright pink nebula,
-// while the weaker blue-violet fill keeps unlit sides readable and gives the
-// pieces a cooler edge. Only the key light casts shadows.
-const AMBIENT_LIGHT_COLOR: Color = Color::srgb(0.42, 0.36, 0.62);
-const AMBIENT_LIGHT_BRIGHTNESS: f32 = 145.0;
-const NEBULA_KEY_COLOR: Color = Color::srgb(1.0, 0.82, 0.9);
-const NEBULA_KEY_ILLUMINANCE: f32 = 10_500.0;
-const COSMIC_FILL_COLOR: Color = Color::srgb(0.42, 0.56, 1.0);
-const COSMIC_FILL_ILLUMINANCE: f32 = 2_400.0;
-
 pub(crate) struct EnvironmentPlugin;
 
 impl Plugin for EnvironmentPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<LocalCameraState>()
-            .init_resource::<CameraAutoTurn>()
-            .add_systems(Startup, setup_environment)
-            .add_systems(
-                Update,
-                (
-                    orient_camera_after_local_move,
-                    animate_automatic_camera_turn,
-                )
-                    .chain()
-                    .in_set(FrontendSet::Camera),
-            );
+        app.insert_resource(DirectionalLightShadowMap {
+            size: DIRECTIONAL_SHADOW_MAP_SIZE,
+        })
+        .init_resource::<LocalCameraState>()
+        .init_resource::<CameraAutoTurn>()
+        .add_systems(Startup, setup_environment)
+        .add_systems(
+            Update,
+            (
+                orient_camera_after_local_move,
+                animate_automatic_camera_turn,
+            )
+                .chain()
+                .in_set(FrontendSet::Camera),
+        );
     }
 }
 
@@ -95,6 +104,13 @@ fn setup_environment(mut commands: Commands) {
             ..default()
         },
         key_light_transform,
+        CascadeShadowConfigBuilder {
+            num_cascades: 1,
+            minimum_distance: SHADOW_MINIMUM_DISTANCE,
+            maximum_distance: SHADOW_MAXIMUM_DISTANCE,
+            ..default()
+        }
+        .build(),
         RenderLayers::layer(0),
         Name::new("Nebula key light"),
     ));
@@ -127,8 +143,36 @@ fn setup_environment(mut commands: Commands) {
         Name::new("Cosmic fill light"),
     ));
 
+    let mut bloom = Bloom::NATURAL;
+    bloom.intensity = BLOOM_INTENSITY;
+    bloom.low_frequency_boost = BLOOM_LOW_FREQUENCY_BOOST;
+    bloom.high_pass_frequency = BLOOM_HIGH_PASS_FREQUENCY;
+    bloom.max_mip_dimension = BLOOM_MAX_MIP_DIMENSION;
+
     commands.spawn((
         Camera3d::default(),
+        Hdr,
+        Msaa::Off,
+        Smaa {
+            preset: SmaaPreset::High,
+        },
+        Tonemapping::TonyMcMapface,
+        bloom,
+        ColorGrading {
+            global: ColorGradingGlobal {
+                exposure: COLOR_GRADING_EXPOSURE,
+                tint: COLOR_GRADING_TINT,
+                post_saturation: COLOR_GRADING_SATURATION,
+                ..default()
+            },
+            ..default()
+        },
+        Vignette {
+            intensity: VIGNETTE_INTENSITY,
+            radius: VIGNETTE_RADIUS,
+            smoothness: VIGNETTE_SMOOTHNESS,
+            ..default()
+        },
         Transform::from_xyz(0.0, 10.5, -13.5).looking_at(Vec3::ZERO, Vec3::Y),
         PanOrbitCamera {
             button_orbit: MouseButton::Middle,

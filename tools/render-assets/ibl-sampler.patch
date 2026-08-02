@@ -1,0 +1,18 @@
+diff --git a/lib/source/ktxImage.cpp b/lib/source/ktxImage.cpp
+index b427e2b..2f74152 100644
+--- a/lib/source/ktxImage.cpp
++++ b/lib/source/ktxImage.cpp
+@@ -58,7 +58,12 @@ Result KtxImage::writeFace(const std::vector<uint8_t>& _inData, uint32_t _side,
+ 
+ 	if(result != KTX_SUCCESS)
+ 	{
+-		printf("Could not write image data to ktx texture\n");
++		printf(
++			"Could not write image data to ktx texture: %s "
++			"(actual %zu bytes, expected %zu bytes)\n",
++			ktxErrorString(result),
++			_inData.size(),
++			ktxTexture_GetImageSize(ktxTexture(m_ktxTexture), _level));
+ 		return Result::KtxError;
+ 	}
+ 

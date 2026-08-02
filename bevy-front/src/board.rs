@@ -20,6 +20,7 @@ use crate::{
         PlanarBoardMaterial, PlanarReflectionExtension, PlanarReflectionImage,
         PlanarReflectionStartup,
     },
+    render_tuning::{TEXTURE_ANISOTROPY, generated_surface_texture_path},
 };
 
 // The source maps have different average levels. These factors keep both marble
@@ -134,23 +135,52 @@ fn setup_board_assets(
     mut standard_materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let white_marble = asset_server.load("textures/white_marble_color.jpg");
-    let black_marble = asset_server.load("textures/black_marble_color.jpg");
+    let white_marble = load_filtered_texture(
+        &asset_server,
+        generated_surface_texture_path("white_marble_color"),
+        true,
+        false,
+    );
+    let black_marble = load_filtered_texture(
+        &asset_server,
+        generated_surface_texture_path("black_marble_color"),
+        true,
+        false,
+    );
     let marble_textures = [&black_marble, &white_marble];
-    let white_marble_normal =
-        load_linear_texture(&asset_server, "textures/white_marble_normalgl.jpg");
-    let black_marble_normal =
-        load_linear_texture(&asset_server, "textures/black_marble_normalgl.jpg");
+    let white_marble_normal = load_linear_texture(
+        &asset_server,
+        generated_surface_texture_path("white_marble_normalgl"),
+    );
+    let black_marble_normal = load_linear_texture(
+        &asset_server,
+        generated_surface_texture_path("black_marble_normalgl"),
+    );
     let marble_normals = [&black_marble_normal, &white_marble_normal];
-    let white_marble_roughness =
-        load_linear_texture(&asset_server, "textures/white_marble_roughness.jpg");
-    let black_marble_roughness =
-        load_linear_texture(&asset_server, "textures/black_marble_roughness.jpg");
+    let white_marble_roughness = load_linear_texture(
+        &asset_server,
+        generated_surface_texture_path("white_marble_roughness"),
+    );
+    let black_marble_roughness = load_linear_texture(
+        &asset_server,
+        generated_surface_texture_path("black_marble_roughness"),
+    );
     let marble_roughness = [&black_marble_roughness, &white_marble_roughness];
-    let wood_color = load_repeating_texture(&asset_server, "textures/wood_color.jpg", true);
-    let wood_normal = load_repeating_texture(&asset_server, "textures/wood_normalgl.jpg", false);
-    let wood_roughness =
-        load_repeating_texture(&asset_server, "textures/wood_roughness.jpg", false);
+    let wood_color = load_repeating_texture(
+        &asset_server,
+        generated_surface_texture_path("wood_color"),
+        true,
+    );
+    let wood_normal = load_repeating_texture(
+        &asset_server,
+        generated_surface_texture_path("wood_normalgl"),
+        false,
+    );
+    let wood_roughness = load_repeating_texture(
+        &asset_server,
+        generated_surface_texture_path("wood_roughness"),
+        false,
+    );
 
     let square_materials = marble_material_pair(
         &mut marble_materials,
@@ -348,27 +378,35 @@ fn smoothstep(start: f32, end: f32, value: f32) -> f32 {
     progress * progress * (3.0 - 2.0 * progress)
 }
 
-fn load_linear_texture(asset_server: &AssetServer, path: &'static str) -> Handle<Image> {
-    asset_server
-        .load_builder()
-        .with_settings(|settings: &mut ImageLoaderSettings| settings.is_srgb = false)
-        .load(path)
+fn load_linear_texture(asset_server: &AssetServer, path: String) -> Handle<Image> {
+    load_filtered_texture(asset_server, path, false, false)
 }
 
 fn load_repeating_texture(
     asset_server: &AssetServer,
-    path: &'static str,
+    path: String,
     is_srgb: bool,
+) -> Handle<Image> {
+    load_filtered_texture(asset_server, path, is_srgb, true)
+}
+
+fn load_filtered_texture(
+    asset_server: &AssetServer,
+    path: String,
+    is_srgb: bool,
+    repeat: bool,
 ) -> Handle<Image> {
     asset_server
         .load_builder()
         .with_settings(move |settings: &mut ImageLoaderSettings| {
             settings.is_srgb = is_srgb;
-            settings.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-                address_mode_u: ImageAddressMode::Repeat,
-                address_mode_v: ImageAddressMode::Repeat,
-                ..ImageSamplerDescriptor::linear()
-            });
+            let mut sampler = ImageSamplerDescriptor::linear();
+            sampler.anisotropy_clamp = TEXTURE_ANISOTROPY;
+            if repeat {
+                sampler.address_mode_u = ImageAddressMode::Repeat;
+                sampler.address_mode_v = ImageAddressMode::Repeat;
+            }
+            settings.sampler = ImageSampler::Descriptor(sampler);
         })
         .load(path)
 }
@@ -477,6 +515,7 @@ fn spawn_board(
                     Transform::from_translation(
                         square_world(square, size) - Vec3::Y * (SQUARE_HEIGHT * 0.5),
                     ),
+                    NotShadowCaster,
                     BoardSquare(square),
                 ))
                 .observe(on_square_click)
@@ -507,6 +546,7 @@ fn spawn_wood_part(
         MeshMaterial3d(assets.wood_material.clone()),
         transform,
         Pickable::IGNORE,
+        NotShadowCaster,
         BoardPart,
     ));
 }

@@ -8,6 +8,7 @@ mod menu;
 mod pieces;
 mod promotion;
 mod reflection;
+mod render_tuning;
 mod scene;
 mod skybox;
 
