@@ -9,5 +9,6 @@ mod pieces;
 mod promotion;
 mod reflection;
 mod scene;
+mod skybox;
 
 pub use app::{FrontendPlugin, build_app, run};
