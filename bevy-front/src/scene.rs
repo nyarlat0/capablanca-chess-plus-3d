@@ -17,6 +17,16 @@ const AUTO_TURN_SECONDS: f32 = 1.4;
 // Recentring should finish sooner than the turn, but still ease in and out.
 const AUTO_RECENTER_SECONDS: f32 = 0.5;
 
+// Scene-lighting palette. The main light follows the bright pink nebula,
+// while the weaker blue-violet fill keeps unlit sides readable and gives the
+// pieces a cooler edge. Only the key light casts shadows.
+const AMBIENT_LIGHT_COLOR: Color = Color::srgb(0.42, 0.36, 0.62);
+const AMBIENT_LIGHT_BRIGHTNESS: f32 = 145.0;
+const NEBULA_KEY_COLOR: Color = Color::srgb(1.0, 0.82, 0.9);
+const NEBULA_KEY_ILLUMINANCE: f32 = 10_500.0;
+const COSMIC_FILL_COLOR: Color = Color::srgb(0.42, 0.56, 1.0);
+const COSMIC_FILL_ILLUMINANCE: f32 = 2_400.0;
+
 pub(crate) struct EnvironmentPlugin;
 
 impl Plugin for EnvironmentPlugin {
@@ -70,33 +80,51 @@ enum GenerationCameraAction {
 
 fn setup_environment(mut commands: Commands) {
     commands.insert_resource(GlobalAmbientLight {
-        color: Color::srgb(0.78, 0.84, 1.0),
-        brightness: 260.0,
+        color: AMBIENT_LIGHT_COLOR,
+        brightness: AMBIENT_LIGHT_BRIGHTNESS,
         ..default()
     });
 
-    let light_transform =
+    let key_light_transform =
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.9, -0.55, 0.0));
     commands.spawn((
         DirectionalLight {
-            illuminance: 9_500.0,
+            color: NEBULA_KEY_COLOR,
+            illuminance: NEBULA_KEY_ILLUMINANCE,
             shadow_maps_enabled: true,
             ..default()
         },
-        light_transform,
+        key_light_transform,
         RenderLayers::layer(0),
+        Name::new("Nebula key light"),
     ));
     // The reflection pass gets equivalent lighting without a second set of
     // directional shadow maps. The reflected pieces are small enough that the
     // visual difference is negligible, while this matters on web GPUs.
     commands.spawn((
         DirectionalLight {
-            illuminance: 9_500.0,
+            color: NEBULA_KEY_COLOR,
+            illuminance: NEBULA_KEY_ILLUMINANCE,
             shadow_maps_enabled: false,
             ..default()
         },
-        light_transform,
+        key_light_transform,
         RenderLayers::layer(1),
+        Name::new("Reflected nebula key light"),
+    ));
+
+    // One shadowless fill serves both the main and reflection cameras. Its
+    // opposite azimuth prevents the pink key from flattening the silhouettes.
+    commands.spawn((
+        DirectionalLight {
+            color: COSMIC_FILL_COLOR,
+            illuminance: COSMIC_FILL_ILLUMINANCE,
+            shadow_maps_enabled: false,
+            ..default()
+        },
+        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.6, 2.35, 0.18)),
+        RenderLayers::layer(0).with(1),
+        Name::new("Cosmic fill light"),
     ));
 
     commands.spawn((
