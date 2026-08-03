@@ -30,7 +30,9 @@ use crate::{
         COLOR_GRADING_SATURATION, COLOR_GRADING_TINT, COSMIC_FILL_COLOR, COSMIC_FILL_ILLUMINANCE,
         DIRECTIONAL_SHADOW_MAP_SIZE, MATERIAL_TEXTURE_MIP_BIAS, NEBULA_KEY_COLOR,
         NEBULA_KEY_ILLUMINANCE, SHADOW_MAXIMUM_DISTANCE, SHADOW_MINIMUM_DISTANCE,
-        VIGNETTE_INTENSITY, VIGNETTE_RADIUS, VIGNETTE_SMOOTHNESS,
+        VIGNETTE_INTENSITY, VIGNETTE_RADIUS, VIGNETTE_SMOOTHNESS, WEB_CAMERA_FILL_MIN_RANGE,
+        WEB_CAMERA_FILL_RADIUS, WEB_CAMERA_FILL_RANGE_MULTIPLIER, WEB_COSMIC_FILL_POSITION,
+        WEB_COSMIC_FILL_RADIUS, WEB_COSMIC_FILL_RANGE,
     },
 };
 
@@ -41,6 +43,7 @@ const AUTO_TURN_SECONDS: f32 = 1.4;
 const AUTO_RECENTER_SECONDS: f32 = 0.5;
 // Canonical elevation of the original camera at (0, 10.5, -13.5).
 const HOME_CAMERA_PITCH_RADIANS: f32 = 0.661_043;
+const HOME_CAMERA_RADIUS: f32 = 17.102_63;
 
 pub(crate) struct EnvironmentPlugin;
 
@@ -62,6 +65,9 @@ impl Plugin for EnvironmentPlugin {
                 .chain()
                 .in_set(FrontendSet::Camera),
         );
+
+        #[cfg(target_arch = "wasm32")]
+        app.add_systems(Update, update_web_camera_fill.in_set(FrontendSet::Camera));
     }
 }
 
@@ -105,6 +111,9 @@ enum GenerationCameraAction {
     Orient(Side),
 }
 
+#[derive(Component)]
+struct WebCameraReadabilityFill;
+
 fn setup_environment(mut commands: Commands) {
     commands.insert_resource(GlobalAmbientLight {
         color: AMBIENT_LIGHT_COLOR,
@@ -129,37 +138,65 @@ fn setup_environment(mut commands: Commands) {
             ..default()
         }
         .build(),
-        RenderLayers::layer(0),
+        if cfg!(target_arch = "wasm32") {
+            // WebGL2 exposes one directional light. Let that one key light
+            // serve both the main and planar-reflection cameras.
+            RenderLayers::layer(0).with(1)
+        } else {
+            RenderLayers::layer(0)
+        },
         Name::new("Nebula key light"),
     ));
-    // The reflection pass gets equivalent lighting without a second set of
-    // directional shadow maps. The reflected pieces are small enough that the
-    // visual difference is negligible, while this matters on web GPUs.
-    commands.spawn((
-        DirectionalLight {
-            color: NEBULA_KEY_COLOR,
-            illuminance: NEBULA_KEY_ILLUMINANCE,
-            shadow_maps_enabled: false,
-            ..default()
-        },
-        key_light_transform,
-        RenderLayers::layer(1),
-        Name::new("Reflected nebula key light"),
-    ));
 
-    // One shadowless fill serves both the main and reflection cameras. Its
-    // opposite azimuth prevents the pink key from flattening the silhouettes.
-    commands.spawn((
-        DirectionalLight {
-            color: COSMIC_FILL_COLOR,
-            illuminance: COSMIC_FILL_ILLUMINANCE,
-            shadow_maps_enabled: false,
-            ..default()
-        },
-        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.6, 2.35, 0.18)),
-        RenderLayers::layer(0).with(1),
-        Name::new("Cosmic fill light"),
-    ));
+    if cfg!(target_arch = "wasm32") {
+        // Clustered point lights are supported by the WebGL2 CPU fallback and
+        // do not consume its single directional-light slot. This broad fixed
+        // fill keeps the cool opposing color in both views.
+        commands.spawn((
+            PointLight {
+                color: COSMIC_FILL_COLOR,
+                intensity: point_light_lumens(
+                    COSMIC_FILL_ILLUMINANCE,
+                    WEB_COSMIC_FILL_POSITION.length(),
+                ),
+                range: WEB_COSMIC_FILL_RANGE,
+                radius: WEB_COSMIC_FILL_RADIUS,
+                shadow_maps_enabled: false,
+                ..default()
+            },
+            Transform::from_translation(WEB_COSMIC_FILL_POSITION),
+            RenderLayers::layer(0).with(1),
+            Name::new("Web cosmic fill light"),
+        ));
+    } else {
+        // Native renderers can use a dedicated shadowless key in the
+        // reflection pass without spending another set of shadow maps.
+        commands.spawn((
+            DirectionalLight {
+                color: NEBULA_KEY_COLOR,
+                illuminance: NEBULA_KEY_ILLUMINANCE,
+                shadow_maps_enabled: false,
+                ..default()
+            },
+            key_light_transform,
+            RenderLayers::layer(1),
+            Name::new("Reflected nebula key light"),
+        ));
+
+        // One shadowless fill serves both the main and reflection cameras. Its
+        // opposite azimuth prevents the pink key from flattening silhouettes.
+        commands.spawn((
+            DirectionalLight {
+                color: COSMIC_FILL_COLOR,
+                illuminance: COSMIC_FILL_ILLUMINANCE,
+                shadow_maps_enabled: false,
+                ..default()
+            },
+            Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.6, 2.35, 0.18)),
+            RenderLayers::layer(0).with(1),
+            Name::new("Cosmic fill light"),
+        ));
+    }
 
     let mut bloom = Bloom::NATURAL;
     bloom.intensity = BLOOM_INTENSITY;
@@ -172,51 +209,94 @@ fn setup_environment(mut commands: Commands) {
     bloom.composite_mode = BloomCompositeMode::Additive;
     bloom.max_mip_dimension = BLOOM_MAX_MIP_DIMENSION;
 
-    commands
-        .spawn((
-            Camera3d::default(),
-            Hdr,
-            Msaa::Off,
-            Smaa {
-                preset: SmaaPreset::Ultra,
+    let mut camera = commands.spawn((
+        Camera3d::default(),
+        Hdr,
+        Msaa::Off,
+        Smaa {
+            preset: SmaaPreset::Ultra,
+        },
+        MipBias(MATERIAL_TEXTURE_MIP_BIAS),
+        Tonemapping::TonyMcMapface,
+        bloom,
+        ColorGrading {
+            global: ColorGradingGlobal {
+                exposure: COLOR_GRADING_EXPOSURE,
+                tint: COLOR_GRADING_TINT,
+                post_saturation: COLOR_GRADING_SATURATION,
+                ..default()
             },
-            MipBias(MATERIAL_TEXTURE_MIP_BIAS),
-            Tonemapping::TonyMcMapface,
-            bloom,
-            ColorGrading {
-                global: ColorGradingGlobal {
-                    exposure: COLOR_GRADING_EXPOSURE,
-                    tint: COLOR_GRADING_TINT,
-                    post_saturation: COLOR_GRADING_SATURATION,
+            ..default()
+        },
+        Vignette {
+            intensity: VIGNETTE_INTENSITY,
+            radius: VIGNETTE_RADIUS,
+            smoothness: VIGNETTE_SMOOTHNESS,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 10.5, -13.5).looking_at(Vec3::ZERO, Vec3::Y),
+        chess_camera_controller(),
+    ));
+    camera.with_children(|camera| {
+        if cfg!(target_arch = "wasm32") {
+            camera.spawn((
+                PointLight {
+                    color: CAMERA_FILL_COLOR,
+                    intensity: point_light_lumens(CAMERA_FILL_ILLUMINANCE, HOME_CAMERA_RADIUS),
+                    range: web_camera_fill_range(HOME_CAMERA_RADIUS),
+                    radius: WEB_CAMERA_FILL_RADIUS,
+                    shadow_maps_enabled: false,
                     ..default()
                 },
-                ..default()
-            },
-            Vignette {
-                intensity: VIGNETTE_INTENSITY,
-                radius: VIGNETTE_RADIUS,
-                smoothness: VIGNETTE_SMOOTHNESS,
-                ..default()
-            },
-            Transform::from_xyz(0.0, 10.5, -13.5).looking_at(Vec3::ZERO, Vec3::Y),
-            chess_camera_controller(),
-        ))
-        .with_child((
-            DirectionalLight {
-                color: CAMERA_FILL_COLOR,
-                illuminance: CAMERA_FILL_ILLUMINANCE,
-                shadow_maps_enabled: false,
-                ..default()
-            },
-            Transform::from_rotation(Quat::from_euler(
-                EulerRot::XYZ,
-                CAMERA_FILL_PITCH_DEGREES.to_radians(),
-                CAMERA_FILL_YAW_DEGREES.to_radians(),
-                0.0,
-            )),
-            RenderLayers::layer(0),
-            Name::new("Camera readability fill"),
-        ));
+                Transform::IDENTITY,
+                RenderLayers::layer(0),
+                WebCameraReadabilityFill,
+                Name::new("Web camera readability fill"),
+            ));
+        } else {
+            camera.spawn((
+                DirectionalLight {
+                    color: CAMERA_FILL_COLOR,
+                    illuminance: CAMERA_FILL_ILLUMINANCE,
+                    shadow_maps_enabled: false,
+                    ..default()
+                },
+                Transform::from_rotation(Quat::from_euler(
+                    EulerRot::XYZ,
+                    CAMERA_FILL_PITCH_DEGREES.to_radians(),
+                    CAMERA_FILL_YAW_DEGREES.to_radians(),
+                    0.0,
+                )),
+                RenderLayers::layer(0),
+                Name::new("Camera readability fill"),
+            ));
+        }
+    });
+}
+
+fn point_light_lumens(illuminance: f32, distance: f32) -> f32 {
+    illuminance * 4.0 * PI * distance * distance
+}
+
+fn web_camera_fill_range(camera_radius: f32) -> f32 {
+    (camera_radius * WEB_CAMERA_FILL_RANGE_MULTIPLIER).max(WEB_CAMERA_FILL_MIN_RANGE)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn update_web_camera_fill(
+    camera: Single<&PanOrbitCamera>,
+    mut fill: Single<&mut PointLight, With<WebCameraReadabilityFill>>,
+) {
+    let radius = camera.radius.unwrap_or(HOME_CAMERA_RADIUS).max(1.0);
+    let target_intensity = point_light_lumens(CAMERA_FILL_ILLUMINANCE, radius);
+    let target_range = web_camera_fill_range(radius);
+
+    if (fill.intensity - target_intensity).abs() > 1.0 {
+        fill.intensity = target_intensity;
+    }
+    if (fill.range - target_range).abs() > 0.01 {
+        fill.range = target_range;
+    }
 }
 
 fn chess_camera_controller() -> PanOrbitCamera {
@@ -458,6 +538,15 @@ mod tests {
         let camera = chess_camera_controller();
         assert!(camera.touch_enabled);
         assert_eq!(camera.touch_controls, TouchControls::OneFingerOrbit);
+    }
+
+    #[test]
+    fn web_point_fill_preserves_illuminance_across_camera_zoom() {
+        let near = point_light_lumens(CAMERA_FILL_ILLUMINANCE, 6.0);
+        let far = point_light_lumens(CAMERA_FILL_ILLUMINANCE, 12.0);
+        assert!((far / near - 4.0).abs() < 0.001);
+        assert_eq!(web_camera_fill_range(6.0), 24.0);
+        assert_eq!(web_camera_fill_range(20.0), 40.0);
     }
 
     #[test]

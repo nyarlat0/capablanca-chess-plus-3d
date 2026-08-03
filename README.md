@@ -91,6 +91,7 @@ reuse it.
 - Mouse wheel: zoom.
 - Middle click: smoothly recenter the complete camera on the current player in
   Local mode, or on the local player in AI and Multiplayer modes.
+- The square-corner button below the in-game menu arrow toggles fullscreen.
 - `Escape`: cancel the current selection.
 
 ### Touch
@@ -99,6 +100,7 @@ reuse it.
 - One-finger drag: orbit the camera.
 - Two-finger drag: pan the camera.
 - Pinch with two fingers: zoom.
+- The square-corner button below the in-game menu arrow toggles browser fullscreen.
 
 ## Game modes
 

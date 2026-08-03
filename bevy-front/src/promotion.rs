@@ -23,6 +23,10 @@ const PREVIEW_LAYER_BASE: usize = 8;
 const PREVIEW_ROTATION_SPEED: f32 = 0.7;
 const PREVIEW_MODEL_SCALE: f32 = 1.7;
 const PREVIEW_TILT_RADIANS: f32 = PI / 6.0;
+const PREVIEW_LIGHT_ILLUMINANCE: f32 = 11_000.0;
+const WEB_PREVIEW_LIGHT_INTENSITY: f32 = 2_400_000.0;
+const WEB_PREVIEW_LIGHT_RANGE: f32 = 10.0;
+const WEB_PREVIEW_LIGHT_RADIUS: f32 = 0.8;
 
 pub(crate) struct PromotionPlugin;
 
@@ -263,16 +267,34 @@ fn spawn_promotion_preview(
         render_layer.clone(),
         PromotionPreviewEntity,
     ));
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 11_000.0,
-            shadow_maps_enabled: false,
-            ..default()
-        },
-        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.75, -0.55, 0.0)),
-        render_layer,
-        PromotionPreviewEntity,
-    ));
+    if cfg!(target_arch = "wasm32") {
+        // WebGL2 supports only one directional light, which is reserved for
+        // the board. A local point light gives every isolated preview the same
+        // readable shape without consuming that slot.
+        commands.spawn((
+            PointLight {
+                intensity: WEB_PREVIEW_LIGHT_INTENSITY,
+                range: WEB_PREVIEW_LIGHT_RANGE,
+                radius: WEB_PREVIEW_LIGHT_RADIUS,
+                shadow_maps_enabled: false,
+                ..default()
+            },
+            Transform::from_xyz(-2.0, 3.0, 3.0),
+            render_layer,
+            PromotionPreviewEntity,
+        ));
+    } else {
+        commands.spawn((
+            DirectionalLight {
+                illuminance: PREVIEW_LIGHT_ILLUMINANCE,
+                shadow_maps_enabled: false,
+                ..default()
+            },
+            Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.75, -0.55, 0.0)),
+            render_layer,
+            PromotionPreviewEntity,
+        ));
+    }
     let pivot = commands
         .spawn((
             Transform::IDENTITY,

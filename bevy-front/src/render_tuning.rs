@@ -48,6 +48,12 @@ pub(crate) const NEBULA_KEY_COLOR: Color = Color::srgb(1.0, 0.82, 0.9);
 pub(crate) const NEBULA_KEY_ILLUMINANCE: f32 = 6_500.0;
 pub(crate) const COSMIC_FILL_COLOR: Color = Color::srgb(0.42, 0.56, 1.0);
 pub(crate) const COSMIC_FILL_ILLUMINANCE: f32 = 1600.0;
+// WebGL2 has one directional-light slot. Its cool fill therefore uses a broad
+// shadowless point light, calibrated to match COSMIC_FILL_ILLUMINANCE at the
+// center of the board.
+pub(crate) const WEB_COSMIC_FILL_POSITION: Vec3 = Vec3::new(-9.0, 10.0, 8.0);
+pub(crate) const WEB_COSMIC_FILL_RANGE: f32 = 42.0;
+pub(crate) const WEB_COSMIC_FILL_RADIUS: f32 = 2.5;
 
 // A weak, shadowless product-light which follows the camera. Unlike ambient
 // light, it preserves the models' form; unlike another fixed world light, it
@@ -56,6 +62,9 @@ pub(crate) const CAMERA_FILL_COLOR: Color = Color::srgb(0.78, 0.72, 1.0);
 pub(crate) const CAMERA_FILL_ILLUMINANCE: f32 = 700.0;
 pub(crate) const CAMERA_FILL_PITCH_DEGREES: f32 = -8.0;
 pub(crate) const CAMERA_FILL_YAW_DEGREES: f32 = 18.0;
+pub(crate) const WEB_CAMERA_FILL_RADIUS: f32 = 1.0;
+pub(crate) const WEB_CAMERA_FILL_MIN_RANGE: f32 = 24.0;
+pub(crate) const WEB_CAMERA_FILL_RANGE_MULTIPLIER: f32 = 2.0;
 
 // Black pieces remain recognizably black, but their warm albedo is deliberately
 // separated from the cooler black marble. A broader base highlight plus a thin

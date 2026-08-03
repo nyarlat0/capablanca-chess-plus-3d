@@ -45,6 +45,7 @@ cargo run -p bevy-front
 - In Multiplayer, leave Game ID empty to create a room or paste an existing ID
   to join it; the browser remembers the secret player token for reconnection
 - The corner arrow opens the in-game menu and its New game button
+- The square-corner button below it toggles native or browser fullscreen
 - Promotion is selected from the 3D popup
 - `Escape`: cancel the current selection
 

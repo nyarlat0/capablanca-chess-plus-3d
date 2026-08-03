@@ -1,4 +1,6 @@
 use bevy::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
+use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
 use capablanca_chess_plus::GameOutcome;
 
 use crate::{
@@ -25,6 +27,7 @@ impl Plugin for HudPlugin {
                 Update,
                 (
                     handle_hud_toggle,
+                    handle_fullscreen_button,
                     handle_open_menu,
                     open_hud_on_room_created,
                     open_hud_on_game_end,
@@ -32,6 +35,7 @@ impl Plugin for HudPlugin {
                     update_hud,
                     style_open_menu_button,
                     style_hud_toggle,
+                    style_fullscreen_button,
                 )
                     .chain()
                     .in_set(FrontendSet::Hud),
@@ -71,6 +75,12 @@ struct HudToggleButton;
 
 #[derive(Component)]
 struct HudToggleIcon;
+
+#[derive(Component)]
+struct FullscreenButton;
+
+#[derive(Component)]
+struct FullscreenIconCorner;
 
 fn setup_hud(mut commands: Commands, asset_server: Res<AssetServer>) {
     let font: Handle<Font> = asset_server.load("fonts/FiraSans-Bold.ttf");
@@ -151,33 +161,99 @@ fn setup_hud(mut commands: Commands, asset_server: Res<AssetServer>) {
                     ));
             });
 
-            root.spawn((
-                Button,
-                Node {
-                    width: px(38),
-                    height: px(38),
-                    border: UiRect::all(px(1)),
-                    border_radius: BorderRadius::all(px(11)),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                    ..default()
-                },
-                BackgroundColor(Color::srgba(0.12, 0.12, 0.15, 0.3)),
-                BorderColor::all(TOGGLE_GRAY),
-                HudToggleButton,
-            ))
-            .with_child((
-                Text::new("‹"),
-                TextFont {
-                    font: font.into(),
-                    font_size: FontSize::Px(25.0),
-                    ..default()
-                },
-                TextColor(TOGGLE_GRAY),
-                Pickable::IGNORE,
-                HudToggleIcon,
-            ));
+            root.spawn(Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: px(7),
+                ..default()
+            })
+            .with_children(|controls| {
+                controls
+                    .spawn((
+                        Button,
+                        corner_button_node(),
+                        BackgroundColor(Color::srgba(0.12, 0.12, 0.15, 0.3)),
+                        BorderColor::all(TOGGLE_GRAY),
+                        HudToggleButton,
+                        Name::new("Toggle game information"),
+                    ))
+                    .with_child((
+                        Text::new("‹"),
+                        TextFont {
+                            font: font.clone().into(),
+                            font_size: FontSize::Px(25.0),
+                            ..default()
+                        },
+                        TextColor(TOGGLE_GRAY),
+                        Pickable::IGNORE,
+                        HudToggleIcon,
+                    ));
+
+                controls
+                    .spawn((
+                        Button,
+                        corner_button_node(),
+                        BackgroundColor(Color::srgba(0.12, 0.12, 0.15, 0.3)),
+                        BorderColor::all(TOGGLE_GRAY),
+                        FullscreenButton,
+                        Name::new("Toggle fullscreen"),
+                    ))
+                    .with_children(|button| {
+                        button
+                            .spawn((
+                                Node {
+                                    width: px(17),
+                                    height: px(17),
+                                    position_type: PositionType::Relative,
+                                    ..default()
+                                },
+                                Pickable::IGNORE,
+                            ))
+                            .with_children(|icon| {
+                                for (top, left) in
+                                    [(true, true), (true, false), (false, true), (false, false)]
+                                {
+                                    icon.spawn((
+                                        fullscreen_corner_node(top, left),
+                                        BorderColor::all(TOGGLE_GRAY),
+                                        Pickable::IGNORE,
+                                        FullscreenIconCorner,
+                                    ));
+                                }
+                            });
+                    });
+            });
         });
+}
+
+fn corner_button_node() -> Node {
+    Node {
+        width: px(38),
+        height: px(38),
+        border: UiRect::all(px(1)),
+        border_radius: BorderRadius::all(px(11)),
+        justify_content: JustifyContent::Center,
+        align_items: AlignItems::Center,
+        ..default()
+    }
+}
+
+fn fullscreen_corner_node(top: bool, left: bool) -> Node {
+    Node {
+        position_type: PositionType::Absolute,
+        top: if top { px(0) } else { Val::Auto },
+        bottom: if top { Val::Auto } else { px(0) },
+        left: if left { px(0) } else { Val::Auto },
+        right: if left { Val::Auto } else { px(0) },
+        width: px(7),
+        height: px(7),
+        border: UiRect {
+            left: if left { px(2) } else { px(0) },
+            right: if left { px(0) } else { px(2) },
+            top: if top { px(2) } else { px(0) },
+            bottom: if top { px(0) } else { px(2) },
+        },
+        ..default()
+    }
 }
 
 fn handle_hud_toggle(
@@ -189,6 +265,58 @@ fn handle_hud_toggle(
         .any(|interaction| *interaction == Interaction::Pressed)
     {
         hud.expanded = !hud.expanded;
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn handle_fullscreen_button(
+    buttons: Query<&Interaction, (Changed<Interaction>, With<FullscreenButton>)>,
+    mut window: Single<&mut Window, With<PrimaryWindow>>,
+) {
+    if !buttons
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        return;
+    }
+
+    window.mode = toggled_window_mode(&window.mode);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn toggled_window_mode(current: &WindowMode) -> WindowMode {
+    if matches!(current, WindowMode::Windowed) {
+        WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+    } else {
+        WindowMode::Windowed
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn handle_fullscreen_button(
+    buttons: Query<&Interaction, (Changed<Interaction>, With<FullscreenButton>)>,
+) {
+    if !buttons
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        return;
+    }
+
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        error!("Browser Fullscreen API is unavailable: document not found");
+        return;
+    };
+    if document.fullscreen_element().is_some() {
+        document.exit_fullscreen();
+        return;
+    }
+    let Some(root) = document.document_element() else {
+        error!("Browser Fullscreen API is unavailable: document root not found");
+        return;
+    };
+    if let Err(error) = root.request_fullscreen() {
+        error!("Could not enter browser fullscreen: {error:?}");
     }
 }
 
@@ -343,11 +471,7 @@ fn style_hud_toggle(
     mut icons: Query<&mut TextColor, With<HudToggleIcon>>,
 ) {
     for (interaction, mut background, mut border, children) in &mut buttons {
-        let (background_color, foreground_color) = match interaction {
-            Interaction::None => (Color::srgba(0.12, 0.12, 0.15, 0.3), TOGGLE_GRAY),
-            Interaction::Hovered => (Color::srgba(0.2, 0.2, 0.23, 0.5), TOGGLE_GRAY_HOVER),
-            Interaction::Pressed => (Color::srgba(0.08, 0.08, 0.1, 0.65), TOGGLE_GRAY_HOVER),
-        };
+        let (background_color, foreground_color) = corner_button_colors(*interaction);
         background.0 = background_color;
         *border = BorderColor::all(foreground_color);
         for child in children.iter() {
@@ -355,6 +479,31 @@ fn style_hud_toggle(
                 icon.0 = foreground_color;
             }
         }
+    }
+}
+
+fn style_fullscreen_button(
+    mut buttons: Query<
+        (&Interaction, &mut BackgroundColor, &mut BorderColor),
+        (With<FullscreenButton>, Without<FullscreenIconCorner>),
+    >,
+    mut corners: Query<&mut BorderColor, (With<FullscreenIconCorner>, Without<FullscreenButton>)>,
+) {
+    for (interaction, mut background, mut border) in &mut buttons {
+        let (background_color, foreground_color) = corner_button_colors(*interaction);
+        background.0 = background_color;
+        *border = BorderColor::all(foreground_color);
+        for mut corner in &mut corners {
+            *corner = BorderColor::all(foreground_color);
+        }
+    }
+}
+
+fn corner_button_colors(interaction: Interaction) -> (Color, Color) {
+    match interaction {
+        Interaction::None => (Color::srgba(0.12, 0.12, 0.15, 0.3), TOGGLE_GRAY),
+        Interaction::Hovered => (Color::srgba(0.2, 0.2, 0.23, 0.5), TOGGLE_GRAY_HOVER),
+        Interaction::Pressed => (Color::srgba(0.08, 0.08, 0.1, 0.65), TOGGLE_GRAY_HOVER),
     }
 }
 
@@ -411,6 +560,20 @@ mod tests {
             ),
             "Gothic Chess\nMultiplayer · online\nGame ID · ABC234DEFG"
         );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn fullscreen_button_toggles_borderless_mode() {
+        let fullscreen = toggled_window_mode(&WindowMode::Windowed);
+        assert!(matches!(
+            fullscreen,
+            WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+        ));
+        assert!(matches!(
+            toggled_window_mode(&fullscreen),
+            WindowMode::Windowed
+        ));
     }
 
     #[test]
