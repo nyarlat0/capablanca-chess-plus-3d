@@ -55,6 +55,9 @@ const LEGAL_HIGHLIGHT_COLOR: Color = Color::srgb(0.98, 0.08, 0.46);
 const LEGAL_HOVER_COLOR: Color = Color::srgb(1.0, 0.4, 0.7);
 const CAPTURE_HIGHLIGHT_COLOR: Color = Color::srgb(1.0, 0.015, 0.01);
 const CAPTURE_HOVER_COLOR: Color = Color::srgb(1.0, 0.28, 0.2);
+// Hover colors are allowed into HDR so the hovered destination reads as an
+// actual brightness increase (and catches a little bloom), not only a hue swap.
+const HOVER_HIGHLIGHT_BRIGHTNESS: f32 = 2.0;
 // Square highlight tuning. Distances are measured from the cell center: 0.0 is
 // the center and 0.5 is an edge. The straight perimeter stays subtle, while
 // both axes must approach an edge before the denser corner accent appears.
@@ -230,7 +233,7 @@ fn setup_board_assets(
             &highlight_masks,
             LEGAL_HIGHLIGHT_COLOR,
         ),
-        legal_hover: masked_highlight_materials(
+        legal_hover: masked_hover_highlight_materials(
             &mut standard_materials,
             &highlight_masks,
             LEGAL_HOVER_COLOR,
@@ -240,7 +243,7 @@ fn setup_board_assets(
             &highlight_masks,
             CAPTURE_HIGHLIGHT_COLOR,
         ),
-        capture_hover: masked_highlight_materials(
+        capture_hover: masked_hover_highlight_materials(
             &mut standard_materials,
             &highlight_masks,
             CAPTURE_HOVER_COLOR,
@@ -311,6 +314,27 @@ fn masked_highlight_materials(
     std::array::from_fn(|index| {
         materials.add(highlight_material(color, Some(masks[index].clone())))
     })
+}
+
+fn masked_hover_highlight_materials(
+    materials: &mut Assets<StandardMaterial>,
+    masks: &[Handle<Image>; 2],
+    color: Color,
+) -> [Handle<StandardMaterial>; 2] {
+    let color = hdr_hover_color(color);
+    std::array::from_fn(|index| {
+        materials.add(highlight_material(color, Some(masks[index].clone())))
+    })
+}
+
+fn hdr_hover_color(color: Color) -> Color {
+    let linear = color.to_linear();
+    Color::linear_rgba(
+        linear.red * HOVER_HIGHLIGHT_BRIGHTNESS,
+        linear.green * HOVER_HIGHLIGHT_BRIGHTNESS,
+        linear.blue * HOVER_HIGHLIGHT_BRIGHTNESS,
+        linear.alpha,
+    )
 }
 
 fn highlight_material(color: Color, mask: Option<Handle<Image>>) -> StandardMaterial {
@@ -878,6 +902,16 @@ mod tests {
         assert_eq!(material.alpha_mode, AlphaMode::Blend);
         assert!(material.depth_bias > 0.0);
         assert!(!material.fog_enabled);
+    }
+
+    #[test]
+    fn hovered_destination_is_hdr_brighter_than_its_source_color() {
+        let source = LEGAL_HOVER_COLOR.to_linear();
+        let hovered = hdr_hover_color(LEGAL_HOVER_COLOR).to_linear();
+        assert_eq!(hovered.alpha, source.alpha);
+        assert_eq!(hovered.red, source.red * HOVER_HIGHLIGHT_BRIGHTNESS);
+        assert_eq!(hovered.green, source.green * HOVER_HIGHLIGHT_BRIGHTNESS);
+        assert_eq!(hovered.blue, source.blue * HOVER_HIGHLIGHT_BRIGHTNESS);
     }
 
     #[test]
