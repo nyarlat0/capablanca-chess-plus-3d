@@ -9,6 +9,9 @@ members = [
 
 [workspace.dependencies]
 
+[workspace.package]
+license = "Unlicense"
+
 [profile.release]
 opt-level = 2
 strip = true
