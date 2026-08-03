@@ -11,6 +11,10 @@ use crate::{
     board::{BOARD_BASE_BOTTOM_Y, SQUARE_SIZE, board_world_size, square_world},
     game::{ChessMatch, piece_name, side_name},
     reflection::ReflectedPieceMesh,
+    render_tuning::{
+        BLACK_PIECE_CLEARCOAT, BLACK_PIECE_CLEARCOAT_ROUGHNESS, BLACK_PIECE_COLOR,
+        BLACK_PIECE_REFLECTANCE, BLACK_PIECE_ROUGHNESS,
+    },
 };
 
 const MOVE_ANIMATION_SECONDS: f32 = 0.38;
@@ -187,11 +191,12 @@ fn setup_piece_assets(
             ..default()
         }),
         black_material: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.075, 0.055, 0.05),
-            perceptual_roughness: 0.3,
-            reflectance: 0.4,
-            clearcoat: 0.08,
-            clearcoat_perceptual_roughness: 0.25,
+            base_color: BLACK_PIECE_COLOR,
+            metallic: 0.0,
+            perceptual_roughness: BLACK_PIECE_ROUGHNESS,
+            reflectance: BLACK_PIECE_REFLECTANCE,
+            clearcoat: BLACK_PIECE_CLEARCOAT,
+            clearcoat_perceptual_roughness: BLACK_PIECE_CLEARCOAT_ROUGHNESS,
             ..default()
         }),
     });

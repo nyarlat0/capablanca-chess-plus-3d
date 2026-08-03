@@ -40,6 +40,23 @@ pub(crate) const NEBULA_KEY_ILLUMINANCE: f32 = 8_000.0;
 pub(crate) const COSMIC_FILL_COLOR: Color = Color::srgb(0.42, 0.56, 1.0);
 pub(crate) const COSMIC_FILL_ILLUMINANCE: f32 = 2_400.0;
 
+// A weak, shadowless product-light which follows the camera. Unlike ambient
+// light, it preserves the models' form; unlike another fixed world light, it
+// cannot leave the camera-facing half of dark pieces unreadable after orbiting.
+pub(crate) const CAMERA_FILL_COLOR: Color = Color::srgb(0.78, 0.72, 1.0);
+pub(crate) const CAMERA_FILL_ILLUMINANCE: f32 = 1_000.0;
+pub(crate) const CAMERA_FILL_PITCH_DEGREES: f32 = -8.0;
+pub(crate) const CAMERA_FILL_YAW_DEGREES: f32 = 18.0;
+
+// Black pieces remain recognizably black, but their warm albedo is deliberately
+// separated from the cooler black marble. A broader base highlight plus a thin
+// clearcoat keeps carved details visible without metallic or emissive cheating.
+pub(crate) const BLACK_PIECE_COLOR: Color = Color::srgb(0.13, 0.085, 0.07);
+pub(crate) const BLACK_PIECE_ROUGHNESS: f32 = 0.38;
+pub(crate) const BLACK_PIECE_REFLECTANCE: f32 = 0.5;
+pub(crate) const BLACK_PIECE_CLEARCOAT: f32 = 0.18;
+pub(crate) const BLACK_PIECE_CLEARCOAT_ROUGHNESS: f32 = 0.22;
+
 // A single tightly bounded cascade has much higher texel density than Bevy's
 // general-purpose 150-unit default and matches WebGL2's one-cascade limit.
 pub(crate) const DIRECTIONAL_SHADOW_MAP_SIZE: usize = 2_048;
@@ -47,7 +64,7 @@ pub(crate) const SHADOW_MINIMUM_DISTANCE: f32 = 0.1;
 pub(crate) const SHADOW_MAXIMUM_DISTANCE: f32 = 32.0;
 
 // Bloom is deliberately thresholded: only luminous stars, nebula cores and
-// the strongest material highlights produ5e a halo, rather than softening the
+// the strongest material highlights produce a halo, rather than softening the
 // entire frame. These values operate on the exposed HDR image, before tone map.
 pub(crate) const BLOOM_INTENSITY: f32 = 0.1;
 pub(crate) const BLOOM_LOW_FREQUENCY_BOOST: f32 = 0.4;

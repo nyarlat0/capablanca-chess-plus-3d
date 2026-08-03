@@ -24,8 +24,9 @@ use crate::{
     render_tuning::{
         AMBIENT_LIGHT_BRIGHTNESS, AMBIENT_LIGHT_COLOR, BLOOM_HIGH_PASS_FREQUENCY, BLOOM_INTENSITY,
         BLOOM_LOW_FREQUENCY_BOOST, BLOOM_MAX_MIP_DIMENSION, BLOOM_THRESHOLD,
-        BLOOM_THRESHOLD_SOFTNESS, COLOR_GRADING_EXPOSURE, COLOR_GRADING_SATURATION,
-        COLOR_GRADING_TINT, COSMIC_FILL_COLOR, COSMIC_FILL_ILLUMINANCE,
+        BLOOM_THRESHOLD_SOFTNESS, CAMERA_FILL_COLOR, CAMERA_FILL_ILLUMINANCE,
+        CAMERA_FILL_PITCH_DEGREES, CAMERA_FILL_YAW_DEGREES, COLOR_GRADING_EXPOSURE,
+        COLOR_GRADING_SATURATION, COLOR_GRADING_TINT, COSMIC_FILL_COLOR, COSMIC_FILL_ILLUMINANCE,
         DIRECTIONAL_SHADOW_MAP_SIZE, NEBULA_KEY_COLOR, NEBULA_KEY_ILLUMINANCE,
         SHADOW_MAXIMUM_DISTANCE, SHADOW_MINIMUM_DISTANCE, VIGNETTE_INTENSITY, VIGNETTE_RADIUS,
         VIGNETTE_SMOOTHNESS,
@@ -170,39 +171,56 @@ fn setup_environment(mut commands: Commands) {
     bloom.composite_mode = BloomCompositeMode::Additive;
     bloom.max_mip_dimension = BLOOM_MAX_MIP_DIMENSION;
 
-    commands.spawn((
-        Camera3d::default(),
-        Hdr,
-        Msaa::Off,
-        Smaa {
-            preset: SmaaPreset::High,
-        },
-        Tonemapping::TonyMcMapface,
-        bloom,
-        ColorGrading {
-            global: ColorGradingGlobal {
-                exposure: COLOR_GRADING_EXPOSURE,
-                tint: COLOR_GRADING_TINT,
-                post_saturation: COLOR_GRADING_SATURATION,
+    commands
+        .spawn((
+            Camera3d::default(),
+            Hdr,
+            Msaa::Off,
+            Smaa {
+                preset: SmaaPreset::High,
+            },
+            Tonemapping::TonyMcMapface,
+            bloom,
+            ColorGrading {
+                global: ColorGradingGlobal {
+                    exposure: COLOR_GRADING_EXPOSURE,
+                    tint: COLOR_GRADING_TINT,
+                    post_saturation: COLOR_GRADING_SATURATION,
+                    ..default()
+                },
                 ..default()
             },
-            ..default()
-        },
-        Vignette {
-            intensity: VIGNETTE_INTENSITY,
-            radius: VIGNETTE_RADIUS,
-            smoothness: VIGNETTE_SMOOTHNESS,
-            ..default()
-        },
-        Transform::from_xyz(0.0, 10.5, -13.5).looking_at(Vec3::ZERO, Vec3::Y),
-        PanOrbitCamera {
-            button_orbit: MouseButton::Left,
-            button_pan: MouseButton::Right,
-            zoom_lower_limit: 6.0,
-            zoom_upper_limit: Some(25.0),
-            ..default()
-        },
-    ));
+            Vignette {
+                intensity: VIGNETTE_INTENSITY,
+                radius: VIGNETTE_RADIUS,
+                smoothness: VIGNETTE_SMOOTHNESS,
+                ..default()
+            },
+            Transform::from_xyz(0.0, 10.5, -13.5).looking_at(Vec3::ZERO, Vec3::Y),
+            PanOrbitCamera {
+                button_orbit: MouseButton::Left,
+                button_pan: MouseButton::Right,
+                zoom_lower_limit: 6.0,
+                zoom_upper_limit: Some(25.0),
+                ..default()
+            },
+        ))
+        .with_child((
+            DirectionalLight {
+                color: CAMERA_FILL_COLOR,
+                illuminance: CAMERA_FILL_ILLUMINANCE,
+                shadow_maps_enabled: false,
+                ..default()
+            },
+            Transform::from_rotation(Quat::from_euler(
+                EulerRot::XYZ,
+                CAMERA_FILL_PITCH_DEGREES.to_radians(),
+                CAMERA_FILL_YAW_DEGREES.to_radians(),
+                0.0,
+            )),
+            RenderLayers::layer(0),
+            Name::new("Camera readability fill"),
+        ));
 }
 
 fn orient_camera_after_local_move(
