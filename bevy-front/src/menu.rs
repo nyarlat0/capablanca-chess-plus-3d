@@ -1,7 +1,9 @@
 use bevy::{
     ecs::hierarchy::ChildSpawnerCommands,
+    input_focus::tab_navigation::TabIndex,
     picking::hover::Hovered,
     prelude::*,
+    text::{EditableText, EditableTextFilter, TextCursorStyle},
     ui_widgets::{
         Slider, SliderDragState, SliderPrecision, SliderRange, SliderStep, SliderThumb,
         SliderValue, TrackClick, observe, slider_self_update,
@@ -17,6 +19,7 @@ use crate::{
     },
     app::FrontendSet::Menu,
     game::{ChessMatch, Controller, restart_match},
+    multiplayer::{MultiplayerCommand, MultiplayerPhase, MultiplayerState},
     scene::{CameraAutoTurn, start_camera_turn},
 };
 
@@ -42,6 +45,11 @@ impl Plugin for GameMenuPlugin {
                     handle_menu_interactions,
                     sync_menu_visibility,
                     sync_ai_controls_visibility,
+                    sync_multiplayer_controls_visibility,
+                    sync_multiplayer_input_from_state,
+                    sync_multiplayer_game_id,
+                    sync_multiplayer_status,
+                    sync_start_button_label,
                     sync_ai_difficulty,
                     style_menu_buttons,
                     style_ai_difficulty_slider,
@@ -57,6 +65,7 @@ impl Plugin for GameMenuPlugin {
 pub(crate) enum GameMode {
     Local,
     Ai,
+    Multiplayer,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,6 +83,7 @@ pub(crate) struct GameMenuState {
     pub(crate) selected_side: SideChoice,
     pub(crate) active_mode: GameMode,
     pub(crate) active_side: Side,
+    pub(crate) multiplayer_game_id: String,
 }
 
 impl Default for GameMenuState {
@@ -85,6 +95,7 @@ impl Default for GameMenuState {
             selected_side: SideChoice::Random,
             active_mode: GameMode::Local,
             active_side: Side::White,
+            multiplayer_game_id: String::new(),
         }
     }
 }
@@ -97,7 +108,6 @@ enum MenuAction {
     Mode(GameMode),
     Variant(Variant),
     Side(SideChoice),
-    Multiplayer,
     Start,
 }
 
@@ -118,6 +128,18 @@ struct AiDifficultySliderFill;
 
 #[derive(Component)]
 struct AiDifficultyValueLabel;
+
+#[derive(Component)]
+struct MultiplayerControls;
+
+#[derive(Component)]
+struct MultiplayerGameIdInput;
+
+#[derive(Component)]
+struct MultiplayerStatusLabel;
+
+#[derive(Component)]
+struct StartButtonLabel;
 
 fn setup_game_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
     let font: Handle<Font> = asset_server.load("fonts/FiraSans-Bold.ttf");
@@ -188,8 +210,8 @@ fn setup_game_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
                     spawn_menu_button(
                         row,
                         &font,
-                        "Multiplayer · Soon",
-                        MenuAction::Multiplayer,
+                        "Multiplayer",
+                        MenuAction::Mode(GameMode::Multiplayer),
                         percent(32),
                     );
                 });
@@ -216,6 +238,7 @@ fn setup_game_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
                     });
 
                 spawn_ai_difficulty_controls(panel, &font);
+                spawn_multiplayer_controls(panel, &font);
 
                 spawn_section_label(panel, &font, "PLAY AS");
                 spawn_row(panel, |row| {
@@ -244,6 +267,70 @@ fn setup_game_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
 
                 spawn_menu_button(panel, &font, "START GAME", MenuAction::Start, percent(100));
             });
+        });
+}
+
+fn spawn_multiplayer_controls(parent: &mut ChildSpawnerCommands, font: &Handle<Font>) {
+    parent
+        .spawn((
+            Node {
+                display: Display::None,
+                width: percent(100),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(8),
+                ..default()
+            },
+            MultiplayerControls,
+        ))
+        .with_children(|controls| {
+            controls.spawn(text(
+                font,
+                "GAME ID · LEAVE EMPTY TO CREATE",
+                12.0,
+                Color::srgba(1.0, 0.48, 0.7, 0.9),
+            ));
+            controls.spawn((
+                Node {
+                    width: percent(100),
+                    min_height: px(44),
+                    padding: UiRect::axes(px(14), px(9)),
+                    border: UiRect::all(px(1)),
+                    border_radius: BorderRadius::all(px(12)),
+                    overflow: Overflow::clip_x(),
+                    ..default()
+                },
+                EditableText {
+                    max_characters: Some(12),
+                    visible_width: Some(12.0),
+                    allow_newlines: false,
+                    ..default()
+                },
+                EditableTextFilter::new(|character| character.is_ascii_alphanumeric()),
+                TextLayout::no_wrap(),
+                TextFont {
+                    font: font.clone().into(),
+                    font_size: FontSize::Px(18.0),
+                    ..default()
+                },
+                TextColor(TEXT_PRIMARY),
+                TextCursorStyle {
+                    color: ACCENT,
+                    ..default()
+                },
+                BackgroundColor(BUTTON),
+                BorderColor::all(Color::srgba(1.0, 0.35, 0.62, 0.42)),
+                TabIndex(0),
+                MultiplayerGameIdInput,
+            ));
+            controls.spawn((
+                text(
+                    font,
+                    "Enter a game id to join, or leave it empty to create one.",
+                    12.0,
+                    TEXT_MUTED,
+                ),
+                MultiplayerStatusLabel,
+            ));
         });
 }
 
@@ -430,30 +517,37 @@ fn spawn_menu_button(
     width: Val,
 ) {
     let is_start = matches!(action, MenuAction::Start);
-    parent
-        .spawn((
-            Button,
-            Node {
-                width,
-                min_width: px(120),
-                height: px(if is_start { 54 } else { 44 }),
-                flex_grow: 1.0,
-                padding: UiRect::axes(px(12), px(8)),
-                border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(if is_start { 15 } else { 12 })),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            BackgroundColor(if is_start { ACCENT } else { BUTTON }),
-            BorderColor::all(if is_start {
-                Color::srgba(1.0, 0.68, 0.82, 0.8)
-            } else {
-                Color::srgba(1.0, 1.0, 1.0, 0.1)
-            }),
-            action,
-        ))
-        .with_child((text(font, label, 14.0, TEXT_PRIMARY), MenuButtonLabel));
+    let mut button = parent.spawn((
+        Button,
+        Node {
+            width,
+            min_width: px(120),
+            height: px(if is_start { 54 } else { 44 }),
+            flex_grow: 1.0,
+            padding: UiRect::axes(px(12), px(8)),
+            border: UiRect::all(px(1)),
+            border_radius: BorderRadius::all(px(if is_start { 15 } else { 12 })),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        BackgroundColor(if is_start { ACCENT } else { BUTTON }),
+        BorderColor::all(if is_start {
+            Color::srgba(1.0, 0.68, 0.82, 0.8)
+        } else {
+            Color::srgba(1.0, 1.0, 1.0, 0.1)
+        }),
+        action,
+    ));
+    if is_start {
+        button.with_child((
+            text(font, label, 14.0, TEXT_PRIMARY),
+            MenuButtonLabel,
+            StartButtonLabel,
+        ));
+    } else {
+        button.with_child((text(font, label, 14.0, TEXT_PRIMARY), MenuButtonLabel));
+    }
 }
 
 fn text(font: &Handle<Font>, value: &str, size: f32, color: Color) -> impl Bundle {
@@ -468,6 +562,7 @@ fn text(font: &Handle<Font>, value: &str, size: f32, color: Color) -> impl Bundl
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_menu_interactions(
     interactions: Query<(&Interaction, &MenuAction), Changed<Interaction>>,
     time: Res<Time>,
@@ -476,6 +571,8 @@ fn handle_menu_interactions(
     mut ai_task: NonSendMut<AiTask>,
     mut auto_turn: ResMut<CameraAutoTurn>,
     mut camera: Single<&mut PanOrbitCamera>,
+    multiplayer: Res<MultiplayerState>,
+    mut multiplayer_commands: MessageWriter<MultiplayerCommand>,
 ) {
     for (interaction, action) in &interactions {
         if *interaction != Interaction::Pressed {
@@ -497,9 +594,26 @@ fn handle_menu_interactions(
                 }
             }
             MenuAction::Side(side) => menu.selected_side = side,
-            MenuAction::Multiplayer => {}
             MenuAction::Start => {
                 let mode = menu.selected_mode;
+                if mode == GameMode::Multiplayer {
+                    if matches!(
+                        multiplayer.phase,
+                        MultiplayerPhase::Connecting | MultiplayerPhase::Reconnecting
+                    ) {
+                        continue;
+                    }
+                    let game_id = menu.multiplayer_game_id.trim().to_ascii_uppercase();
+                    if game_id.is_empty() {
+                        multiplayer_commands.write(MultiplayerCommand::Create {
+                            variant: menu.selected_variant,
+                            side: menu.selected_side,
+                        });
+                    } else {
+                        multiplayer_commands.write(MultiplayerCommand::Join { game_id });
+                    }
+                    continue;
+                }
                 let side =
                     starting_camera_side(mode, menu.selected_side, time.elapsed().as_nanos());
                 let variant = menu.selected_variant;
@@ -508,13 +622,85 @@ fn handle_menu_interactions(
                 match mode {
                     GameMode::Ai => ai_task.start_new_game(),
                     GameMode::Local => ai_task.shut_down(),
+                    GameMode::Multiplayer => unreachable!(),
                 }
+                multiplayer_commands.write(MultiplayerCommand::Disconnect);
                 menu.active_mode = mode;
                 menu.active_side = side;
                 menu.open = false;
                 start_camera_turn(&mut camera, &mut auto_turn, side);
             }
         }
+    }
+}
+
+fn sync_multiplayer_controls_visibility(
+    menu: Res<GameMenuState>,
+    mut controls: Query<&mut Node, With<MultiplayerControls>>,
+) {
+    if !menu.is_changed() {
+        return;
+    }
+    for mut node in &mut controls {
+        node.display = if menu.selected_mode == GameMode::Multiplayer {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+}
+
+fn sync_multiplayer_game_id(
+    inputs: Query<&EditableText, (Changed<EditableText>, With<MultiplayerGameIdInput>)>,
+    mut menu: ResMut<GameMenuState>,
+) {
+    for input in &inputs {
+        menu.multiplayer_game_id = input.value().to_string();
+    }
+}
+
+fn sync_multiplayer_input_from_state(
+    menu: Res<GameMenuState>,
+    mut inputs: Query<&mut EditableText, With<MultiplayerGameIdInput>>,
+) {
+    if !menu.is_changed() || !menu.open || !menu.multiplayer_game_id.is_empty() {
+        return;
+    }
+    for mut input in &mut inputs {
+        if !input.value().to_string().is_empty() {
+            input.clear();
+        }
+    }
+}
+
+fn sync_multiplayer_status(
+    multiplayer: Res<MultiplayerState>,
+    mut labels: Query<&mut Text, With<MultiplayerStatusLabel>>,
+) {
+    if !multiplayer.is_changed() {
+        return;
+    }
+    for mut label in &mut labels {
+        **label = multiplayer.status.clone();
+    }
+}
+
+fn sync_start_button_label(
+    menu: Res<GameMenuState>,
+    mut labels: Query<&mut Text, With<StartButtonLabel>>,
+) {
+    if !menu.is_changed() {
+        return;
+    }
+    let label = if menu.selected_mode != GameMode::Multiplayer {
+        "START GAME"
+    } else if menu.multiplayer_game_id.trim().is_empty() {
+        "CREATE GAME"
+    } else {
+        "JOIN GAME"
+    };
+    for mut text in &mut labels {
+        **text = label.to_owned();
     }
 }
 
@@ -628,16 +814,9 @@ fn style_menu_buttons(
     mut labels: Query<&mut TextColor, With<MenuButtonLabel>>,
 ) {
     for (interaction, action, mut background, mut border, children) in &mut buttons {
-        let unavailable = matches!(action, MenuAction::Multiplayer);
         let selected = action_selected(*action, &menu);
         let is_start = matches!(action, MenuAction::Start);
-        let (background_color, border_color, label_color) = if unavailable {
-            (
-                Color::srgba(0.08, 0.07, 0.11, 0.45),
-                Color::srgba(1.0, 1.0, 1.0, 0.05),
-                Color::srgba(0.55, 0.52, 0.6, 0.55),
-            )
-        } else if is_start {
+        let (background_color, border_color, label_color) = if is_start {
             (
                 if *interaction == Interaction::Hovered {
                     ACCENT_HOVER
@@ -689,7 +868,7 @@ fn action_selected(action: MenuAction, menu: &GameMenuState) -> bool {
         MenuAction::Mode(mode) => menu.selected_mode == mode,
         MenuAction::Variant(variant) => menu.selected_variant == variant,
         MenuAction::Side(side) => menu.selected_side == side,
-        MenuAction::Multiplayer | MenuAction::Start => false,
+        MenuAction::Start => false,
     }
 }
 
@@ -707,7 +886,7 @@ fn starting_camera_side(mode: GameMode, choice: SideChoice, entropy: u128) -> Si
         // Pass-and-play always starts from White, who makes the first move.
         // The camera will switch to the other side after that move finishes.
         GameMode::Local => Side::White,
-        GameMode::Ai => resolve_side(choice, entropy),
+        GameMode::Ai | GameMode::Multiplayer => resolve_side(choice, entropy),
     }
 }
 
@@ -719,6 +898,13 @@ fn controllers_for(mode: GameMode, human_side: Side) -> [Controller; 2] {
                 Controller::Human
             } else {
                 Controller::Computer
+            }
+        }),
+        GameMode::Multiplayer => std::array::from_fn(|index| {
+            if index == human_side.index() {
+                Controller::Human
+            } else {
+                Controller::Remote
             }
         }),
     }

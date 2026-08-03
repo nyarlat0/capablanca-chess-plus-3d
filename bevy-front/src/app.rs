@@ -1,16 +1,20 @@
+use bevy::input_focus::tab_navigation::TabNavigationPlugin;
 use bevy::prelude::*;
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
 
 use crate::{
     ai::AiPlugin, audio::GameAudioPlugin, board::BoardPlugin, game::GamePlugin, hud::HudPlugin,
-    input::InputPlugin, menu::GameMenuPlugin, pieces::PiecesPlugin, promotion::PromotionPlugin,
-    reflection::PlanarReflectionPlugin, scene::EnvironmentPlugin, skybox::SkyboxPlugin,
+    input::InputPlugin, menu::GameMenuPlugin, multiplayer::MultiplayerPlugin, pieces::PiecesPlugin,
+    promotion::PromotionPlugin, reflection::PlanarReflectionPlugin, scene::EnvironmentPlugin,
+    skybox::SkyboxPlugin,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, SystemSet)]
 pub(crate) enum FrontendSet {
     Menu,
+    Multiplayer,
     Input,
+    MoveDispatch,
     AiPoll,
     AiStart,
     Camera,
@@ -30,7 +34,9 @@ impl Plugin for FrontendPlugin {
             Update,
             (
                 FrontendSet::Menu,
+                FrontendSet::Multiplayer,
                 FrontendSet::Input,
+                FrontendSet::MoveDispatch,
                 FrontendSet::AiPoll,
                 FrontendSet::AiStart,
                 FrontendSet::Camera,
@@ -47,6 +53,7 @@ impl Plugin for FrontendPlugin {
             GamePlugin,
             GameAudioPlugin,
             GameMenuPlugin,
+            MultiplayerPlugin,
             AiPlugin,
             InputPlugin,
             EnvironmentPlugin,
@@ -71,7 +78,12 @@ pub fn build_app() -> App {
         }),
         ..default()
     }))
-    .add_plugins((MeshPickingPlugin, PanOrbitCameraPlugin, FrontendPlugin));
+    .add_plugins((
+        MeshPickingPlugin,
+        TabNavigationPlugin,
+        PanOrbitCameraPlugin,
+        FrontendPlugin,
+    ));
     app
 }
 

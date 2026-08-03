@@ -6,6 +6,7 @@ use crate::{
     app::FrontendSet,
     game::{ChessMatch, Controller, is_playable, outcome_message},
     menu::{GameMenuState, GameMode},
+    multiplayer::{MultiplayerCommand, MultiplayerRoomReady, MultiplayerState},
 };
 
 const ACCENT: Color = Color::srgb(0.98, 0.19, 0.52);
@@ -25,6 +26,7 @@ impl Plugin for HudPlugin {
                 (
                     handle_hud_toggle,
                     handle_open_menu,
+                    open_hud_on_room_created,
                     open_hud_on_game_end,
                     sync_hud_visibility,
                     update_hud,
@@ -196,6 +198,7 @@ fn handle_open_menu(
     mut hud: ResMut<HudState>,
     mut chess_match: ResMut<ChessMatch>,
     mut ai_task: NonSendMut<AiTask>,
+    mut multiplayer_commands: MessageWriter<MultiplayerCommand>,
 ) {
     if !buttons
         .iter()
@@ -212,6 +215,17 @@ fn handle_open_menu(
     chess_match.selected = None;
     chess_match.pending_promotion = None;
     ai_task.cancel();
+    multiplayer_commands.write(MultiplayerCommand::Disconnect);
+    menu.multiplayer_game_id.clear();
+}
+
+fn open_hud_on_room_created(
+    mut rooms: MessageReader<MultiplayerRoomReady>,
+    mut hud: ResMut<HudState>,
+) {
+    if rooms.read().any(|room| room.created) {
+        hud.expanded = true;
+    }
 }
 
 fn open_hud_on_game_end(chess_match: Res<ChessMatch>, mut hud: ResMut<HudState>) {
@@ -259,6 +273,7 @@ fn sync_hud_visibility(
 fn update_hud(
     chess_match: Res<ChessMatch>,
     menu: Res<GameMenuState>,
+    multiplayer: Res<MultiplayerState>,
     mut hud: Query<&mut Text, With<HudText>>,
 ) {
     if menu.open {
@@ -271,19 +286,29 @@ fn update_hud(
         chess_match.game.position().rules().name(),
         menu.active_mode,
         chess_match.game.outcome(),
+        multiplayer.game_id.as_deref(),
     );
 }
 
-fn hud_text(game_type: &str, mode: GameMode, outcome: GameOutcome) -> String {
+fn hud_text(
+    game_type: &str,
+    mode: GameMode,
+    outcome: GameOutcome,
+    game_id: Option<&str>,
+) -> String {
     let mode = match mode {
         GameMode::Local => "Local · two players",
         GameMode::Ai => "AI · versus computer",
+        GameMode::Multiplayer => "Multiplayer · online",
     };
-    if is_playable(outcome) {
-        format!("{game_type}\n{mode}")
-    } else {
-        format!("{game_type}\n{mode}\n\n{}", outcome_message(outcome))
+    let mut value = format!("{game_type}\n{mode}");
+    if let Some(game_id) = game_id {
+        value.push_str(&format!("\nGame ID · {game_id}"));
     }
+    if !is_playable(outcome) {
+        value.push_str(&format!("\n\n{}", outcome_message(outcome)));
+    }
+    value
 }
 
 fn style_open_menu_button(
@@ -342,11 +367,11 @@ mod tests {
     #[test]
     fn active_game_hud_contains_only_its_mode() {
         assert_eq!(
-            hud_text("Gothic Chess", GameMode::Local, GameOutcome::Ongoing),
+            hud_text("Gothic Chess", GameMode::Local, GameOutcome::Ongoing, None,),
             "Gothic Chess\nLocal · two players"
         );
         assert_eq!(
-            hud_text("Capablanca Chess", GameMode::Ai, GameOutcome::Check),
+            hud_text("Capablanca Chess", GameMode::Ai, GameOutcome::Check, None,),
             "Capablanca Chess\nAI · versus computer"
         );
     }
@@ -359,7 +384,8 @@ mod tests {
                 GameMode::Ai,
                 GameOutcome::Win {
                     winner: Side::White
-                }
+                },
+                None,
             ),
             "Gothic Chess\nAI · versus computer\n\nCheckmate — White wins."
         );
@@ -367,9 +393,23 @@ mod tests {
             hud_text(
                 "Capablanca Chess",
                 GameMode::Local,
-                GameOutcome::Draw(DrawReason::Stalemate)
+                GameOutcome::Draw(DrawReason::Stalemate),
+                None,
             ),
             "Capablanca Chess\nLocal · two players\n\nDraw by stalemate."
+        );
+    }
+
+    #[test]
+    fn multiplayer_hud_always_contains_the_public_game_id() {
+        assert_eq!(
+            hud_text(
+                "Gothic Chess",
+                GameMode::Multiplayer,
+                GameOutcome::Ongoing,
+                Some("ABC234DEFG"),
+            ),
+            "Gothic Chess\nMultiplayer · online\nGame ID · ABC234DEFG"
         );
     }
 

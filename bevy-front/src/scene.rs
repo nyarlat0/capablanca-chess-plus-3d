@@ -362,7 +362,7 @@ fn handle_manual_camera_recenter(
 fn manual_recenter_side(active_mode: GameMode, player_side: Side, side_to_move: Side) -> Side {
     match active_mode {
         GameMode::Local => side_to_move,
-        GameMode::Ai => player_side,
+        GameMode::Ai | GameMode::Multiplayer => player_side,
     }
 }
 

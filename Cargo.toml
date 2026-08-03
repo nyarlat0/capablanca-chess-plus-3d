@@ -1,8 +1,10 @@
 [workspace]
 resolver = "3"
 members = [
+    "backend",
     "bevy-front",
     "engine",
+    "multiplayer-protocol",
 ]
 
 [workspace.dependencies]

@@ -2,8 +2,8 @@
 
 This crate is the Bevy 0.19 frontend for `capablanca-engine`. It supports all
 seven built-in variants, runtime 10×8 and 10×10 boards, human or engine control
-for either side, legal-move highlighting, promotion choices, and asynchronous
-Fairy-Stockfish searches.
+for either side, two-player online rooms, legal-move highlighting, promotion
+choices, and asynchronous Fairy-Stockfish searches.
 
 ## Requirements
 
@@ -37,11 +37,13 @@ cargo run -p bevy-front
 - Left click: select a piece and its destination
 - Left mouse drag: orbit the camera
 - Middle click: smoothly recenter on the current player in Local mode, or on the
-  human player in AI mode
+  local player in AI and Multiplayer modes
 - Right mouse drag: pan
 - Mouse wheel: zoom
-- The startup menu selects Local/AI mode, variant, player color, and the
-  discrete Fairy-Stockfish strength in AI mode
+- The startup menu selects Local/AI/Multiplayer mode, variant, player color, and
+  the discrete Fairy-Stockfish strength in AI mode
+- In Multiplayer, leave Game ID empty to create a room or paste an existing ID
+  to join it; the browser remembers the secret player token for reconnection
 - The corner arrow opens the in-game menu and its New game button
 - Promotion is selected from the 3D popup
 - `Escape`: cancel the current selection
@@ -65,6 +67,20 @@ Serve the application over HTTPS, or from `localhost` during development; do
 not open the HTML via `file://`. All engine files should be served from the same
 origin. The bundled native and browser engines, their exact upstream source
 links, and the GPLv3 license are documented in `assets/engine/THIRD_PARTY.md`.
+
+The multiplayer client uses `wss://<current host>/ws` (or `ws://` on HTTP) by
+default. Put the Actix backend behind that same-origin route in production. To
+connect a browser development build directly to another address, set the URL
+while compiling because it is embedded in the WASM module:
+
+```sh
+CAPABLANCA_WS_URL=ws://127.0.0.1:8080/ws \
+  cargo build -p bevy-front --target wasm32-unknown-unknown
+```
+
+Native builds read `CAPABLANCA_WS_URL` at runtime and otherwise use
+`ws://127.0.0.1:8080/ws`. Backend and PostgreSQL setup is documented in
+[`../backend/README.md`](../backend/README.md).
 
 ## Render assets
 

@@ -13,7 +13,7 @@ use capablanca_chess_plus::{BoardSize, GameOutcome, MoveKind, Square};
 
 use crate::{
     app::FrontendSet,
-    game::{ChessMatch, handle_square_selection},
+    game::{ChessMatch, MoveRequest, handle_square_selection},
     menu::GameMenuState,
     pieces::PieceAnimationState,
     reflection::{
@@ -643,6 +643,7 @@ fn on_square_click(
     animation: Res<PieceAnimationState>,
     pointer: Res<BoardPointerState>,
     mut chess_match: ResMut<ChessMatch>,
+    mut move_requests: MessageWriter<MoveRequest>,
 ) {
     if menu.open
         || !animation.is_settled(chess_match.generation)
@@ -654,7 +655,9 @@ fn on_square_click(
     let Ok(clicked) = squares.get(click.entity) else {
         return;
     };
-    handle_square_selection(&mut chess_match, clicked.0);
+    if let Some(chess_move) = handle_square_selection(&mut chess_match, clicked.0) {
+        move_requests.write(MoveRequest(chess_move));
+    }
 }
 
 fn on_square_press(press: On<Pointer<Press>>, mut pointer: ResMut<BoardPointerState>) {

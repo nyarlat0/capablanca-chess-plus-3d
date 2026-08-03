@@ -6,6 +6,7 @@ mod game;
 mod hud;
 mod input;
 mod menu;
+mod multiplayer;
 mod pieces;
 mod promotion;
 mod reflection;

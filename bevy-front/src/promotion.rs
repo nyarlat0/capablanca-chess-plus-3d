@@ -10,7 +10,7 @@ use capablanca_chess_plus::{Color as Side, Move, PieceKind};
 
 use crate::{
     app::FrontendSet,
-    game::{ChessMatch, apply_move},
+    game::{ChessMatch, MoveRequest},
     menu::GameMenuState,
     pieces::{PieceAssets, PieceMaterial, piece_model_scale},
 };
@@ -93,7 +93,8 @@ struct PromotionPopupParams<'w, 's> {
 
 fn handle_promotion_choice(
     choices: Query<(&Interaction, &PromotionChoice), Changed<Interaction>>,
-    mut chess_match: ResMut<ChessMatch>,
+    chess_match: Res<ChessMatch>,
+    mut move_requests: MessageWriter<MoveRequest>,
 ) {
     let Some(choice) = choices.iter().find_map(|(interaction, choice)| {
         (*interaction == Interaction::Pressed).then_some(choice.0)
@@ -108,7 +109,7 @@ fn handle_promotion_choice(
             .find(|candidate| candidate.promotion == choice)
     });
     if let Some(chess_move) = chess_move {
-        apply_move(&mut chess_match, chess_move, None);
+        move_requests.write(MoveRequest(chess_move));
     }
 }
 

@@ -8,14 +8,19 @@ pub(crate) struct GamePlugin;
 
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ChessMatch>();
+        app.init_resource::<ChessMatch>()
+            .add_message::<MoveRequest>();
     }
 }
+
+#[derive(Message, Clone, Copy, Debug)]
+pub(crate) struct MoveRequest(pub(crate) Move);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Controller {
     Human,
     Computer,
+    Remote,
 }
 
 #[derive(Resource)]
@@ -26,6 +31,7 @@ pub(crate) struct ChessMatch {
     pub(crate) selected: Option<Square>,
     pub(crate) pending_promotion: Option<PendingPromotion>,
     pub(crate) last_move: Option<Move>,
+    pub(crate) animate_last_move: bool,
     pub(crate) captured_pieces: Vec<CapturedPiece>,
     pub(crate) status: String,
     pub(crate) generation: u64,
@@ -42,6 +48,7 @@ impl Default for ChessMatch {
             selected: None,
             pending_promotion: None,
             last_move: None,
+            animate_last_move: false,
             captured_pieces: Vec::new(),
             status: "White to move.".to_owned(),
             generation: 0,
@@ -78,25 +85,29 @@ pub(crate) fn restart_match(chess_match: &mut ChessMatch, variant: Variant) {
     chess_match.selected = None;
     chess_match.pending_promotion = None;
     chess_match.last_move = None;
+    chess_match.animate_last_move = false;
     chess_match.captured_pieces.clear();
     chess_match.next_capture_id = 0;
     chess_match.status = format!("New {} game. White to move.", variant.rules().name());
     chess_match.generation = chess_match.generation.wrapping_add(1);
 }
 
-pub(crate) fn handle_square_selection(chess_match: &mut ChessMatch, square: Square) {
+pub(crate) fn handle_square_selection(
+    chess_match: &mut ChessMatch,
+    square: Square,
+) -> Option<Move> {
     if chess_match.pending_promotion.is_some() {
-        return;
+        return None;
     }
     if !is_playable(chess_match.game.outcome()) {
         chess_match.status = outcome_message(chess_match.game.outcome());
-        return;
+        return None;
     }
 
     let side = chess_match.game.position().side_to_move();
-    if chess_match.controllers[side.index()] == Controller::Computer {
-        chess_match.status = format!("{} is controlled by the computer.", side_name(side));
-        return;
+    if chess_match.controllers[side.index()] != Controller::Human {
+        chess_match.status = format!("Waiting for {}.", side_name(side));
+        return None;
     }
 
     if let Some(from) = chess_match.selected {
@@ -117,7 +128,7 @@ pub(crate) fn handle_square_selection(chess_match: &mut ChessMatch, square: Squa
                 }
             }
             [chess_move] if chess_move.promotion.is_none() => {
-                apply_move(chess_match, *chess_move, None);
+                return Some(*chess_move);
             }
             _ => {
                 chess_match.status = "Choose a promotion.".to_owned();
@@ -129,6 +140,7 @@ pub(crate) fn handle_square_selection(chess_match: &mut ChessMatch, square: Squa
     } else {
         chess_match.status = format!("Select a {} piece.", side_name(side).to_ascii_lowercase());
     }
+    None
 }
 
 fn selectable_piece(chess_match: &ChessMatch, square: Square) -> bool {
@@ -184,6 +196,7 @@ pub(crate) fn apply_move(
     chess_match.selected = None;
     chess_match.pending_promotion = None;
     chess_match.last_move = Some(chess_move);
+    chess_match.animate_last_move = true;
     chess_match.generation = chess_match.generation.wrapping_add(1);
     if let (Some(piece), Some(from)) = (captured_piece, captured_square) {
         let tray_slot = first_free_capture_slot(&chess_match.captured_pieces, moving_piece.color);

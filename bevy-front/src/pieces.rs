@@ -255,6 +255,9 @@ fn sync_pieces(
 }
 
 fn animation_start(chess_match: &ChessMatch, square: Square, piece: Piece) -> Option<Square> {
+    if !chess_match.animate_last_move {
+        return None;
+    }
     let chess_move = chess_match.last_move?;
     if square == chess_move.to {
         return Some(chess_move.from);
