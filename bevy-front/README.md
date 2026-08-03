@@ -57,7 +57,19 @@ reuse Docker's build cache. The pipeline:
 - emits direct ETC2 for WebGL2 plus UASTC variants for native GPU transcoding;
 - applies the correct sRGB/linear transfer functions and validates every KTX2.
 
-The six `*_2K_TEX.png` files are the default environment source. If
+The optional target avoids rebuilding unrelated assets:
+
+```sh
+./tools/rebuild-render-assets.sh board
+./tools/rebuild-render-assets.sh environment
+./tools/rebuild-render-assets.sh all
+```
+
+With no target, `all` is used for backward compatibility. Use `board` after
+changing marble or wood; it does not read, encode, or overwrite the skybox and
+IBL files. Use `environment` only after changing the skybox or HDR environment.
+
+The six `*_4K_TEX.png` files are the default environment source. If
 `assets/textures/environment.hdr` or `environment.exr` exists, it is preferred
 for IBL while the six PNG faces remain the visible skybox.
 

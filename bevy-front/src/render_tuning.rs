@@ -10,7 +10,7 @@ use bevy::prelude::*;
 pub(crate) const ENVIRONMENT_ROTATION_X_DEGREES: f32 = 30.0;
 pub(crate) const ENVIRONMENT_ROTATION_Y_DEGREES: f32 = 220.0;
 pub(crate) const ENVIRONMENT_ROTATION_Z_DEGREES: f32 = 0.0;
-pub(crate) const SKYBOX_BRIGHTNESS: f32 = 500.0;
+pub(crate) const SKYBOX_BRIGHTNESS: f32 = 700.0;
 pub(crate) const ENVIRONMENT_LIGHT_INTENSITY: f32 = 420.0;
 pub(crate) const TEXTURE_ANISOTROPY: u16 = 8;
 
