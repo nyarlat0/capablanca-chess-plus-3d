@@ -51,7 +51,8 @@ Run that command from the workspace root. The first run builds a pinned Docker
 image containing Khronos KTX-Software and glTF-IBL-Sampler; subsequent runs
 reuse Docker's build cache. The pipeline:
 
-- builds the nebula skybox and its mip chain;
+- builds the nebula skybox and its mip chain, with display-only contrast and
+  saturation enhancement kept separate from scene lighting;
 - prefilters diffuse and specular image-based lighting on the CPU via Lavapipe;
 - builds mipmapped color, normal, and roughness maps for the board;
 - emits direct ETC2 for WebGL2 plus UASTC variants for native GPU transcoding;

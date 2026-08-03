@@ -36,7 +36,7 @@ pub(crate) const AMBIENT_LIGHT_COLOR: Color = Color::srgb(0.42, 0.36, 0.62);
 pub(crate) const AMBIENT_LIGHT_BRIGHTNESS: f32 = 28.0;
 
 pub(crate) const NEBULA_KEY_COLOR: Color = Color::srgb(1.0, 0.82, 0.9);
-pub(crate) const NEBULA_KEY_ILLUMINANCE: f32 = 10_500.0;
+pub(crate) const NEBULA_KEY_ILLUMINANCE: f32 = 8_000.0;
 pub(crate) const COSMIC_FILL_COLOR: Color = Color::srgb(0.42, 0.56, 1.0);
 pub(crate) const COSMIC_FILL_ILLUMINANCE: f32 = 2_400.0;
 
@@ -46,9 +46,14 @@ pub(crate) const DIRECTIONAL_SHADOW_MAP_SIZE: usize = 2_048;
 pub(crate) const SHADOW_MINIMUM_DISTANCE: f32 = 0.1;
 pub(crate) const SHADOW_MAXIMUM_DISTANCE: f32 = 32.0;
 
-pub(crate) const BLOOM_INTENSITY: f32 = 0.08;
-pub(crate) const BLOOM_LOW_FREQUENCY_BOOST: f32 = 0.35;
+// Bloom is deliberately thresholded: only luminous stars, nebula cores and
+// the strongest material highlights produ5e a halo, rather than softening the
+// entire frame. These values operate on the exposed HDR image, before tone map.
+pub(crate) const BLOOM_INTENSITY: f32 = 0.1;
+pub(crate) const BLOOM_LOW_FREQUENCY_BOOST: f32 = 0.4;
 pub(crate) const BLOOM_HIGH_PASS_FREQUENCY: f32 = 0.9;
+pub(crate) const BLOOM_THRESHOLD: f32 = 0.5;
+pub(crate) const BLOOM_THRESHOLD_SOFTNESS: f32 = 0.55;
 pub(crate) const BLOOM_MAX_MIP_DIMENSION: u32 = 256;
 
 pub(crate) const COLOR_GRADING_EXPOSURE: f32 = 0.0;

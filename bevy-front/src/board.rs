@@ -26,7 +26,7 @@ use crate::{
 // The source maps have different average levels. These factors keep both marble
 // colors near the same polished-but-stable roughness and prevent normal-map
 // details from turning into mirror-like speckles. Order: black, white.
-const MARBLE_ROUGHNESS_FACTORS: [f32; 2] = [1.4, 2.6];
+const MARBLE_ROUGHNESS_FACTORS: [f32; 2] = [1.4, 1.6];
 const MARBLE_REFLECTION_STRENGTH: f32 = 0.72;
 // Maximum planar-reflection blur at perceptual roughness 1.0, measured in
 // reflection-render-target pixels. The shader scales it by roughness squared.

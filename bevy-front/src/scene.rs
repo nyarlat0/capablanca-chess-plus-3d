@@ -5,7 +5,10 @@ use bevy::{
     camera::{Hdr, visibility::RenderLayers},
     core_pipeline::tonemapping::Tonemapping,
     light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap},
-    post_process::{bloom::Bloom, effect_stack::Vignette},
+    post_process::{
+        bloom::{Bloom, BloomCompositeMode, BloomPrefilter},
+        effect_stack::Vignette,
+    },
     prelude::*,
     render::view::{ColorGrading, ColorGradingGlobal},
 };
@@ -19,8 +22,9 @@ use crate::{
     pieces::PieceAnimationState,
     render_tuning::{
         AMBIENT_LIGHT_BRIGHTNESS, AMBIENT_LIGHT_COLOR, BLOOM_HIGH_PASS_FREQUENCY, BLOOM_INTENSITY,
-        BLOOM_LOW_FREQUENCY_BOOST, BLOOM_MAX_MIP_DIMENSION, COLOR_GRADING_EXPOSURE,
-        COLOR_GRADING_SATURATION, COLOR_GRADING_TINT, COSMIC_FILL_COLOR, COSMIC_FILL_ILLUMINANCE,
+        BLOOM_LOW_FREQUENCY_BOOST, BLOOM_MAX_MIP_DIMENSION, BLOOM_THRESHOLD,
+        BLOOM_THRESHOLD_SOFTNESS, COLOR_GRADING_EXPOSURE, COLOR_GRADING_SATURATION,
+        COLOR_GRADING_TINT, COSMIC_FILL_COLOR, COSMIC_FILL_ILLUMINANCE,
         DIRECTIONAL_SHADOW_MAP_SIZE, NEBULA_KEY_COLOR, NEBULA_KEY_ILLUMINANCE,
         SHADOW_MAXIMUM_DISTANCE, SHADOW_MINIMUM_DISTANCE, VIGNETTE_INTENSITY, VIGNETTE_RADIUS,
         VIGNETTE_SMOOTHNESS,
@@ -147,6 +151,11 @@ fn setup_environment(mut commands: Commands) {
     bloom.intensity = BLOOM_INTENSITY;
     bloom.low_frequency_boost = BLOOM_LOW_FREQUENCY_BOOST;
     bloom.high_pass_frequency = BLOOM_HIGH_PASS_FREQUENCY;
+    bloom.prefilter = BloomPrefilter {
+        threshold: BLOOM_THRESHOLD,
+        threshold_softness: BLOOM_THRESHOLD_SOFTNESS,
+    };
+    bloom.composite_mode = BloomCompositeMode::Additive;
     bloom.max_mip_dimension = BLOOM_MAX_MIP_DIMENSION;
 
     commands.spawn((

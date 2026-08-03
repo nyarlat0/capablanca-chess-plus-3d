@@ -46,7 +46,17 @@ pbr_names=(
     Wood066_1K-PNG_Roughness.png
 )
 
-mkdir -p "${work_dir}/faces" "${work_dir}/pbr" "${work_dir}/out"
+# These affect only the cubemap drawn behind the scene. IBL is generated from
+# the ungraded faces below, so increasing the visible nebula contrast does not
+# change the colour or intensity of the board lighting.
+skybox_sigmoidal_contrast="5x18%"
+skybox_saturation_percent=125
+
+mkdir -p \
+    "${work_dir}/faces" \
+    "${work_dir}/skybox_faces" \
+    "${work_dir}/pbr" \
+    "${work_dir}/out"
 
 if [[ "${build_environment}" == true ]]; then
     for name in "${skybox_names[@]}"; do
@@ -76,6 +86,14 @@ if [[ "${build_environment}" == true ]]; then
     for index in "${!skybox_names[@]}"; do
         convert "${source_dir}/${skybox_names[index]}" -flop \
             "${work_dir}/faces/${index}.png"
+
+        # Expand the separation between deep space and luminous details, then
+        # restore some of the nebula's colour lost to HDR tonemapping. The same
+        # point-wise operation on every face keeps cubemap borders continuous.
+        convert "${work_dir}/faces/${index}.png" \
+            -sigmoidal-contrast "${skybox_sigmoidal_contrast}" \
+            -modulate "100,${skybox_saturation_percent},100" \
+            "${work_dir}/skybox_faces/${index}.png"
     done
 
     ktx create \
@@ -89,12 +107,12 @@ if [[ "${build_environment}" == true ]]; then
         --uastc-rdo \
         --uastc-rdo-l 0.75 \
         --zstd 18 \
-        "${work_dir}/faces/0.png" \
-        "${work_dir}/faces/1.png" \
-        "${work_dir}/faces/2.png" \
-        "${work_dir}/faces/3.png" \
-        "${work_dir}/faces/4.png" \
-        "${work_dir}/faces/5.png" \
+        "${work_dir}/skybox_faces/0.png" \
+        "${work_dir}/skybox_faces/1.png" \
+        "${work_dir}/skybox_faces/2.png" \
+        "${work_dir}/skybox_faces/3.png" \
+        "${work_dir}/skybox_faces/4.png" \
+        "${work_dir}/skybox_faces/5.png" \
         "${work_dir}/out/space_skybox.native.ktx2"
 
     # WebGL2 guarantees ETC2. Transcoding once here avoids shipping the C++ Basis
