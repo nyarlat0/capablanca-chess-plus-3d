@@ -13,7 +13,7 @@ use bevy::{
     render::camera::MipBias,
     render::view::{ColorGrading, ColorGradingGlobal},
 };
-use bevy_panorbit_camera::PanOrbitCamera;
+use bevy_panorbit_camera::{PanOrbitCamera, TouchControls};
 use capablanca_chess_plus::Color as Side;
 
 use crate::{
@@ -199,13 +199,7 @@ fn setup_environment(mut commands: Commands) {
                 ..default()
             },
             Transform::from_xyz(0.0, 10.5, -13.5).looking_at(Vec3::ZERO, Vec3::Y),
-            PanOrbitCamera {
-                button_orbit: MouseButton::Left,
-                button_pan: MouseButton::Right,
-                zoom_lower_limit: 6.0,
-                zoom_upper_limit: Some(25.0),
-                ..default()
-            },
+            chess_camera_controller(),
         ))
         .with_child((
             DirectionalLight {
@@ -223,6 +217,20 @@ fn setup_environment(mut commands: Commands) {
             RenderLayers::layer(0),
             Name::new("Camera readability fill"),
         ));
+}
+
+fn chess_camera_controller() -> PanOrbitCamera {
+    PanOrbitCamera {
+        button_orbit: MouseButton::Left,
+        button_pan: MouseButton::Right,
+        zoom_lower_limit: 6.0,
+        zoom_upper_limit: Some(25.0),
+        // One-finger drag orbits. With two fingers, midpoint motion pans and
+        // changing the distance between the touches performs pinch zoom.
+        touch_enabled: true,
+        touch_controls: TouchControls::OneFingerOrbit,
+        ..default()
+    }
 }
 
 fn orient_camera_after_local_move(
@@ -444,6 +452,13 @@ fn nearest_equivalent_angle(angle: f32, reference: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mobile_camera_uses_pinch_zoom_and_two_finger_pan_scheme() {
+        let camera = chess_camera_controller();
+        assert!(camera.touch_enabled);
+        assert_eq!(camera.touch_controls, TouchControls::OneFingerOrbit);
+    }
 
     #[test]
     fn side_orientation_uses_the_nearest_equivalent_turn() {

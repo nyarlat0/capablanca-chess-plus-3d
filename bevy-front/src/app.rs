@@ -74,6 +74,9 @@ pub fn build_app() -> App {
             title: "Capablanca Chess Plus 3D".into(),
             name: Some("capablanca-chess-plus-3d".into()),
             resolution: (1280, 800).into(),
+            // Keep mobile pinch and two-finger drag inside the game instead of
+            // letting the browser zoom or scroll the surrounding page.
+            prevent_default_event_handling: true,
             ..default()
         }),
         ..default()
