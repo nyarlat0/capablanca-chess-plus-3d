@@ -10,6 +10,7 @@ use bevy::{
         effect_stack::Vignette,
     },
     prelude::*,
+    render::camera::MipBias,
     render::view::{ColorGrading, ColorGradingGlobal},
 };
 use bevy_panorbit_camera::PanOrbitCamera;
@@ -27,9 +28,9 @@ use crate::{
         BLOOM_THRESHOLD_SOFTNESS, CAMERA_FILL_COLOR, CAMERA_FILL_ILLUMINANCE,
         CAMERA_FILL_PITCH_DEGREES, CAMERA_FILL_YAW_DEGREES, COLOR_GRADING_EXPOSURE,
         COLOR_GRADING_SATURATION, COLOR_GRADING_TINT, COSMIC_FILL_COLOR, COSMIC_FILL_ILLUMINANCE,
-        DIRECTIONAL_SHADOW_MAP_SIZE, NEBULA_KEY_COLOR, NEBULA_KEY_ILLUMINANCE,
-        SHADOW_MAXIMUM_DISTANCE, SHADOW_MINIMUM_DISTANCE, VIGNETTE_INTENSITY, VIGNETTE_RADIUS,
-        VIGNETTE_SMOOTHNESS,
+        DIRECTIONAL_SHADOW_MAP_SIZE, MATERIAL_TEXTURE_MIP_BIAS, NEBULA_KEY_COLOR,
+        NEBULA_KEY_ILLUMINANCE, SHADOW_MAXIMUM_DISTANCE, SHADOW_MINIMUM_DISTANCE,
+        VIGNETTE_INTENSITY, VIGNETTE_RADIUS, VIGNETTE_SMOOTHNESS,
     },
 };
 
@@ -177,8 +178,9 @@ fn setup_environment(mut commands: Commands) {
             Hdr,
             Msaa::Off,
             Smaa {
-                preset: SmaaPreset::High,
+                preset: SmaaPreset::Ultra,
             },
+            MipBias(MATERIAL_TEXTURE_MIP_BIAS),
             Tonemapping::TonyMcMapface,
             bloom,
             ColorGrading {

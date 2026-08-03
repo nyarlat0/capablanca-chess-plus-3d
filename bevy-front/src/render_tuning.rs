@@ -13,6 +13,10 @@ pub(crate) const ENVIRONMENT_ROTATION_Z_DEGREES: f32 = 0.0;
 pub(crate) const SKYBOX_BRIGHTNESS: f32 = 700.0;
 pub(crate) const ENVIRONMENT_LIGHT_INTENSITY: f32 = 420.0;
 pub(crate) const TEXTURE_ANISOTROPY: u16 = 8;
+// Positive bias selects a fractionally softer mip for PBR surface textures.
+// This suppresses sub-pixel marble/wood/normal-map shimmer during camera motion
+// without downscaling the scene or blurring geometry and UI.
+pub(crate) const MATERIAL_TEXTURE_MIP_BIAS: f32 = 0.4;
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) const SKYBOX_PATH: &str = "textures/generated/space_skybox.ktx2";
