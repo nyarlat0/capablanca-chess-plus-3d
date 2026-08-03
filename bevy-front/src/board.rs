@@ -28,6 +28,9 @@ use crate::{
 // details from turning into mirror-like speckles. Order: black, white.
 const MARBLE_ROUGHNESS_FACTORS: [f32; 2] = [1.4, 2.6];
 const MARBLE_REFLECTION_STRENGTH: f32 = 0.72;
+// Maximum planar-reflection blur at perceptual roughness 1.0, measured in
+// reflection-render-target pixels. The shader scales it by roughness squared.
+const MARBLE_REFLECTION_MAX_BLUR_PIXELS: f32 = 20.0;
 pub(crate) const SQUARE_SIZE: f32 = 1.0;
 const SQUARE_HEIGHT: f32 = 0.12;
 const BOARD_RAIL_WIDTH: f32 = 0.4;
@@ -271,7 +274,10 @@ fn marble_material_pair(
                 clearcoat_perceptual_roughness: 0.18,
                 ..default()
             },
-            extension: PlanarReflectionExtension::new(MARBLE_REFLECTION_STRENGTH),
+            extension: PlanarReflectionExtension::new(
+                MARBLE_REFLECTION_STRENGTH,
+                MARBLE_REFLECTION_MAX_BLUR_PIXELS,
+            ),
         })
     })
 }

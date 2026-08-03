@@ -75,6 +75,6 @@ for IBL while the six PNG faces remain the visible skybox.
 
 The main visual controls are centralized in `src/render_tuning.rs`: environment
 rotation/brightness, IBL intensity, lights and shadow distance, bloom, color
-grading, vignette, and texture anisotropy. Board-material roughness and
-planar-reflection strength remain next to their materials at the top of
-`src/board.rs`.
+grading, vignette, and texture anisotropy. Board-material roughness,
+planar-reflection strength, and the maximum roughness blur radius remain next
+to their materials at the top of `src/board.rs`.

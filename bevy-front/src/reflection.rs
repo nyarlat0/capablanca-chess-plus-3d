@@ -49,15 +49,15 @@ impl Plugin for PlanarReflectionPlugin {
 #[derive(Clone, AsBindGroup, Asset, Reflect)]
 pub(crate) struct PlanarReflectionExtension {
     // Vec4 keeps the uniform layout WebGL2-compatible. X stores reflection
-    // strength; board highlights are separate unlit geometry.
+    // strength and Y the maximum roughness blur radius in target pixels.
     #[uniform(100)]
     reflection_strength: Vec4,
 }
 
 impl PlanarReflectionExtension {
-    pub(crate) fn new(strength: f32) -> Self {
+    pub(crate) fn new(strength: f32, max_blur_pixels: f32) -> Self {
         Self {
-            reflection_strength: Vec4::new(strength, 0.0, 0.0, 0.0),
+            reflection_strength: Vec4::new(strength, max_blur_pixels, 0.0, 0.0),
         }
     }
 }
