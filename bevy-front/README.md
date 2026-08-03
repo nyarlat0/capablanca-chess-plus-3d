@@ -3,13 +3,18 @@
 This crate is the Bevy 0.19 frontend for `capablanca-engine`. It supports all
 seven built-in variants, runtime 10×8 and 10×10 boards, human or engine control
 for either side, legal-move highlighting, promotion choices, and asynchronous
-engine searches.
+Fairy-Stockfish searches.
 
 ## Requirements
 
 - Rust 1.95 or newer (required by Bevy 0.19)
 - The usual Bevy native dependencies for your platform
 - Docker, only when rebuilding the optimized render textures
+
+An x86-64 Linux Fairy-Stockfish 14 large-board executable is bundled for native
+development. To use another build (including another operating system or CPU),
+set `FAIRY_STOCKFISH_PATH` to a UCI-compatible Fairy-Stockfish executable. The
+frontend still supplies its bundled `variants.ini` to that executable.
 
 With rustup, install and select a suitable toolchain with:
 
@@ -30,13 +35,36 @@ cargo run -p bevy-front
 ## Controls
 
 - Left click: select a piece and its destination
-- Middle mouse drag: orbit the camera
+- Left mouse drag: orbit the camera
+- Middle click: smoothly recenter on the current player in Local mode, or on the
+  human player in AI mode
 - Right mouse drag: pan
 - Mouse wheel: zoom
-- The startup menu selects Local/AI mode, variant, and player color
+- The startup menu selects Local/AI mode, variant, player color, and the
+  discrete Fairy-Stockfish strength in AI mode
 - The corner arrow opens the in-game menu and its New game button
 - Promotion is selected from the 3D popup
 - `Escape`: cancel the current selection
+
+## Browser / WASM setup
+
+The browser engine is the pinned `fairy-stockfish-nnue.wasm@1.1.11` build and
+runs in its own Web Worker. Build the Rust frontend normally for
+`wasm32-unknown-unknown`, and make sure the web bundle copies the complete
+`assets` directory without renaming the files in `assets/engine`.
+
+Fairy-Stockfish uses WebAssembly threads and `SharedArrayBuffer`. The production
+server (and the local development server) must send these headers on the page:
+
+```text
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+Serve the application over HTTPS, or from `localhost` during development; do
+not open the HTML via `file://`. All engine files should be served from the same
+origin. The bundled native and browser engines, their exact upstream source
+links, and the GPLv3 license are documented in `assets/engine/THIRD_PARTY.md`.
 
 ## Render assets
 

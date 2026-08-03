@@ -385,6 +385,8 @@ dependencies = [
  "bevy",
  "bevy_panorbit_camera",
  "capablanca-engine",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

@@ -195,7 +195,7 @@ fn handle_open_menu(
     mut menu: ResMut<GameMenuState>,
     mut hud: ResMut<HudState>,
     mut chess_match: ResMut<ChessMatch>,
-    mut ai_task: ResMut<AiTask>,
+    mut ai_task: NonSendMut<AiTask>,
 ) {
     if !buttons
         .iter()

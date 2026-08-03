@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use capablanca_chess_plus::{
     CastleSide, Color as Side, DrawReason, Game, GameOutcome, Move, MoveKind, Piece, PieceKind,
-    SearchResult, Square, Variant,
+    Square, Variant,
 };
 
 pub(crate) struct GamePlugin;
@@ -63,6 +63,13 @@ pub(crate) struct CapturedPiece {
 #[derive(Clone)]
 pub(crate) struct PendingPromotion {
     pub(crate) moves: Vec<Move>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct MoveAnalysis {
+    pub(crate) score: i32,
+    pub(crate) depth: u8,
+    pub(crate) nodes: u64,
 }
 
 pub(crate) fn restart_match(chess_match: &mut ChessMatch, variant: Variant) {
@@ -153,7 +160,7 @@ fn select_square(chess_match: &mut ChessMatch, square: Square) {
 pub(crate) fn apply_move(
     chess_match: &mut ChessMatch,
     chess_move: Move,
-    analysis: Option<&SearchResult>,
+    analysis: Option<&MoveAnalysis>,
 ) {
     let position = chess_match.game.position();
     let moving_piece = position

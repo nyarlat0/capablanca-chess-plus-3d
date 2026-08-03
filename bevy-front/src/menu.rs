@@ -1,9 +1,20 @@
-use bevy::{ecs::hierarchy::ChildSpawnerCommands, prelude::*};
+use bevy::{
+    ecs::hierarchy::ChildSpawnerCommands,
+    picking::hover::Hovered,
+    prelude::*,
+    ui_widgets::{
+        Slider, SliderDragState, SliderPrecision, SliderRange, SliderStep, SliderThumb,
+        SliderValue, TrackClick, observe, slider_self_update,
+    },
+};
 use bevy_panorbit_camera::PanOrbitCamera;
 use capablanca_chess_plus::{Color as Side, Variant};
 
 use crate::{
-    ai::AiTask,
+    ai::{
+        AiSettings, AiTask, DEFAULT_DIFFICULTY, MAX_DIFFICULTY, MIN_DIFFICULTY,
+        difficulty_description,
+    },
     app::FrontendSet::Menu,
     game::{ChessMatch, Controller, restart_match},
     scene::{CameraAutoTurn, start_camera_turn},
@@ -30,7 +41,10 @@ impl Plugin for GameMenuPlugin {
                 (
                     handle_menu_interactions,
                     sync_menu_visibility,
+                    sync_ai_controls_visibility,
+                    sync_ai_difficulty,
                     style_menu_buttons,
+                    style_ai_difficulty_slider,
                     animate_menu_background,
                 )
                     .chain()
@@ -89,6 +103,21 @@ enum MenuAction {
 
 #[derive(Component)]
 struct MenuButtonLabel;
+
+#[derive(Component)]
+struct AiDifficultyControls;
+
+#[derive(Component)]
+struct AiDifficultySlider;
+
+#[derive(Component)]
+struct AiDifficultySliderThumb;
+
+#[derive(Component)]
+struct AiDifficultySliderFill;
+
+#[derive(Component)]
+struct AiDifficultyValueLabel;
 
 fn setup_game_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
     let font: Handle<Font> = asset_server.load("fonts/FiraSans-Bold.ttf");
@@ -186,6 +215,8 @@ fn setup_game_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
                         }
                     });
 
+                spawn_ai_difficulty_controls(panel, &font);
+
                 spawn_section_label(panel, &font, "PLAY AS");
                 spawn_row(panel, |row| {
                     spawn_menu_button(
@@ -213,6 +244,161 @@ fn setup_game_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
 
                 spawn_menu_button(panel, &font, "START GAME", MenuAction::Start, percent(100));
             });
+        });
+}
+
+fn spawn_ai_difficulty_controls(parent: &mut ChildSpawnerCommands, font: &Handle<Font>) {
+    parent
+        .spawn((
+            Node {
+                display: Display::None,
+                width: percent(100),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(9),
+                ..default()
+            },
+            AiDifficultyControls,
+        ))
+        .with_children(|controls| {
+            controls
+                .spawn(Node {
+                    width: percent(100),
+                    justify_content: JustifyContent::SpaceBetween,
+                    align_items: AlignItems::Center,
+                    ..default()
+                })
+                .with_children(|header| {
+                    header.spawn(text(
+                        font,
+                        "FAIRY-STOCKFISH STRENGTH",
+                        12.0,
+                        Color::srgba(1.0, 0.48, 0.7, 0.9),
+                    ));
+                    header.spawn((
+                        text(
+                            font,
+                            &difficulty_description(DEFAULT_DIFFICULTY),
+                            12.0,
+                            TEXT_PRIMARY,
+                        ),
+                        AiDifficultyValueLabel,
+                    ));
+                });
+
+            controls
+                .spawn((
+                    Node {
+                        width: percent(100),
+                        height: px(28),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    Hovered::default(),
+                    Slider {
+                        track_click: TrackClick::Snap,
+                        ..default()
+                    },
+                    SliderValue(f32::from(DEFAULT_DIFFICULTY)),
+                    SliderRange::new(f32::from(MIN_DIFFICULTY), f32::from(MAX_DIFFICULTY)),
+                    SliderStep(1.0),
+                    SliderPrecision(0),
+                    AiDifficultySlider,
+                    observe(slider_self_update),
+                ))
+                .with_children(|slider| {
+                    slider.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: px(8),
+                            right: px(8),
+                            top: px(11.5),
+                            height: px(5),
+                            border_radius: BorderRadius::all(px(3)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.14)),
+                        Pickable::IGNORE,
+                    ));
+                    slider
+                        .spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: px(8),
+                                right: px(8),
+                                top: px(11.5),
+                                height: px(5),
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ))
+                        .with_child((
+                            Node {
+                                width: percent(0),
+                                height: percent(100),
+                                border_radius: BorderRadius::all(px(3)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(1.0, 0.22, 0.55, 0.84)),
+                            Pickable::IGNORE,
+                            AiDifficultySliderFill,
+                        ));
+                    slider
+                        .spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: px(8),
+                                right: px(8),
+                                top: px(0),
+                                bottom: px(0),
+                                justify_content: JustifyContent::SpaceBetween,
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ))
+                        .with_children(|ticks| {
+                            for _ in MIN_DIFFICULTY..=MAX_DIFFICULTY {
+                                ticks.spawn((
+                                    Node {
+                                        width: px(3),
+                                        height: px(3),
+                                        border_radius: BorderRadius::MAX,
+                                        ..default()
+                                    },
+                                    BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.48)),
+                                ));
+                            }
+                        });
+                    slider
+                        .spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: px(0),
+                                right: px(16),
+                                top: px(0),
+                                bottom: px(0),
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ))
+                        .with_child((
+                            SliderThumb,
+                            AiDifficultySliderThumb,
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: percent(0),
+                                top: px(6),
+                                width: px(16),
+                                height: px(16),
+                                border: UiRect::all(px(2)),
+                                border_radius: BorderRadius::MAX,
+                                ..default()
+                            },
+                            BackgroundColor(ACCENT),
+                            BorderColor::all(Color::srgba(1.0, 0.72, 0.85, 0.95)),
+                        ));
+                });
         });
 }
 
@@ -287,7 +473,7 @@ fn handle_menu_interactions(
     time: Res<Time>,
     mut menu: ResMut<GameMenuState>,
     mut chess_match: ResMut<ChessMatch>,
-    mut ai_task: ResMut<AiTask>,
+    mut ai_task: NonSendMut<AiTask>,
     mut auto_turn: ResMut<CameraAutoTurn>,
     mut camera: Single<&mut PanOrbitCamera>,
 ) {
@@ -296,7 +482,12 @@ fn handle_menu_interactions(
             continue;
         }
         match *action {
-            MenuAction::Mode(mode) => menu.selected_mode = mode,
+            MenuAction::Mode(mode) => {
+                menu.selected_mode = mode;
+                if mode == GameMode::Ai {
+                    ai_task.warm_up();
+                }
+            }
             MenuAction::Variant(variant) => {
                 menu.selected_variant = variant;
                 if chess_match.variant != variant {
@@ -314,12 +505,97 @@ fn handle_menu_interactions(
                 let variant = menu.selected_variant;
                 restart_match(&mut chess_match, variant);
                 chess_match.controllers = controllers_for(mode, side);
-                ai_task.cancel();
+                match mode {
+                    GameMode::Ai => ai_task.start_new_game(),
+                    GameMode::Local => ai_task.shut_down(),
+                }
                 menu.active_mode = mode;
                 menu.active_side = side;
                 menu.open = false;
                 start_camera_turn(&mut camera, &mut auto_turn, side);
             }
+        }
+    }
+}
+
+fn sync_ai_controls_visibility(
+    menu: Res<GameMenuState>,
+    mut controls: Query<&mut Node, With<AiDifficultyControls>>,
+) {
+    if !menu.is_changed() {
+        return;
+    }
+    for mut node in &mut controls {
+        node.display = if menu.selected_mode == GameMode::Ai {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+}
+
+fn sync_ai_difficulty(
+    sliders: Query<&SliderValue, (Changed<SliderValue>, With<AiDifficultySlider>)>,
+    mut settings: ResMut<AiSettings>,
+) {
+    for value in &sliders {
+        settings.set_difficulty(value.0.round() as u8);
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn style_ai_difficulty_slider(
+    sliders: Query<
+        (
+            Entity,
+            &SliderValue,
+            &SliderRange,
+            &Hovered,
+            &SliderDragState,
+        ),
+        (
+            With<AiDifficultySlider>,
+            Or<(
+                Changed<SliderValue>,
+                Changed<Hovered>,
+                Changed<SliderDragState>,
+            )>,
+        ),
+    >,
+    children: Query<&Children>,
+    mut thumbs: Query<
+        (&mut Node, &mut BackgroundColor),
+        (
+            With<AiDifficultySliderThumb>,
+            Without<AiDifficultySliderFill>,
+        ),
+    >,
+    mut fills: Query<
+        &mut Node,
+        (
+            With<AiDifficultySliderFill>,
+            Without<AiDifficultySliderThumb>,
+        ),
+    >,
+    mut labels: Query<&mut Text, With<AiDifficultyValueLabel>>,
+) {
+    for (slider, value, range, hovered, drag_state) in &sliders {
+        let position = range.thumb_position(value.0) * 100.0;
+        for descendant in children.iter_descendants(slider) {
+            if let Ok((mut node, mut background)) = thumbs.get_mut(descendant) {
+                node.left = percent(position);
+                background.0 = if hovered.0 || drag_state.dragging {
+                    ACCENT_HOVER
+                } else {
+                    ACCENT
+                };
+            }
+            if let Ok(mut node) = fills.get_mut(descendant) {
+                node.width = percent(position);
+            }
+        }
+        for mut label in &mut labels {
+            **label = difficulty_description(value.0.round() as u8);
         }
     }
 }
