@@ -11,7 +11,9 @@ pub(crate) const ENVIRONMENT_ROTATION_X_DEGREES: f32 = 30.0;
 pub(crate) const ENVIRONMENT_ROTATION_Y_DEGREES: f32 = 220.0;
 pub(crate) const ENVIRONMENT_ROTATION_Z_DEGREES: f32 = 0.0;
 pub(crate) const SKYBOX_BRIGHTNESS: f32 = 700.0;
-pub(crate) const ENVIRONMENT_LIGHT_INTENSITY: f32 = 420.0;
+// Broad image-based light replaces part of the directional key's energy. This
+// keeps the scene readable without producing another concentrated board glare.
+pub(crate) const ENVIRONMENT_LIGHT_INTENSITY: f32 = 350.0;
 pub(crate) const TEXTURE_ANISOTROPY: u16 = 8;
 // Positive bias selects a fractionally softer mip for PBR surface textures.
 // This suppresses sub-pixel marble/wood/normal-map shimmer during camera motion
@@ -40,15 +42,18 @@ pub(crate) const AMBIENT_LIGHT_COLOR: Color = Color::srgb(0.42, 0.36, 0.62);
 pub(crate) const AMBIENT_LIGHT_BRIGHTNESS: f32 = 28.0;
 
 pub(crate) const NEBULA_KEY_COLOR: Color = Color::srgb(1.0, 0.82, 0.9);
-pub(crate) const NEBULA_KEY_ILLUMINANCE: f32 = 8_000.0;
+// The key still owns the shadows, but no longer has to provide nearly all of
+// the scene illumination. Lower this to weaken its highlight and shadow
+// contrast together; raise ENVIRONMENT_LIGHT_INTENSITY for shadowless fill.
+pub(crate) const NEBULA_KEY_ILLUMINANCE: f32 = 6_500.0;
 pub(crate) const COSMIC_FILL_COLOR: Color = Color::srgb(0.42, 0.56, 1.0);
-pub(crate) const COSMIC_FILL_ILLUMINANCE: f32 = 2_400.0;
+pub(crate) const COSMIC_FILL_ILLUMINANCE: f32 = 1600.0;
 
 // A weak, shadowless product-light which follows the camera. Unlike ambient
 // light, it preserves the models' form; unlike another fixed world light, it
 // cannot leave the camera-facing half of dark pieces unreadable after orbiting.
 pub(crate) const CAMERA_FILL_COLOR: Color = Color::srgb(0.78, 0.72, 1.0);
-pub(crate) const CAMERA_FILL_ILLUMINANCE: f32 = 1_000.0;
+pub(crate) const CAMERA_FILL_ILLUMINANCE: f32 = 700.0;
 pub(crate) const CAMERA_FILL_PITCH_DEGREES: f32 = -8.0;
 pub(crate) const CAMERA_FILL_YAW_DEGREES: f32 = 18.0;
 

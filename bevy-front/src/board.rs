@@ -28,6 +28,11 @@ use crate::{
 // details from turning into mirror-like speckles. Order: black, white.
 const MARBLE_ROUGHNESS_FACTORS: [f32; 2] = [1.4, 1.6];
 const MARBLE_REFLECTION_STRENGTH: f32 = 0.72;
+// A modest, broad clearcoat highlight preserves polished marble without the
+// narrow directional-light streak of a varnished surface. These controls do
+// not change the strength of the planar piece reflections above.
+const MARBLE_CLEARCOAT_STRENGTH: f32 = 0.16;
+const MARBLE_CLEARCOAT_ROUGHNESS: f32 = 0.32;
 // Maximum planar-reflection blur at perceptual roughness 1.0, measured in
 // reflection-render-target pixels. The shader scales it by roughness squared.
 const MARBLE_REFLECTION_MAX_BLUR_PIXELS: f32 = 20.0;
@@ -286,8 +291,8 @@ fn marble_material_pair(
                 metallic: 0.0,
                 perceptual_roughness: MARBLE_ROUGHNESS_FACTORS[index],
                 reflectance: 0.45,
-                clearcoat: 0.25,
-                clearcoat_perceptual_roughness: 0.18,
+                clearcoat: MARBLE_CLEARCOAT_STRENGTH,
+                clearcoat_perceptual_roughness: MARBLE_CLEARCOAT_ROUGHNESS,
                 ..default()
             },
             extension: PlanarReflectionExtension::new(
