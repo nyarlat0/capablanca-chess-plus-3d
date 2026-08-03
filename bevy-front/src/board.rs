@@ -59,6 +59,11 @@ const SQUARE_HIGHLIGHT_EDGE_OPACITY: f32 = 0.8;
 const SQUARE_HIGHLIGHT_CORNER_OPACITY: f32 = 1.0;
 const WOOD_ROUGHNESS_FACTOR: f32 = 1.45;
 const WOOD_TEXTURE_WORLD_SIZE: f32 = 3.0;
+const CAMERA_RADIUS_BOARD_SCALE: f32 = 1.42;
+// Bevy picking considers press + release on the same entity a click even if a
+// drag happened between them. Suppress move selection once camera orbiting has
+// travelled farther than this screen-space distance.
+const ORBIT_CLICK_CANCEL_DISTANCE: f32 = 4.0;
 
 pub(crate) struct BoardPlugin;
 
@@ -100,6 +105,7 @@ struct BoardRenderState {
 #[derive(Resource, Default)]
 struct BoardPointerState {
     hovered_square: Option<Square>,
+    primary_dragged: bool,
 }
 
 impl BoardPointerState {
@@ -110,6 +116,16 @@ impl BoardPointerState {
     fn leave(&mut self, square: Square) {
         if self.hovered_square == Some(square) {
             self.hovered_square = None;
+        }
+    }
+
+    fn begin_primary_press(&mut self) {
+        self.primary_dragged = false;
+    }
+
+    fn record_primary_drag(&mut self, distance: Vec2) {
+        if distance.length_squared() >= ORBIT_CLICK_CANCEL_DISTANCE.powi(2) {
+            self.primary_dragged = true;
         }
     }
 }
@@ -441,7 +457,7 @@ fn sync_board_geometry(
     pointer.hovered_square = None;
 
     if let Ok(mut camera) = scene.cameras.single_mut() {
-        let radius = board_world_size(size).max_element() * 1.42;
+        let radius = board_camera_radius(size);
         camera.target_focus = Vec3::ZERO;
         camera.target_radius = radius;
         camera.zoom_upper_limit = Some(radius * 1.8);
@@ -524,6 +540,8 @@ fn spawn_board(
                     NotShadowCaster,
                     BoardSquare(square),
                 ))
+                .observe(on_square_press)
+                .observe(on_square_drag)
                 .observe(on_square_click)
                 .observe(on_square_over)
                 .observe(on_square_out);
@@ -623,11 +641,13 @@ fn on_square_click(
     squares: Query<&BoardSquare>,
     menu: Res<GameMenuState>,
     animation: Res<PieceAnimationState>,
+    pointer: Res<BoardPointerState>,
     mut chess_match: ResMut<ChessMatch>,
 ) {
     if menu.open
         || !animation.is_settled(chess_match.generation)
         || click.button != PointerButton::Primary
+        || pointer.primary_dragged
     {
         return;
     }
@@ -635,6 +655,18 @@ fn on_square_click(
         return;
     };
     handle_square_selection(&mut chess_match, clicked.0);
+}
+
+fn on_square_press(press: On<Pointer<Press>>, mut pointer: ResMut<BoardPointerState>) {
+    if press.button == PointerButton::Primary {
+        pointer.begin_primary_press();
+    }
+}
+
+fn on_square_drag(drag: On<Pointer<Drag>>, mut pointer: ResMut<BoardPointerState>) {
+    if drag.button == PointerButton::Primary {
+        pointer.record_primary_drag(drag.distance);
+    }
 }
 
 fn on_square_over(
@@ -738,6 +770,10 @@ pub(crate) fn board_world_size(size: BoardSize) -> Vec2 {
         f32::from(size.files()) * SQUARE_SIZE,
         f32::from(size.ranks()) * SQUARE_SIZE,
     )
+}
+
+pub(crate) fn board_camera_radius(size: BoardSize) -> f32 {
+    board_world_size(size).max_element() * CAMERA_RADIUS_BOARD_SCALE
 }
 
 #[cfg(test)]
@@ -881,5 +917,19 @@ mod tests {
 
         pointer.leave(second);
         assert_eq!(pointer.hovered_square, None);
+    }
+
+    #[test]
+    fn camera_drag_cancels_a_square_click_only_after_the_motion_threshold() {
+        let mut pointer = BoardPointerState::default();
+        pointer.begin_primary_press();
+        pointer.record_primary_drag(Vec2::new(3.0, 2.0));
+        assert!(!pointer.primary_dragged);
+
+        pointer.record_primary_drag(Vec2::new(4.0, 0.0));
+        assert!(pointer.primary_dragged);
+
+        pointer.begin_primary_press();
+        assert!(!pointer.primary_dragged);
     }
 }

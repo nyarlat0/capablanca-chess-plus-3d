@@ -17,6 +17,7 @@ use capablanca_chess_plus::Color as Side;
 
 use crate::{
     app::FrontendSet,
+    board::board_camera_radius,
     game::ChessMatch,
     menu::{GameMenuState, GameMode},
     pieces::PieceAnimationState,
@@ -36,6 +37,8 @@ use crate::{
 const AUTO_TURN_SECONDS: f32 = 1.4;
 // Recentring should finish sooner than the turn, but still ease in and out.
 const AUTO_RECENTER_SECONDS: f32 = 0.5;
+// Canonical elevation of the original camera at (0, 10.5, -13.5).
+const HOME_CAMERA_PITCH_RADIANS: f32 = 0.661_043;
 
 pub(crate) struct EnvironmentPlugin;
 
@@ -51,6 +54,7 @@ impl Plugin for EnvironmentPlugin {
             Update,
             (
                 orient_camera_after_local_move,
+                handle_manual_camera_recenter,
                 animate_automatic_camera_turn,
             )
                 .chain()
@@ -68,7 +72,15 @@ struct AutomaticCameraTurn {
     start_yaw: f32,
     end_yaw: f32,
     start_focus: Vec3,
+    full_recenter: Option<FullCameraRecenter>,
     elapsed: f32,
+}
+
+struct FullCameraRecenter {
+    start_pitch: f32,
+    end_pitch: f32,
+    start_radius: f32,
+    end_radius: f32,
 }
 
 #[derive(Resource)]
@@ -184,7 +196,7 @@ fn setup_environment(mut commands: Commands) {
         },
         Transform::from_xyz(0.0, 10.5, -13.5).looking_at(Vec3::ZERO, Vec3::Y),
         PanOrbitCamera {
-            button_orbit: MouseButton::Middle,
+            button_orbit: MouseButton::Left,
             button_pan: MouseButton::Right,
             zoom_lower_limit: 6.0,
             zoom_upper_limit: Some(25.0),
@@ -248,21 +260,63 @@ pub(crate) fn start_camera_turn(
     auto_turn: &mut CameraAutoTurn,
     side: Side,
 ) {
+    start_camera_transition(camera, auto_turn, side, None);
+}
+
+fn start_camera_recenter(
+    camera: &mut PanOrbitCamera,
+    auto_turn: &mut CameraAutoTurn,
+    side: Side,
+    radius: f32,
+) {
+    start_camera_transition(
+        camera,
+        auto_turn,
+        side,
+        Some((HOME_CAMERA_PITCH_RADIANS, radius)),
+    );
+}
+
+fn start_camera_transition(
+    camera: &mut PanOrbitCamera,
+    auto_turn: &mut CameraAutoTurn,
+    side: Side,
+    full_target: Option<(f32, f32)>,
+) {
     let base_yaw = match side {
         Side::White => PI,
         Side::Black => 0.0,
     };
     let current_yaw = camera.yaw.unwrap_or(camera.target_yaw);
     let current_focus = camera.focus;
+    let full_recenter = full_target.map(|(end_pitch, end_radius)| FullCameraRecenter {
+        start_pitch: camera.pitch.unwrap_or(camera.target_pitch),
+        end_pitch,
+        start_radius: camera.radius.unwrap_or(camera.target_radius),
+        end_radius,
+    });
 
     // Pan-orbit yaw is unbounded. Pick the equivalent side angle closest to
     // the current camera so opening a game never causes a needless full turn.
     let end_yaw = nearest_equivalent_angle(base_yaw, current_yaw);
-    if (end_yaw - current_yaw).abs() < 0.001 && current_focus.length_squared() < 0.000_001 {
+    let already_fully_centered = full_recenter.as_ref().is_none_or(|recenter| {
+        (recenter.end_pitch - recenter.start_pitch).abs() < 0.001
+            && (recenter.end_radius - recenter.start_radius).abs() < 0.001
+    });
+    if (end_yaw - current_yaw).abs() < 0.001
+        && current_focus.length_squared() < 0.000_001
+        && already_fully_centered
+    {
         camera.yaw = Some(end_yaw);
         camera.target_yaw = end_yaw;
         camera.focus = Vec3::ZERO;
         camera.target_focus = Vec3::ZERO;
+        if let Some(recenter) = full_recenter {
+            camera.pitch = Some(recenter.end_pitch);
+            camera.target_pitch = recenter.end_pitch;
+            camera.radius = Some(recenter.end_radius);
+            camera.target_radius = recenter.end_radius;
+        }
         camera.enabled = true;
         camera.force_update = true;
         auto_turn.active = None;
@@ -271,14 +325,45 @@ pub(crate) fn start_camera_turn(
 
     camera.target_yaw = current_yaw;
     camera.target_focus = current_focus;
+    if let Some(recenter) = &full_recenter {
+        camera.target_pitch = recenter.start_pitch;
+        camera.target_radius = recenter.start_radius;
+    }
     camera.enabled = false;
     camera.force_update = true;
     auto_turn.active = Some(AutomaticCameraTurn {
         start_yaw: current_yaw,
         end_yaw,
         start_focus: current_focus,
+        full_recenter,
         elapsed: 0.0,
     });
+}
+
+fn handle_manual_camera_recenter(
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    menu: Res<GameMenuState>,
+    chess_match: Res<ChessMatch>,
+    mut auto_turn: ResMut<CameraAutoTurn>,
+    mut camera: Single<&mut PanOrbitCamera>,
+) {
+    if menu.open || !mouse_buttons.just_pressed(MouseButton::Middle) {
+        return;
+    }
+    let side = manual_recenter_side(
+        menu.active_mode,
+        menu.active_side,
+        chess_match.game.position().side_to_move(),
+    );
+    let radius = board_camera_radius(chess_match.game.position().board().size());
+    start_camera_recenter(&mut camera, &mut auto_turn, side, radius);
+}
+
+fn manual_recenter_side(active_mode: GameMode, player_side: Side, side_to_move: Side) -> Side {
+    match active_mode {
+        GameMode::Local => side_to_move,
+        GameMode::Ai => player_side,
+    }
 }
 
 fn animate_automatic_camera_turn(
@@ -308,6 +393,18 @@ fn animate_automatic_camera_turn(
     camera.target_yaw = yaw;
     camera.focus = focus;
     camera.target_focus = focus;
+    if let Some(recenter) = &turn.full_recenter {
+        let pitch = recenter
+            .start_pitch
+            .lerp(recenter.end_pitch, smootherstep(turn_progress));
+        let radius = recenter
+            .start_radius
+            .lerp(recenter.end_radius, smootherstep(turn_progress));
+        camera.pitch = Some(pitch);
+        camera.target_pitch = pitch;
+        camera.radius = Some(radius);
+        camera.target_radius = radius;
+    }
     camera.enabled = turn_progress >= 1.0 && recenter_progress >= 1.0;
     camera.force_update = true;
 
@@ -367,5 +464,47 @@ mod tests {
             generation_camera_action(false, GameMode::Ai, true, true, Side::Black),
             GenerationCameraAction::Observe
         );
+    }
+
+    #[test]
+    fn manual_recenter_targets_the_turn_in_local_and_the_human_in_ai() {
+        assert_eq!(
+            manual_recenter_side(GameMode::Local, Side::White, Side::Black),
+            Side::Black
+        );
+        assert_eq!(
+            manual_recenter_side(GameMode::Ai, Side::White, Side::Black),
+            Side::White
+        );
+    }
+
+    #[test]
+    fn full_recenter_captures_pitch_radius_and_focus_for_animation() {
+        let mut camera = PanOrbitCamera {
+            focus: Vec3::new(1.0, 2.0, 3.0),
+            target_focus: Vec3::new(4.0, 5.0, 6.0),
+            yaw: Some(PI / 2.0),
+            target_yaw: PI / 2.0,
+            pitch: Some(0.2),
+            target_pitch: 0.3,
+            radius: Some(9.0),
+            target_radius: 10.0,
+            ..default()
+        };
+        let mut auto_turn = CameraAutoTurn::default();
+
+        start_camera_recenter(&mut camera, &mut auto_turn, Side::White, 14.2);
+
+        let transition = auto_turn.active.expect("recenter should animate");
+        let full = transition
+            .full_recenter
+            .expect("manual recenter affects every orbit axis");
+        assert_eq!(transition.start_focus, Vec3::new(1.0, 2.0, 3.0));
+        assert!((transition.end_yaw - PI).abs() < 0.001);
+        assert!((full.start_pitch - 0.2).abs() < 0.001);
+        assert!((full.end_pitch - HOME_CAMERA_PITCH_RADIANS).abs() < 0.001);
+        assert!((full.start_radius - 9.0).abs() < 0.001);
+        assert!((full.end_radius - 14.2).abs() < 0.001);
+        assert!(!camera.enabled);
     }
 }
