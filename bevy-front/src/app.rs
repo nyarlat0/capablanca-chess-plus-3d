@@ -2,8 +2,8 @@ use bevy::prelude::*;
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
 
 use crate::{
-    ai::AiPlugin, board::BoardPlugin, game::GamePlugin, hud::HudPlugin, input::InputPlugin,
-    menu::GameMenuPlugin, pieces::PiecesPlugin, promotion::PromotionPlugin,
+    ai::AiPlugin, audio::GameAudioPlugin, board::BoardPlugin, game::GamePlugin, hud::HudPlugin,
+    input::InputPlugin, menu::GameMenuPlugin, pieces::PiecesPlugin, promotion::PromotionPlugin,
     reflection::PlanarReflectionPlugin, scene::EnvironmentPlugin, skybox::SkyboxPlugin,
 };
 
@@ -18,6 +18,7 @@ pub(crate) enum FrontendSet {
     PieceSync,
     Highlights,
     Animation,
+    Audio,
     Hud,
 }
 
@@ -37,12 +38,14 @@ impl Plugin for FrontendPlugin {
                 FrontendSet::PieceSync,
                 FrontendSet::Highlights,
                 FrontendSet::Animation,
+                FrontendSet::Audio,
                 FrontendSet::Hud,
             )
                 .chain(),
         )
         .add_plugins((
             GamePlugin,
+            GameAudioPlugin,
             GameMenuPlugin,
             AiPlugin,
             InputPlugin,

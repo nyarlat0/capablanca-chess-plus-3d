@@ -78,6 +78,7 @@ impl PieceAssets {
 pub(crate) struct PieceAnimationState {
     rendered_generation: u64,
     active_motions: usize,
+    landed_generation: Option<u64>,
 }
 
 impl Default for PieceAnimationState {
@@ -85,6 +86,7 @@ impl Default for PieceAnimationState {
         Self {
             rendered_generation: u64::MAX,
             active_motions: 0,
+            landed_generation: None,
         }
     }
 }
@@ -97,11 +99,22 @@ impl PieceAnimationState {
     fn begin_generation(&mut self, generation: u64, active_motions: usize) {
         self.rendered_generation = generation;
         self.active_motions = active_motions;
+        self.landed_generation = None;
     }
 
     fn finish_motion(&mut self, generation: u64) {
         if self.rendered_generation == generation {
             self.active_motions = self.active_motions.saturating_sub(1);
+        }
+    }
+
+    pub(crate) fn has_move_landed(&self, generation: u64) -> bool {
+        self.landed_generation == Some(generation)
+    }
+
+    fn mark_move_landed(&mut self, generation: u64) {
+        if self.rendered_generation == generation {
+            self.landed_generation = Some(generation);
         }
     }
 }
@@ -144,6 +157,7 @@ struct PieceMotion {
     arc_height: f32,
     elapsed: f32,
     generation: u64,
+    signals_move_landing: bool,
 }
 
 pub(crate) const fn piece_model_scale() -> f32 {
@@ -216,6 +230,9 @@ fn sync_pieces(
             start,
             target,
             chess_match.generation,
+            chess_match
+                .last_move
+                .is_some_and(|chess_move| square == chess_move.to),
         ));
     }
     for captured_by in Side::ALL {
@@ -262,6 +279,7 @@ fn spawn_piece(
     start: Vec3,
     target: Vec3,
     generation: u64,
+    signals_move_landing: bool,
 ) -> bool {
     let scale = Vec3::splat(piece_model_scale());
     let mut entity = commands.spawn((
@@ -293,6 +311,7 @@ fn spawn_piece(
             arc_height: MOVE_ARC_HEIGHT,
             elapsed: 0.0,
             generation,
+            signals_move_landing,
         });
     }
     animated
@@ -349,6 +368,7 @@ fn spawn_captured_piece(
             arc_height: CAPTURE_ARC_HEIGHT,
             elapsed: 0.0,
             generation,
+            signals_move_landing: false,
         });
     }
     is_new_capture
@@ -415,6 +435,9 @@ fn animate_pieces(
         if t >= 1.0 {
             transform.translation = motion.end;
             transform.scale = motion.end_scale;
+            if motion.signals_move_landing {
+                animation.mark_move_landed(motion.generation);
+            }
             animation.finish_motion(motion.generation);
             commands.entity(entity).remove::<PieceMotion>();
         }
