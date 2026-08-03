@@ -55,15 +55,17 @@ const LEGAL_HIGHLIGHT_COLOR: Color = Color::srgb(0.98, 0.08, 0.46);
 const LEGAL_HOVER_COLOR: Color = Color::srgb(1.0, 0.4, 0.7);
 const CAPTURE_HIGHLIGHT_COLOR: Color = Color::srgb(1.0, 0.015, 0.01);
 const CAPTURE_HOVER_COLOR: Color = Color::srgb(1.0, 0.28, 0.2);
+const LAST_MOVE_HIGHLIGHT_OPACITY: f32 = 0.55;
 // Hover colors are allowed into HDR so the hovered destination reads as an
 // actual brightness increase (and catches a little bloom), not only a hue swap.
 const HOVER_HIGHLIGHT_BRIGHTNESS: f32 = 2.0;
 // Square highlight tuning. Distances are measured from the cell center: 0.0 is
-// the center and 0.5 is an edge. The straight perimeter stays subtle, while
-// both axes must approach an edge before the denser corner accent appears.
+// the center and 0.5 is an edge. A faint perimeter frames the complete square;
+// Manhattan distance from each corner produces four dense triangular wedges.
 const SQUARE_HIGHLIGHT_FADE_START: f32 = 0.24;
-const SQUARE_HIGHLIGHT_CORNER_START: f32 = 0.1;
-const SQUARE_HIGHLIGHT_EDGE_OPACITY: f32 = 0.8;
+const SQUARE_HIGHLIGHT_EDGE_OPACITY: f32 = 0.24;
+const SQUARE_HIGHLIGHT_TRIANGLE_SOLID_DEPTH: f32 = 0.2;
+const SQUARE_HIGHLIGHT_TRIANGLE_FADE_END: f32 = 0.32;
 const SQUARE_HIGHLIGHT_CORNER_OPACITY: f32 = 1.0;
 const WOOD_ROUGHNESS_FACTOR: f32 = 1.45;
 const WOOD_TEXTURE_WORLD_SIZE: f32 = 3.0;
@@ -249,7 +251,7 @@ fn setup_board_assets(
             CAPTURE_HOVER_COLOR,
         ),
         last: standard_materials.add(highlight_material(
-            Color::srgb(0.025, 0.3, 1.0),
+            Color::srgba(0.025, 0.3, 1.0, LAST_MOVE_HIGHLIGHT_OPACITY),
             Some(highlight_masks[1].clone()),
         )),
         check: masked_highlight_materials(
@@ -417,11 +419,21 @@ fn square_edge_highlight_mask() -> Image {
 
 fn square_edge_highlight_alpha(centered: Vec2) -> f32 {
     let edge_fade = smoothstep(SQUARE_HIGHLIGHT_FADE_START, 0.5, centered.max_element());
-    let corner = smoothstep(SQUARE_HIGHLIGHT_CORNER_START, 0.5, centered.x)
-        * smoothstep(SQUARE_HIGHLIGHT_CORNER_START, 0.5, centered.y);
-    let opacity = SQUARE_HIGHLIGHT_EDGE_OPACITY
-        + (SQUARE_HIGHLIGHT_CORNER_OPACITY - SQUARE_HIGHLIGHT_EDGE_OPACITY) * corner;
-    edge_fade * opacity
+    let perimeter = edge_fade * SQUARE_HIGHLIGHT_EDGE_OPACITY;
+    let triangle = square_corner_triangle_alpha(centered);
+
+    // Alpha-over composition lets the triangle reach full density while the
+    // weaker perimeter remains visible behind its feathered diagonal edge.
+    perimeter + triangle * (SQUARE_HIGHLIGHT_CORNER_OPACITY - perimeter)
+}
+
+fn square_corner_triangle_alpha(centered: Vec2) -> f32 {
+    let distance_from_corner = (0.5 - centered.x) + (0.5 - centered.y);
+    1.0 - smoothstep(
+        SQUARE_HIGHLIGHT_TRIANGLE_SOLID_DEPTH,
+        SQUARE_HIGHLIGHT_TRIANGLE_FADE_END,
+        distance_from_corner,
+    )
 }
 
 fn smoothstep(start: f32, end: f32, value: f32) -> f32 {
@@ -929,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn occupied_highlight_is_subtle_at_edges_and_dense_only_in_corners() {
+    fn occupied_highlight_is_subtle_at_edges_and_has_dense_corner_triangles() {
         assert_eq!(square_edge_highlight_alpha(Vec2::ZERO), 0.0);
         assert_eq!(
             square_edge_highlight_alpha(Vec2::new(0.5, 0.0)),
@@ -940,8 +952,28 @@ mod tests {
             SQUARE_HIGHLIGHT_CORNER_OPACITY
         );
 
-        let inner_corner = square_edge_highlight_alpha(Vec2::splat(0.4));
-        let farther_from_corner = square_edge_highlight_alpha(Vec2::splat(0.3));
+        // The solid core is triangular: equal Manhattan distance from the
+        // corner gives equal opacity along a diagonal contour.
+        assert_eq!(square_corner_triangle_alpha(Vec2::splat(0.45)), 1.0);
+        let feather_midpoint =
+            (SQUARE_HIGHLIGHT_TRIANGLE_SOLID_DEPTH + SQUARE_HIGHLIGHT_TRIANGLE_FADE_END) * 0.5;
+        let edge_point = square_corner_triangle_alpha(Vec2::new(0.5, 0.5 - feather_midpoint));
+        let diagonal_point =
+            square_corner_triangle_alpha(Vec2::splat(0.5 - feather_midpoint * 0.5));
+        assert!((edge_point - diagonal_point).abs() < f32::EPSILON);
+        assert!(edge_point > 0.0 && edge_point < 1.0);
+        assert_eq!(
+            square_corner_triangle_alpha(Vec2::new(
+                0.5,
+                0.5 - SQUARE_HIGHLIGHT_TRIANGLE_FADE_END - 0.01,
+            )),
+            0.0
+        );
+
+        let inner_corner = square_edge_highlight_alpha(Vec2::splat(0.5 - feather_midpoint * 0.5));
+        let outside_triangle_distance = SQUARE_HIGHLIGHT_TRIANGLE_FADE_END + 0.08;
+        let farther_from_corner =
+            square_edge_highlight_alpha(Vec2::splat(0.5 - outside_triangle_distance * 0.5));
         assert!(inner_corner > farther_from_corner);
         assert!(inner_corner < SQUARE_HIGHLIGHT_CORNER_OPACITY);
     }
