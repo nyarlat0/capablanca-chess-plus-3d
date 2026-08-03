@@ -47,7 +47,7 @@ promotion.
 | [`bevy-front`](bevy-front/) | Bevy desktop/WASM client, rendering, UI, animation, audio, Fairy-Stockfish integration, and multiplayer client. |
 | [`multiplayer-protocol`](multiplayer-protocol/) | Shared versioned WebSocket message types. |
 | [`backend`](backend/) | Actix WebSocket server with authoritative validation and PostgreSQL persistence. |
-| [`tools`](tools/) | Reproducible KTX2 board-texture, skybox, and IBL generation. |
+| [`tools`](tools/) | Reproducible web packaging plus KTX2 board-texture, skybox, and IBL generation. |
 
 ## Requirements
 
@@ -139,18 +139,23 @@ See [`backend/README.md`](backend/README.md) for environment and security detail
 
 ## Browser build
 
-Install the WebAssembly target and build the frontend:
+Install the WebAssembly target and a `wasm-bindgen-cli` version matching
+`Cargo.lock`, then build the complete production directory:
 
 ```sh
 rustup target add wasm32-unknown-unknown
-cargo build --locked --release -p bevy-front --target wasm32-unknown-unknown
+cargo install --locked wasm-bindgen-cli --version 0.2.126
+./tools/build-web.sh
 ```
 
-Package the resulting WASM binary with a `wasm-bindgen-cli` version matching
-`Cargo.lock`, and serve it together with the complete runtime `assets`
-directory. If the frontend and backend share an origin, leave
-`CAPABLANCA_WS_URL` unset and the client will derive `ws://.../ws` or
-`wss://.../ws` from the page URL.
+The result is written to `dist/web`. The script uses Cargo's normal workspace
+`target` directory, includes only browser runtime assets, gives both the bundle
+and assets content-addressed paths, and generates Brotli/Gzip sidecars on the
+build machine. If your rustup tools are not first in `PATH`, pass their commands
+explicitly as `CAPABLANCA_CARGO` and `CAPABLANCA_WASM_BINDGEN`.
+
+If the frontend and backend share an origin, leave `CAPABLANCA_WS_URL` unset
+and the client will derive `ws://.../ws` or `wss://.../ws` from the page URL.
 
 Fairy-Stockfish uses WebAssembly threads and `SharedArrayBuffer`. A production
 server must use HTTPS and return these headers for the page and its assets:
@@ -164,6 +169,38 @@ The reverse proxy must forward `/ws` to the Actix backend with WebSocket
 upgrade headers. Building the frontend and cross-compiling the small backend on
 a workstation allows deployment to a weak RISC-V server without installing a
 Rust toolchain or compiling on the server.
+
+### Production caching with Caddy
+
+[`deploy/Caddyfile`](deploy/Caddyfile) contains the complete site block for the
+default `chess.nyarlat.org`, `/var/www/capablanca`, and
+`127.0.0.1:8080` setup. Its defaults can be changed with the
+`CAPABLANCA_DOMAIN`, `CAPABLANCA_WEB_ROOT`, and `CAPABLANCA_BACKEND` Caddy
+environment variables.
+
+Deploy versioned directories first and `index.html` last, so a visitor never
+receives an entry point whose files have not arrived yet:
+
+```sh
+sudo mkdir -p /var/www/capablanca/assets /var/www/capablanca/releases
+sudo rsync -a dist/web/assets/ /var/www/capablanca/assets/
+sudo rsync -a dist/web/releases/ /var/www/capablanca/releases/
+sudo install -m 0644 dist/web/index.html /var/www/capablanca/index.html
+```
+
+Merge the site block from `deploy/Caddyfile` into `/etc/caddy/Caddyfile`, then
+validate and reload Caddy on OpenRC:
+
+```sh
+sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo rc-service caddy reload
+```
+
+`index.html` is always revalidated, while `/releases/<hash>/...` and
+`/assets/<hash>/...` are cached for one year as immutable content. A changed
+binary or asset produces a new hash, so aggressive caching cannot leave the
+next deployment stale. Old hash directories may be removed later after active
+tabs no longer need them.
 
 See [`bevy-front/README.md`](bevy-front/README.md) for the complete browser,
 Fairy-Stockfish, and asset requirements.

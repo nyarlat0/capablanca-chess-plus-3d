@@ -52,9 +52,18 @@ cargo run -p bevy-front
 ## Browser / WASM setup
 
 The browser engine is the pinned `fairy-stockfish-nnue.wasm@1.1.11` build and
-runs in its own Web Worker. Build the Rust frontend normally for
-`wasm32-unknown-unknown`, and make sure the web bundle copies the complete
-`assets` directory without renaming the files in `assets/engine`.
+runs in its own Web Worker. Build the deployable frontend from the workspace
+root with:
+
+```sh
+./tools/build-web.sh
+```
+
+The script writes `dist/web`, embeds a content-addressed asset root in both
+Bevy's asset loader and the Fairy-Stockfish worker URL, omits native/source-only
+assets, and creates precompressed Brotli/Gzip files. Use the matching
+[`../deploy/Caddyfile`](../deploy/Caddyfile) so the generated immutable paths
+are cached while `index.html` continues to discover new releases.
 
 Fairy-Stockfish uses WebAssembly threads and `SharedArrayBuffer`. The production
 server (and the local development server) must send these headers on the page:

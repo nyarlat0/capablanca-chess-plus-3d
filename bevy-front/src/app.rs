@@ -20,6 +20,15 @@ use crate::{
     skybox::SkyboxPlugin,
 };
 
+#[cfg(target_arch = "wasm32")]
+pub(crate) const ASSET_ROOT: &str = match option_env!("CAPABLANCA_ASSET_ROOT") {
+    Some(path) => path,
+    None => "assets",
+};
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const ASSET_ROOT: &str = "assets";
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, SystemSet)]
 pub(crate) enum FrontendSet {
     Menu,
@@ -82,6 +91,10 @@ pub fn build_app() -> App {
     let mut app = App::new();
     let default_plugins = DefaultPlugins
         .set(AssetPlugin {
+            // Production web builds replace this with a content-addressed
+            // directory (assets/<hash>). The URL may then be cached forever
+            // without making updated assets stale after the next deployment.
+            file_path: ASSET_ROOT.to_owned(),
             // The project does not use per-asset `.meta` files. On the web,
             // checking for them would issue one guaranteed 404 request for
             // every model, texture, sound, font, and shader.

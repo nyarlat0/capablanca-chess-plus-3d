@@ -4,8 +4,9 @@ use wasm_bindgen::{JsCast, closure::Closure};
 use web_sys::{ErrorEvent, MessageEvent, Worker};
 
 use super::BackendEvent;
+use crate::app::ASSET_ROOT;
 
-const WORKER_URL: &str = "assets/engine/fairy-stockfish-client.worker.js";
+const WORKER_NAME: &str = "engine/fairy-stockfish-client.worker.js";
 
 pub(crate) struct Backend {
     worker: Worker,
@@ -16,7 +17,8 @@ pub(crate) struct Backend {
 
 impl Backend {
     pub(crate) fn new() -> Result<Self, String> {
-        let worker = Worker::new(WORKER_URL).map_err(|error| {
+        let worker_url = format!("{ASSET_ROOT}/{WORKER_NAME}");
+        let worker = Worker::new(&worker_url).map_err(|error| {
             format!(
                 "could not create the Fairy-Stockfish Web Worker: {}",
                 js_error(&error)

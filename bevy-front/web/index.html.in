@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>Capablanca Chess Plus 3D</title>
+    <style>
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #08050d;
+      }
+
+      canvas {
+        display: block;
+        width: 100% !important;
+        height: 100% !important;
+        touch-action: none;
+      }
+    </style>
+  </head>
+  <body>
+    <script type="module">
+      import init from "./releases/__CAPABLANCA_RELEASE__/capablanca.js";
+      init().catch(console.error);
+    </script>
+  </body>
+</html>

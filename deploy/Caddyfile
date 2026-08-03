@@ -1,0 +1,28 @@
+{$CAPABLANCA_DOMAIN:chess.nyarlat.org} {
+	header {
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Embedder-Policy "require-corp"
+		X-Content-Type-Options "nosniff"
+	}
+
+	@entrypoint path / /index.html
+	header @entrypoint Cache-Control "no-cache, no-store, must-revalidate"
+
+	@versioned path_regexp versioned ^/(?:assets|releases)/[0-9a-f]{16}/
+	header @versioned Cache-Control "public, max-age=31536000, immutable"
+
+	handle /ws {
+		reverse_proxy {$CAPABLANCA_BACKEND:127.0.0.1:8080}
+	}
+
+	handle /health {
+		reverse_proxy {$CAPABLANCA_BACKEND:127.0.0.1:8080}
+	}
+
+	handle {
+		root * {$CAPABLANCA_WEB_ROOT:/var/www/capablanca}
+		file_server {
+			precompressed br gzip
+		}
+	}
+}
