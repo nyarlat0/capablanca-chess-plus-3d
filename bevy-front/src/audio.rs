@@ -79,7 +79,14 @@ fn update_game_audio(
     sounds: Res<MoveSoundAssets>,
     mut state: ResMut<MoveSoundState>,
 ) {
-    update_pending_result(&mut commands, &time, &chess_match, &sounds, &mut state);
+    update_pending_result(
+        &mut commands,
+        &time,
+        &chess_match,
+        &animation,
+        &sounds,
+        &mut state,
+    );
 
     if state.played_move_generation == Some(chess_match.generation) {
         return;
@@ -116,6 +123,7 @@ fn update_pending_result(
     commands: &mut Commands,
     time: &Time,
     chess_match: &ChessMatch,
+    animation: &PieceAnimationState,
     sounds: &MoveSoundAssets,
     state: &mut MoveSoundState,
 ) {
@@ -126,7 +134,8 @@ fn update_pending_result(
         state.pending_result = None;
         return;
     }
-    if !pending.timer.tick(time.delta()).just_finished() {
+    pending.timer.tick(time.delta());
+    if !pending.timer.is_finished() || !animation.is_settled(pending.generation) {
         return;
     }
 
