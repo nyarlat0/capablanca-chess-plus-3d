@@ -1,9 +1,11 @@
+#[cfg(target_arch = "wasm32")]
+use bevy::input_focus::{FocusCause, InputFocus};
 use bevy::{
     ecs::hierarchy::ChildSpawnerCommands,
     input_focus::tab_navigation::TabIndex,
     picking::hover::Hovered,
     prelude::*,
-    text::{EditableText, EditableTextFilter, TextCursorStyle},
+    text::{EditableText, EditableTextFilter, TextCursorStyle, TextEdit},
     ui_widgets::{
         Slider, SliderDragState, SliderPrecision, SliderRange, SliderStep, SliderThumb,
         SliderValue, TrackClick, observe, slider_self_update,
@@ -326,8 +328,8 @@ fn spawn_multiplayer_controls(parent: &mut ChildSpawnerCommands, font: &Handle<F
             controls.spawn((
                 Node {
                     width: percent(100),
-                    min_height: px(44),
-                    padding: UiRect::axes(px(14), px(9)),
+                    min_height: px(34),
+                    padding: UiRect::axes(px(12), px(5)),
                     border: UiRect::all(px(1)),
                     border_radius: BorderRadius::all(px(12)),
                     overflow: Overflow::clip_x(),
@@ -725,11 +727,11 @@ fn adapt_menu_layout(
     }
     for mut input in &mut nodes.p4() {
         input.min_height = px(match layout {
-            MenuLayout::Regular => 44.0,
-            MenuLayout::Compact => 38.0,
-            MenuLayout::Tiny => 30.0,
+            MenuLayout::Regular => 34.0,
+            MenuLayout::Compact => 30.0,
+            MenuLayout::Tiny => 26.0,
         });
-        input.padding = UiRect::axes(px(14.0 * scale), px(9.0 * scale));
+        input.padding = UiRect::axes(px(12.0 * scale), px(5.0 * scale));
     }
 }
 
@@ -847,6 +849,7 @@ fn reset_multiplayer_input_on_menu_open(
         if input.value().to_string() != menu.multiplayer_game_id {
             input.clear();
             input.editor_mut().set_text(&menu.multiplayer_game_id);
+            input.queue_edit(TextEdit::TextEnd(false));
         }
     }
 }
@@ -858,16 +861,22 @@ fn sync_browser_multiplayer_input() {}
 fn sync_browser_multiplayer_input(
     mut menu: ResMut<GameMenuState>,
     mut inputs: Query<
-        (&mut EditableText, &ComputedNode, &UiGlobalTransform),
+        (Entity, &mut EditableText, &ComputedNode, &UiGlobalTransform),
         With<MultiplayerGameIdInput>,
     >,
+    mut input_focus: ResMut<InputFocus>,
     mut was_visible: Local<bool>,
 ) {
-    let Some(input_element) = web_sys::window()
-        .and_then(|window| window.document())
-        .and_then(|document| document.get_element_by_id("capablanca-game-id-input"))
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let Some(input_element) = document
+        .get_element_by_id("capablanca-game-id-input")
         .and_then(|element| element.dyn_into::<web_sys::HtmlInputElement>().ok())
     else {
+        return;
+    };
+    let Ok((entity, mut editable, computed, transform)) = inputs.single_mut() else {
         return;
     };
     let visible = menu.open && menu.selected_mode == GameMode::Multiplayer;
@@ -876,15 +885,18 @@ fn sync_browser_multiplayer_input(
             let _ = input_element.style().set_property("display", "none");
             let _ = input_element.blur();
         }
+        if input_focus.get() == Some(entity) {
+            input_focus.clear();
+        }
         *was_visible = false;
         return;
     }
 
-    let Ok((mut editable, computed, transform)) = inputs.single_mut() else {
-        return;
-    };
     if computed.is_empty() {
         let _ = input_element.style().set_property("display", "none");
+        if input_focus.get() == Some(entity) {
+            input_focus.clear();
+        }
         return;
     }
 
@@ -900,6 +912,15 @@ fn sync_browser_multiplayer_input(
     let _ = style.set_property("width", &format!("{}px", size.x));
     let _ = style.set_property("height", &format!("{}px", size.y));
 
+    let html_input_focused = document
+        .active_element()
+        .is_some_and(|element| element.id() == "capablanca-game-id-input");
+    if html_input_focused && input_focus.get() != Some(entity) {
+        input_focus.set(entity, FocusCause::Pressed);
+    } else if !html_input_focused && input_focus.get() == Some(entity) {
+        input_focus.clear();
+    }
+
     if !*was_visible {
         input_element.set_value(&menu.multiplayer_game_id);
     }
@@ -910,6 +931,7 @@ fn sync_browser_multiplayer_input(
     if editable.value().to_string() != value {
         editable.clear();
         editable.editor_mut().set_text(&value);
+        editable.queue_edit(TextEdit::TextEnd(false));
     }
     if menu.multiplayer_game_id != value {
         menu.multiplayer_game_id = value;

@@ -17,6 +17,7 @@ const ACCENT_HOVER: Color = Color::srgb(1.0, 0.3, 0.61);
 const PANEL: Color = Color::srgba(0.035, 0.025, 0.055, 0.84);
 const TOGGLE_GRAY: Color = Color::srgba(0.7, 0.7, 0.74, 0.58);
 const TOGGLE_GRAY_HOVER: Color = Color::srgba(0.88, 0.88, 0.92, 0.9);
+const SECOND_PLAYER_NOTICE_SECONDS: f32 = 2.0;
 
 pub(crate) struct HudPlugin;
 
@@ -32,8 +33,10 @@ impl Plugin for HudPlugin {
                     handle_fullscreen_button,
                     handle_open_menu,
                     open_hud_on_room_created,
+                    handle_second_player_connection,
                     open_hud_on_game_end,
                     sync_hud_visibility,
+                    sync_second_player_notice,
                     update_hud,
                     update_copy_feedback,
                     sync_fullscreen_icon,
@@ -53,6 +56,9 @@ struct HudState {
     expanded: bool,
     last_outcome: GameOutcome,
     copy_feedback: Option<(CopyFeedback, Timer)>,
+    hosting_room: bool,
+    last_opponent_connected: bool,
+    second_player_notice: Option<SecondPlayerNotice>,
 }
 
 impl Default for HudState {
@@ -61,8 +67,16 @@ impl Default for HudState {
             expanded: false,
             last_outcome: GameOutcome::Ongoing,
             copy_feedback: None,
+            hosting_room: false,
+            last_opponent_connected: false,
+            second_player_notice: None,
         }
     }
+}
+
+struct SecondPlayerNotice {
+    timer: Timer,
+    collapse_panel: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -85,6 +99,9 @@ struct MultiplayerGameIdRow;
 
 #[derive(Component)]
 struct MultiplayerGameIdText;
+
+#[derive(Component)]
+struct SecondPlayerConnectedText;
 
 #[derive(Component)]
 struct CopyGameIdButton;
@@ -228,6 +245,21 @@ fn setup_hud(mut commands: Commands, asset_server: Res<AssetServer>) {
                             CopyGameIdButtonLabel,
                         ));
                     });
+                panel.spawn((
+                    Text::new("SECOND PLAYER CONNECTED"),
+                    TextFont {
+                        font: font.clone().into(),
+                        font_size: FontSize::Px(12.0),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.56, 1.0, 0.72)),
+                    Node {
+                        display: Display::None,
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                    SecondPlayerConnectedText,
+                ));
                 panel
                     .spawn((
                         Button,
@@ -503,6 +535,9 @@ fn handle_open_menu(
 
     menu.open = true;
     hud.expanded = false;
+    hud.hosting_room = false;
+    hud.last_opponent_connected = false;
+    hud.second_player_notice = None;
     menu.selected_mode = menu.active_mode;
     menu.selected_variant = chess_match.variant;
     chess_match.controllers = [Controller::Human, Controller::Human];
@@ -517,8 +552,59 @@ fn open_hud_on_room_created(
     mut rooms: MessageReader<MultiplayerRoomReady>,
     mut hud: ResMut<HudState>,
 ) {
-    if rooms.read().any(|room| room.created) {
-        hud.expanded = true;
+    for room in rooms.read() {
+        hud.hosting_room = room.created;
+        hud.last_opponent_connected = false;
+        hud.second_player_notice = None;
+        if room.created {
+            hud.expanded = true;
+        }
+    }
+}
+
+fn handle_second_player_connection(
+    time: Res<Time>,
+    multiplayer: Res<MultiplayerState>,
+    mut hud: ResMut<HudState>,
+) {
+    let connected = multiplayer.opponent_connected;
+    if connected != hud.last_opponent_connected {
+        if hud.hosting_room && connected {
+            let collapse_panel = hud.expanded;
+            hud.second_player_notice = Some(SecondPlayerNotice {
+                timer: Timer::from_seconds(SECOND_PLAYER_NOTICE_SECONDS, TimerMode::Once),
+                collapse_panel,
+            });
+        }
+        hud.last_opponent_connected = connected;
+    }
+
+    let Some(notice) = hud.second_player_notice.as_mut() else {
+        return;
+    };
+    notice.timer.tick(time.delta());
+    if notice.timer.is_finished() {
+        let collapse_panel = notice.collapse_panel;
+        hud.second_player_notice = None;
+        if collapse_panel {
+            hud.expanded = false;
+        }
+    }
+}
+
+fn sync_second_player_notice(
+    hud: Res<HudState>,
+    mut notices: Query<&mut Node, With<SecondPlayerConnectedText>>,
+) {
+    if !hud.is_changed() {
+        return;
+    }
+    for mut notice in &mut notices {
+        notice.display = if hud.second_player_notice.is_some() {
+            Display::Flex
+        } else {
+            Display::None
+        };
     }
 }
 
