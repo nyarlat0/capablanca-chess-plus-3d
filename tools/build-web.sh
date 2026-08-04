@@ -37,6 +37,7 @@ trap cleanup EXIT
 unversioned_assets="$staging_dir/assets"
 public_dir="$staging_dir/public"
 mkdir -p "$unversioned_assets/textures/generated" "$unversioned_assets/engine" "$public_dir"
+install -m 0644 "$asset_source/favicon.png" "$unversioned_assets/favicon.png"
 
 # Copy only files that can be requested by the browser build. Source textures,
 # native KTX2 variants, and the native Fairy-Stockfish executable do not belong
@@ -96,7 +97,10 @@ release_dir="$public_dir/releases/$release_hash"
 mkdir -p "$release_dir"
 mv "$bindgen_dir/capablanca.js" "$bindgen_dir/capablanca_bg.wasm" "$release_dir/"
 
-sed "s/__CAPABLANCA_RELEASE__/$release_hash/g" "$html_template" >"$public_dir/index.html"
+sed \
+    -e "s/__CAPABLANCA_RELEASE__/$release_hash/g" \
+    -e "s#__CAPABLANCA_ASSET_ROOT__#$asset_root#g" \
+    "$html_template" >"$public_dir/index.html"
 
 # Precompression happens on the build machine, not on the weak production
 # server. Caddy selects these sidecars without recompressing every response.

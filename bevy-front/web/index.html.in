@@ -7,6 +7,11 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
     <title>Capablanca Chess Plus 3D</title>
+    <link
+      rel="icon"
+      type="image/png"
+      href="./__CAPABLANCA_ASSET_ROOT__/favicon.png"
+    />
     <style>
       html,
       body {

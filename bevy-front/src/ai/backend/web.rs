@@ -47,7 +47,7 @@ impl Backend {
             error_events
                 .borrow_mut()
                 .push_back(BackendEvent::Error(format!(
-                    "Fairy-Stockfish worker failed: {}. The server must enable COOP/COEP headers for WebAssembly threads.",
+                    "Fairy-Stockfish worker failed: {}",
                     event.message()
                 )));
         });
