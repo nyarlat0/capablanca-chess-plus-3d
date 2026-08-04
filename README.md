@@ -149,10 +149,13 @@ cargo install --locked wasm-bindgen-cli --version 0.2.126
 ```
 
 The result is written to `dist/web`. The script uses Cargo's normal workspace
-`target` directory, includes only browser runtime assets, gives both the bundle
-and assets content-addressed paths, and generates Brotli/Gzip sidecars on the
-build machine. If your rustup tools are not first in `PATH`, pass their commands
-explicitly as `CAPABLANCA_CARGO` and `CAPABLANCA_WASM_BINDGEN`.
+`target` directory and the size-optimized `web-release` profile, includes only
+browser runtime assets, gives both the bundle and assets content-addressed
+paths, and generates Brotli/Gzip sidecars on the build machine. The frontend's
+Bevy dependency also enables only the renderer, UI, audio, input, and asset
+features used by the application instead of Bevy's full default feature set.
+If your rustup tools are not first in `PATH`, pass their commands explicitly as
+`CAPABLANCA_CARGO` and `CAPABLANCA_WASM_BINDGEN`.
 
 If the frontend and backend share an origin, leave `CAPABLANCA_WS_URL` unset
 and the client will derive `ws://.../ws` or `wss://.../ws` from the page URL.
@@ -217,7 +220,10 @@ Generated browser and native KTX2 textures are committed under
 ```
 
 The script uses a pinned Docker toolchain and keeps board textures separate
-from the expensive skybox and IBL pipeline.
+from the expensive skybox and IBL pipeline. Browser normal maps use linear
+RGBA8 with Zstd file compression: retaining every authored normal component
+avoids WebGL block artifacts and driver-specific two-component reconstruction
+issues. Native builds keep compact UASTC variants for GPU transcoding.
 
 ## Inspiration and acknowledgements
 

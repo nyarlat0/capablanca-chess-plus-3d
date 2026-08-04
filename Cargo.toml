@@ -18,6 +18,15 @@ strip = true
 lto = false
 panic = "abort"
 
+# Browser releases trade a slower one-off link on the workstation for a much
+# smaller module and less code for the browser to compile on every page load.
+# Native development and release builds keep their faster existing profile.
+[profile.web-release]
+inherits = "release"
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+
 [profile.dev]
 opt-level = 2
 debug = 1

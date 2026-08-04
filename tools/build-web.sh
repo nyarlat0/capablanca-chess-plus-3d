@@ -74,7 +74,7 @@ echo "Building Bevy WASM with asset root $asset_root"
 (
     cd "$repo_root"
     CAPABLANCA_ASSET_ROOT="$asset_root" \
-        "$cargo_command" build --locked --release -p bevy-front --target wasm32-unknown-unknown
+        "$cargo_command" build --locked --profile web-release -p bevy-front --target wasm32-unknown-unknown
 )
 
 bindgen_dir="$staging_dir/bindgen"
@@ -86,7 +86,7 @@ mkdir -p "$bindgen_dir"
     --remove-producers-section \
     --out-dir "$bindgen_dir" \
     --out-name capablanca \
-    "$repo_root/target/wasm32-unknown-unknown/release/bevy-front.wasm"
+    "$repo_root/target/wasm32-unknown-unknown/web-release/bevy-front.wasm"
 
 release_hash=$(
     cd "$bindgen_dir"

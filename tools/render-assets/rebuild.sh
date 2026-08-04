@@ -211,14 +211,25 @@ create_normal_texture() {
     # them as sRGB. --assign-tf avoids altering those stored vector components.
     convert "${source_dir}/${source_name}" -alpha off \
         "${work_dir}/pbr/${output_stem}.png"
+    # Keep browser normals as ordinary RGBA8. Unlike ETC/EAC, this does not
+    # quantize neighbouring normals into 4x4 blocks, and retaining the authored
+    # Z channel avoids the two-component reconstruction path on WebGL/ANGLE.
+    # Zstd still keeps the file reasonably compact on the wire, while RGBA8 is
+    # universally supported and cheap to sample on both desktop and mobile GPUs.
+    ktx create \
+        --format R8G8B8A8_UNORM --assign-tf linear --normalize \
+        --generate-mipmap --mipmap-filter lanczos4 --mipmap-wrap wrap \
+        --zstd 18 \
+        "${work_dir}/pbr/${output_stem}.png" "${work_dir}/out/${output_name}"
+
+    # Native renderers can transcode UASTC to the GPU's preferred high-quality
+    # normal-map format, so retain the compact native variant as before.
     ktx create \
         --format R8G8B8A8_UNORM --assign-tf linear --normalize \
         --generate-mipmap --mipmap-filter lanczos4 --mipmap-wrap wrap \
         --encode uastc --uastc-quality 2 --uastc-rdo --uastc-rdo-l 0.5 \
         --zstd 18 \
         "${work_dir}/pbr/${output_stem}.png" "${intermediate}"
-    ktx transcode --target etc-rgb --zstd 18 \
-        "${intermediate}" "${work_dir}/out/${output_name}"
 }
 
 create_roughness_texture() {

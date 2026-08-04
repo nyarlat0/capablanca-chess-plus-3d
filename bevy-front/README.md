@@ -59,9 +59,11 @@ root with:
 ./tools/build-web.sh
 ```
 
-The script writes `dist/web`, embeds a content-addressed asset root in both
-Bevy's asset loader and the Fairy-Stockfish worker URL, omits native/source-only
-assets, and creates precompressed Brotli/Gzip files. Use the matching
+The script writes `dist/web`, builds with the size-optimized `web-release`
+profile and the frontend's minimal Bevy feature set, embeds a content-addressed
+asset root in both Bevy's asset loader and the Fairy-Stockfish worker URL,
+omits native/source-only assets, and creates precompressed Brotli/Gzip files.
+Use the matching
 [`../deploy/Caddyfile`](../deploy/Caddyfile) so the generated immutable paths
 are cached while `index.html` continues to discover new releases.
 
@@ -109,7 +111,8 @@ reuse Docker's build cache. The pipeline:
   saturation enhancement kept separate from scene lighting;
 - prefilters diffuse and specular image-based lighting on the CPU via Lavapipe;
 - builds mipmapped color, normal, and roughness maps for the board;
-- emits direct ETC2 for WebGL2 plus UASTC variants for native GPU transcoding;
+- emits direct ETC2 color/roughness maps and block-compression-free RGBA8 normal
+  maps for WebGL2, plus UASTC variants for native GPU transcoding;
 - applies the correct sRGB/linear transfer functions and validates every KTX2.
 
 The optional target avoids rebuilding unrelated assets:

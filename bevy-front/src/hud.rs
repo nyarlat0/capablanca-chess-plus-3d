@@ -33,6 +33,7 @@ impl Plugin for HudPlugin {
                     open_hud_on_game_end,
                     sync_hud_visibility,
                     update_hud,
+                    sync_fullscreen_icon,
                     style_open_menu_button,
                     style_hud_toggle,
                     style_fullscreen_button,
@@ -80,7 +81,10 @@ struct HudToggleIcon;
 struct FullscreenButton;
 
 #[derive(Component)]
-struct FullscreenIconCorner;
+struct FullscreenIconCorner {
+    top: bool,
+    left: bool,
+}
 
 fn setup_hud(mut commands: Commands, asset_server: Res<AssetServer>) {
     let font: Handle<Font> = asset_server.load("fonts/FiraSans-Bold.ttf");
@@ -213,10 +217,10 @@ fn setup_hud(mut commands: Commands, asset_server: Res<AssetServer>) {
                                     [(true, true), (true, false), (false, true), (false, false)]
                                 {
                                     icon.spawn((
-                                        fullscreen_corner_node(top, left),
+                                        fullscreen_corner_node(top, left, false),
                                         BorderColor::all(TOGGLE_GRAY),
                                         Pickable::IGNORE,
-                                        FullscreenIconCorner,
+                                        FullscreenIconCorner { top, left },
                                     ));
                                 }
                             });
@@ -237,7 +241,7 @@ fn corner_button_node() -> Node {
     }
 }
 
-fn fullscreen_corner_node(top: bool, left: bool) -> Node {
+fn fullscreen_corner_node(top: bool, left: bool, fullscreen: bool) -> Node {
     Node {
         position_type: PositionType::Absolute,
         top: if top { px(0) } else { Val::Auto },
@@ -246,13 +250,19 @@ fn fullscreen_corner_node(top: bool, left: bool) -> Node {
         right: if left { Val::Auto } else { px(0) },
         width: px(7),
         height: px(7),
-        border: UiRect {
-            left: if left { px(2) } else { px(0) },
-            right: if left { px(0) } else { px(2) },
-            top: if top { px(2) } else { px(0) },
-            bottom: if top { px(0) } else { px(2) },
-        },
+        border: fullscreen_corner_border(top, left, fullscreen),
         ..default()
+    }
+}
+
+fn fullscreen_corner_border(top: bool, left: bool, fullscreen: bool) -> UiRect {
+    let vertical_edge_on_left = left != fullscreen;
+    let horizontal_edge_on_top = top != fullscreen;
+    UiRect {
+        left: if vertical_edge_on_left { px(2) } else { px(0) },
+        right: if vertical_edge_on_left { px(0) } else { px(2) },
+        top: if horizontal_edge_on_top { px(2) } else { px(0) },
+        bottom: if horizontal_edge_on_top { px(0) } else { px(2) },
     }
 }
 
@@ -292,6 +302,16 @@ fn toggled_window_mode(current: &WindowMode) -> WindowMode {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn sync_fullscreen_icon(
+    window: Single<&Window, With<PrimaryWindow>>,
+    mut previous: Local<Option<bool>>,
+    mut corners: Query<(&FullscreenIconCorner, &mut Node)>,
+) {
+    let fullscreen = !matches!(window.mode, WindowMode::Windowed);
+    update_fullscreen_icon(fullscreen, &mut previous, &mut corners);
+}
+
 #[cfg(target_arch = "wasm32")]
 fn handle_fullscreen_button(
     buttons: Query<&Interaction, (Changed<Interaction>, With<FullscreenButton>)>,
@@ -317,6 +337,33 @@ fn handle_fullscreen_button(
     };
     if let Err(error) = root.request_fullscreen() {
         error!("Could not enter browser fullscreen: {error:?}");
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn sync_fullscreen_icon(
+    mut previous: Local<Option<bool>>,
+    mut corners: Query<(&FullscreenIconCorner, &mut Node)>,
+) {
+    let fullscreen = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.fullscreen_element())
+        .is_some();
+    update_fullscreen_icon(fullscreen, &mut previous, &mut corners);
+}
+
+fn update_fullscreen_icon(
+    fullscreen: bool,
+    previous: &mut Option<bool>,
+    corners: &mut Query<(&FullscreenIconCorner, &mut Node)>,
+) {
+    if *previous == Some(fullscreen) {
+        return;
+    }
+    *previous = Some(fullscreen);
+
+    for (corner, mut node) in corners {
+        node.border = fullscreen_corner_border(corner.top, corner.left, fullscreen);
     }
 }
 
@@ -574,6 +621,21 @@ mod tests {
             toggled_window_mode(&fullscreen),
             WindowMode::Windowed
         ));
+    }
+
+    #[test]
+    fn fullscreen_icon_corners_turn_inward_when_active() {
+        let expanded = fullscreen_corner_border(true, true, false);
+        assert_eq!(expanded.left, px(2));
+        assert_eq!(expanded.top, px(2));
+        assert_eq!(expanded.right, px(0));
+        assert_eq!(expanded.bottom, px(0));
+
+        let collapsed = fullscreen_corner_border(true, true, true);
+        assert_eq!(collapsed.left, px(0));
+        assert_eq!(collapsed.top, px(0));
+        assert_eq!(collapsed.right, px(2));
+        assert_eq!(collapsed.bottom, px(2));
     }
 
     #[test]

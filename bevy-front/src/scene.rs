@@ -44,6 +44,11 @@ const AUTO_RECENTER_SECONDS: f32 = 0.5;
 // Canonical elevation of the original camera at (0, 10.5, -13.5).
 const HOME_CAMERA_PITCH_RADIANS: f32 = 0.661_043;
 const HOME_CAMERA_RADIUS: f32 = 17.102_63;
+// Manual orbit only. The first two project commits relied on the library's
+// 1.0 sensitivity / 0.1 smoothness defaults; with left-button dragging that
+// feels abrupt, so keep the same controller but soften its response explicitly.
+const MANUAL_ORBIT_SENSITIVITY: f32 = 0.82;
+const MANUAL_ORBIT_SMOOTHNESS: f32 = 0.35;
 
 pub(crate) struct EnvironmentPlugin;
 
@@ -305,6 +310,8 @@ fn chess_camera_controller() -> PanOrbitCamera {
         button_pan: MouseButton::Right,
         zoom_lower_limit: 6.0,
         zoom_upper_limit: Some(25.0),
+        orbit_sensitivity: MANUAL_ORBIT_SENSITIVITY,
+        orbit_smoothness: MANUAL_ORBIT_SMOOTHNESS,
         // One-finger drag orbits. With two fingers, midpoint motion pans and
         // changing the distance between the touches performs pinch zoom.
         touch_enabled: true,
@@ -538,6 +545,8 @@ mod tests {
         let camera = chess_camera_controller();
         assert!(camera.touch_enabled);
         assert_eq!(camera.touch_controls, TouchControls::OneFingerOrbit);
+        assert_eq!(camera.orbit_sensitivity, MANUAL_ORBIT_SENSITIVITY);
+        assert_eq!(camera.orbit_smoothness, MANUAL_ORBIT_SMOOTHNESS);
     }
 
     #[test]
