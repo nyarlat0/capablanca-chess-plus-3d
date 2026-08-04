@@ -36,9 +36,44 @@
       canvas:focus-visible {
         outline: none !important;
       }
+
+      #capablanca-game-id-input {
+        position: fixed;
+        display: none;
+        z-index: 1000;
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        outline: 0 !important;
+        appearance: none;
+        -webkit-appearance: none;
+        opacity: 0.001;
+        background: transparent;
+        color: transparent;
+        caret-color: transparent;
+        font-size: 16px;
+        text-transform: uppercase;
+        touch-action: manipulation;
+      }
+
+      #capablanca-game-id-input:focus,
+      #capablanca-game-id-input:focus-visible {
+        outline: 0 !important;
+      }
     </style>
   </head>
   <body>
+    <input
+      id="capablanca-game-id-input"
+      type="text"
+      inputmode="text"
+      maxlength="12"
+      autocomplete="off"
+      autocapitalize="characters"
+      spellcheck="false"
+      aria-label="Multiplayer game ID"
+    />
     <script type="module">
       import init from "./releases/__CAPABLANCA_RELEASE__/capablanca.js";
       init().catch(console.error);

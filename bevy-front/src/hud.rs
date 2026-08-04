@@ -1,3 +1,4 @@
+use bevy::clipboard::Clipboard;
 use bevy::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
 use bevy::window::{MonitorSelection, PrimaryWindow, WindowMode};
@@ -27,16 +28,19 @@ impl Plugin for HudPlugin {
                 Update,
                 (
                     handle_hud_toggle,
+                    handle_copy_game_id,
                     handle_fullscreen_button,
                     handle_open_menu,
                     open_hud_on_room_created,
                     open_hud_on_game_end,
                     sync_hud_visibility,
                     update_hud,
+                    update_copy_feedback,
                     sync_fullscreen_icon,
                     style_open_menu_button,
                     style_hud_toggle,
                     style_fullscreen_button,
+                    style_copy_game_id_button,
                 )
                     .chain()
                     .in_set(FrontendSet::Hud),
@@ -48,6 +52,7 @@ impl Plugin for HudPlugin {
 struct HudState {
     expanded: bool,
     last_outcome: GameOutcome,
+    copy_feedback: Option<(CopyFeedback, Timer)>,
 }
 
 impl Default for HudState {
@@ -55,8 +60,15 @@ impl Default for HudState {
         Self {
             expanded: false,
             last_outcome: GameOutcome::Ongoing,
+            copy_feedback: None,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum CopyFeedback {
+    Copied,
+    Failed,
 }
 
 #[derive(Component)]
@@ -67,6 +79,18 @@ struct HudPanel;
 
 #[derive(Component)]
 struct HudText;
+
+#[derive(Component)]
+struct MultiplayerGameIdRow;
+
+#[derive(Component)]
+struct MultiplayerGameIdText;
+
+#[derive(Component)]
+struct CopyGameIdButton;
+
+#[derive(Component)]
+struct CopyGameIdButtonLabel;
 
 #[derive(Component)]
 struct OpenMenuButton;
@@ -92,12 +116,13 @@ fn setup_hud(mut commands: Commands, asset_server: Res<AssetServer>) {
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                top: px(8),
-                right: px(8),
-                align_items: AlignItems::FlexStart,
-                column_gap: px(8),
+                top: px(0),
+                right: px(0),
+                width: percent(100),
+                height: percent(100),
                 ..default()
             },
+            Pickable::IGNORE,
             GlobalZIndex(20),
             Visibility::Hidden,
             HudRoot,
@@ -105,12 +130,18 @@ fn setup_hud(mut commands: Commands, asset_server: Res<AssetServer>) {
         .with_children(|root| {
             root.spawn((
                 Node {
-                    width: px(330),
+                    position_type: PositionType::Absolute,
+                    top: px(8),
+                    right: px(54),
+                    width: vw(72),
+                    max_width: px(330),
+                    max_height: vh(94),
                     padding: UiRect::all(px(16)),
                     border: UiRect::all(px(1)),
                     border_radius: BorderRadius::all(px(18)),
                     flex_direction: FlexDirection::Column,
                     row_gap: px(12),
+                    overflow: Overflow::clip_y(),
                     ..default()
                 },
                 BackgroundColor(PANEL),
@@ -137,6 +168,66 @@ fn setup_hud(mut commands: Commands, asset_server: Res<AssetServer>) {
                     Pickable::IGNORE,
                     HudText,
                 ));
+                panel
+                    .spawn((
+                        Node {
+                            display: Display::None,
+                            width: percent(100),
+                            flex_wrap: FlexWrap::Wrap,
+                            align_items: AlignItems::Center,
+                            column_gap: px(8),
+                            row_gap: px(7),
+                            ..default()
+                        },
+                        MultiplayerGameIdRow,
+                    ))
+                    .with_children(|row| {
+                        row.spawn((
+                            Text::new(""),
+                            TextFont {
+                                font: font.clone().into(),
+                                font_size: FontSize::Px(13.0),
+                                ..default()
+                            },
+                            TextColor(Color::srgb(0.94, 0.92, 0.97)),
+                            Node {
+                                min_width: px(0),
+                                flex_grow: 1.0,
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                            MultiplayerGameIdText,
+                        ));
+                        row.spawn((
+                            Button,
+                            Node {
+                                min_width: px(76),
+                                height: px(34),
+                                flex_shrink: 0.0,
+                                padding: UiRect::axes(px(10), px(5)),
+                                border: UiRect::all(px(1)),
+                                border_radius: BorderRadius::all(px(10)),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(0.12, 0.09, 0.16, 0.76)),
+                            BorderColor::all(Color::srgba(1.0, 0.38, 0.65, 0.72)),
+                            CopyGameIdButton,
+                            Name::new("Copy multiplayer game id"),
+                        ))
+                        .with_child((
+                            Text::new("COPY ID"),
+                            TextFont {
+                                font: font.clone().into(),
+                                font_size: FontSize::Px(11.0),
+                                ..default()
+                            },
+                            TextColor(Color::srgb(1.0, 0.74, 0.86)),
+                            Pickable::IGNORE,
+                            CopyGameIdButtonLabel,
+                        ));
+                    });
                 panel
                     .spawn((
                         Button,
@@ -166,6 +257,9 @@ fn setup_hud(mut commands: Commands, asset_server: Res<AssetServer>) {
             });
 
             root.spawn(Node {
+                position_type: PositionType::Absolute,
+                top: px(8),
+                right: px(8),
                 flex_direction: FlexDirection::Column,
                 row_gap: px(7),
                 ..default()
@@ -276,6 +370,31 @@ fn handle_hud_toggle(
     {
         hud.expanded = !hud.expanded;
     }
+}
+
+fn handle_copy_game_id(
+    buttons: Query<&Interaction, (Changed<Interaction>, With<CopyGameIdButton>)>,
+    multiplayer: Res<MultiplayerState>,
+    mut clipboard: ResMut<Clipboard>,
+    mut hud: ResMut<HudState>,
+) {
+    if !buttons
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        return;
+    }
+    let Some(game_id) = multiplayer.game_id.as_deref() else {
+        return;
+    };
+
+    let result = if let Err(error) = clipboard.set_text(game_id) {
+        warn!("Could not copy multiplayer game id: {error}");
+        CopyFeedback::Failed
+    } else {
+        CopyFeedback::Copied
+    };
+    hud.copy_feedback = Some((result, Timer::from_seconds(1.6, TimerMode::Once)));
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -449,41 +568,77 @@ fn update_hud(
     chess_match: Res<ChessMatch>,
     menu: Res<GameMenuState>,
     multiplayer: Res<MultiplayerState>,
-    mut hud: Query<&mut Text, With<HudText>>,
+    mut texts: ParamSet<(
+        Query<&mut Text, With<HudText>>,
+        Query<&mut Text, With<MultiplayerGameIdText>>,
+    )>,
+    mut game_id_rows: Query<&mut Node, With<MultiplayerGameIdRow>>,
 ) {
     if menu.open {
         return;
     }
-    let Ok(mut text) = hud.single_mut() else {
-        return;
-    };
-    **text = hud_text(
-        chess_match.game.position().rules().name(),
-        menu.active_mode,
-        chess_match.game.outcome(),
-        multiplayer.game_id.as_deref(),
-    );
+    {
+        let mut hud = texts.p0();
+        let Ok(mut text) = hud.single_mut() else {
+            return;
+        };
+        **text = hud_text(
+            chess_match.game.position().rules().name(),
+            menu.active_mode,
+            chess_match.game.outcome(),
+        );
+    }
+    let game_id = (menu.active_mode == GameMode::Multiplayer)
+        .then(|| multiplayer.game_id.as_deref())
+        .flatten();
+    for mut row in &mut game_id_rows {
+        row.display = if game_id.is_some() {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    for mut label in &mut texts.p1() {
+        **label = game_id
+            .map(|game_id| format!("GAME ID · {game_id}"))
+            .unwrap_or_default();
+    }
 }
 
-fn hud_text(
-    game_type: &str,
-    mode: GameMode,
-    outcome: GameOutcome,
-    game_id: Option<&str>,
-) -> String {
+fn hud_text(game_type: &str, mode: GameMode, outcome: GameOutcome) -> String {
     let mode = match mode {
         GameMode::Local => "Local · two players",
         GameMode::Ai => "AI · versus computer",
         GameMode::Multiplayer => "Multiplayer · online",
     };
     let mut value = format!("{game_type}\n{mode}");
-    if let Some(game_id) = game_id {
-        value.push_str(&format!("\nGame ID · {game_id}"));
-    }
     if !is_playable(outcome) {
         value.push_str(&format!("\n\n{}", outcome_message(outcome)));
     }
     value
+}
+
+fn update_copy_feedback(
+    time: Res<Time>,
+    mut hud: ResMut<HudState>,
+    mut labels: Query<&mut Text, With<CopyGameIdButtonLabel>>,
+) {
+    if let Some((_, timer)) = hud.copy_feedback.as_mut() {
+        timer.tick(time.delta());
+        if timer.is_finished() {
+            hud.copy_feedback = None;
+        }
+    }
+    let value = match hud.copy_feedback.as_ref().map(|(result, _)| result) {
+        Some(CopyFeedback::Copied) => "COPIED",
+        Some(CopyFeedback::Failed) => "FAILED",
+        None => "COPY ID",
+    };
+    for mut label in &mut labels {
+        if label.as_str() != value {
+            **label = value.to_owned();
+        }
+    }
 }
 
 fn style_open_menu_button(
@@ -546,6 +701,26 @@ fn style_fullscreen_button(
     }
 }
 
+fn style_copy_game_id_button(
+    mut buttons: Query<
+        (&Interaction, &mut BackgroundColor, &mut BorderColor),
+        With<CopyGameIdButton>,
+    >,
+) {
+    for (interaction, mut background, mut border) in &mut buttons {
+        let (background_color, border_color) = match interaction {
+            Interaction::None => (
+                Color::srgba(0.12, 0.09, 0.16, 0.76),
+                Color::srgba(1.0, 0.38, 0.65, 0.72),
+            ),
+            Interaction::Hovered => (Color::srgba(0.31, 0.11, 0.22, 0.9), ACCENT_HOVER),
+            Interaction::Pressed => (Color::srgba(0.5, 0.07, 0.24, 0.96), Color::WHITE),
+        };
+        background.0 = background_color;
+        *border = BorderColor::all(border_color);
+    }
+}
+
 fn corner_button_colors(interaction: Interaction) -> (Color, Color) {
     match interaction {
         Interaction::None => (Color::srgba(0.12, 0.12, 0.15, 0.3), TOGGLE_GRAY),
@@ -563,11 +738,11 @@ mod tests {
     #[test]
     fn active_game_hud_contains_only_its_mode() {
         assert_eq!(
-            hud_text("Gothic Chess", GameMode::Local, GameOutcome::Ongoing, None,),
+            hud_text("Gothic Chess", GameMode::Local, GameOutcome::Ongoing),
             "Gothic Chess\nLocal · two players"
         );
         assert_eq!(
-            hud_text("Capablanca Chess", GameMode::Ai, GameOutcome::Check, None,),
+            hud_text("Capablanca Chess", GameMode::Ai, GameOutcome::Check),
             "Capablanca Chess\nAI · versus computer"
         );
     }
@@ -581,7 +756,6 @@ mod tests {
                 GameOutcome::Win {
                     winner: Side::White
                 },
-                None,
             ),
             "Gothic Chess\nAI · versus computer\n\nCheckmate — White wins."
         );
@@ -590,22 +764,16 @@ mod tests {
                 "Capablanca Chess",
                 GameMode::Local,
                 GameOutcome::Draw(DrawReason::Stalemate),
-                None,
             ),
             "Capablanca Chess\nLocal · two players\n\nDraw by stalemate."
         );
     }
 
     #[test]
-    fn multiplayer_hud_always_contains_the_public_game_id() {
+    fn multiplayer_hud_keeps_the_public_game_id_in_its_separate_copy_row() {
         assert_eq!(
-            hud_text(
-                "Gothic Chess",
-                GameMode::Multiplayer,
-                GameOutcome::Ongoing,
-                Some("ABC234DEFG"),
-            ),
-            "Gothic Chess\nMultiplayer · online\nGame ID · ABC234DEFG"
+            hud_text("Gothic Chess", GameMode::Multiplayer, GameOutcome::Ongoing,),
+            "Gothic Chess\nMultiplayer · online"
         );
     }
 

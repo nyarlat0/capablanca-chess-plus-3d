@@ -8,9 +8,12 @@ use bevy::{
         Slider, SliderDragState, SliderPrecision, SliderRange, SliderStep, SliderThumb,
         SliderValue, TrackClick, observe, slider_self_update,
     },
+    window::PrimaryWindow,
 };
 use bevy_panorbit_camera::PanOrbitCamera;
 use capablanca_chess_plus::{Color as Side, Variant};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
 
 use crate::{
     ai::{
@@ -46,11 +49,13 @@ impl Plugin for GameMenuPlugin {
                     sync_menu_visibility,
                     sync_ai_controls_visibility,
                     sync_multiplayer_controls_visibility,
-                    sync_multiplayer_input_from_state,
+                    reset_multiplayer_input_on_menu_open,
+                    sync_browser_multiplayer_input,
                     sync_multiplayer_game_id,
                     sync_multiplayer_status,
                     sync_start_button_label,
                     sync_ai_difficulty,
+                    adapt_menu_layout,
                     style_menu_buttons,
                     style_ai_difficulty_slider,
                     animate_menu_background,
@@ -102,6 +107,21 @@ impl Default for GameMenuState {
 
 #[derive(Component)]
 struct GameMenuRoot;
+
+#[derive(Component)]
+struct GameMenuPanel;
+
+#[derive(Component)]
+struct MenuSubtitle;
+
+#[derive(Component)]
+struct MenuTextSize(f32);
+
+#[derive(Component)]
+struct ResponsiveMenuGap {
+    row: f32,
+    column: f32,
+}
 
 #[derive(Component, Clone, Copy)]
 enum MenuAction {
@@ -181,14 +201,18 @@ fn setup_game_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
                     px(5),
                     px(36),
                 ),
+                GameMenuPanel,
             ))
             .with_children(|panel| {
                 panel.spawn(text(&font, "CAPABLANCA CHESS +", 32.0, ACCENT));
-                panel.spawn(text(
-                    &font,
-                    "Configure a game while the board waits behind the glass.",
-                    14.0,
-                    TEXT_MUTED,
+                panel.spawn((
+                    text(
+                        &font,
+                        "Configure a game while the board waits behind the glass.",
+                        14.0,
+                        TEXT_MUTED,
+                    ),
+                    MenuSubtitle,
                 ));
 
                 spawn_section_label(panel, &font, "GAME MODE");
@@ -198,33 +222,39 @@ fn setup_game_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
                         &font,
                         "Local",
                         MenuAction::Mode(GameMode::Local),
-                        percent(32),
+                        percent(30),
                     );
                     spawn_menu_button(
                         row,
                         &font,
                         "AI",
                         MenuAction::Mode(GameMode::Ai),
-                        percent(32),
+                        percent(30),
                     );
                     spawn_menu_button(
                         row,
                         &font,
                         "Multiplayer",
                         MenuAction::Mode(GameMode::Multiplayer),
-                        percent(32),
+                        percent(30),
                     );
                 });
 
                 spawn_section_label(panel, &font, "RULES & STARTING POSITION");
                 panel
-                    .spawn(Node {
-                        width: percent(100),
-                        flex_wrap: FlexWrap::Wrap,
-                        column_gap: px(8),
-                        row_gap: px(8),
-                        ..default()
-                    })
+                    .spawn((
+                        Node {
+                            width: percent(100),
+                            flex_wrap: FlexWrap::Wrap,
+                            column_gap: px(8),
+                            row_gap: px(8),
+                            ..default()
+                        },
+                        ResponsiveMenuGap {
+                            row: 8.0,
+                            column: 8.0,
+                        },
+                    ))
                     .with_children(|grid| {
                         for variant in Variant::ALL {
                             spawn_menu_button(
@@ -232,7 +262,7 @@ fn setup_game_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
                                 &font,
                                 variant_label(variant),
                                 MenuAction::Variant(variant),
-                                percent(24),
+                                percent(23),
                             );
                         }
                     });
@@ -247,21 +277,21 @@ fn setup_game_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
                         &font,
                         "Random",
                         MenuAction::Side(SideChoice::Random),
-                        percent(32),
+                        percent(30),
                     );
                     spawn_menu_button(
                         row,
                         &font,
                         "White",
                         MenuAction::Side(SideChoice::White),
-                        percent(32),
+                        percent(30),
                     );
                     spawn_menu_button(
                         row,
                         &font,
                         "Black",
                         MenuAction::Side(SideChoice::Black),
-                        percent(32),
+                        percent(30),
                     );
                 });
 
@@ -281,6 +311,10 @@ fn spawn_multiplayer_controls(parent: &mut ChildSpawnerCommands, font: &Handle<F
                 ..default()
             },
             MultiplayerControls,
+            ResponsiveMenuGap {
+                row: 8.0,
+                column: 0.0,
+            },
         ))
         .with_children(|controls| {
             controls.spawn(text(
@@ -321,6 +355,7 @@ fn spawn_multiplayer_controls(parent: &mut ChildSpawnerCommands, font: &Handle<F
                 BorderColor::all(Color::srgba(1.0, 0.35, 0.62, 0.42)),
                 TabIndex(0),
                 MultiplayerGameIdInput,
+                MenuTextSize(18.0),
             ));
             controls.spawn((
                 text(
@@ -345,15 +380,28 @@ fn spawn_ai_difficulty_controls(parent: &mut ChildSpawnerCommands, font: &Handle
                 ..default()
             },
             AiDifficultyControls,
+            ResponsiveMenuGap {
+                row: 9.0,
+                column: 0.0,
+            },
         ))
         .with_children(|controls| {
             controls
-                .spawn(Node {
-                    width: percent(100),
-                    justify_content: JustifyContent::SpaceBetween,
-                    align_items: AlignItems::Center,
-                    ..default()
-                })
+                .spawn((
+                    Node {
+                        width: percent(100),
+                        flex_wrap: FlexWrap::Wrap,
+                        justify_content: JustifyContent::SpaceBetween,
+                        align_items: AlignItems::Center,
+                        column_gap: px(6),
+                        row_gap: px(3),
+                        ..default()
+                    },
+                    ResponsiveMenuGap {
+                        row: 3.0,
+                        column: 6.0,
+                    },
+                ))
                 .with_children(|header| {
                     header.spawn(text(
                         font,
@@ -501,11 +549,19 @@ fn spawn_section_label(parent: &mut ChildSpawnerCommands, font: &Handle<Font>, v
 
 fn spawn_row(parent: &mut ChildSpawnerCommands, children: impl FnOnce(&mut ChildSpawnerCommands)) {
     parent
-        .spawn(Node {
-            width: percent(100),
-            column_gap: px(8),
-            ..default()
-        })
+        .spawn((
+            Node {
+                width: percent(100),
+                flex_wrap: FlexWrap::Wrap,
+                column_gap: px(8),
+                row_gap: px(8),
+                ..default()
+            },
+            ResponsiveMenuGap {
+                row: 8.0,
+                column: 8.0,
+            },
+        ))
         .with_children(children);
 }
 
@@ -521,7 +577,7 @@ fn spawn_menu_button(
         Button,
         Node {
             width,
-            min_width: px(120),
+            min_width: px(0),
             height: px(if is_start { 54 } else { 44 }),
             flex_grow: 1.0,
             padding: UiRect::axes(px(12), px(8)),
@@ -559,7 +615,122 @@ fn text(font: &Handle<Font>, value: &str, size: f32, color: Color) -> impl Bundl
             ..default()
         },
         TextColor(color),
+        MenuTextSize(size),
     )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MenuLayout {
+    Regular,
+    Compact,
+    Tiny,
+}
+
+fn menu_layout_for_size(width: f32, height: f32) -> MenuLayout {
+    if width < 380.0 || height < 440.0 {
+        MenuLayout::Tiny
+    } else if width < 640.0 || height < 680.0 {
+        MenuLayout::Compact
+    } else {
+        MenuLayout::Regular
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn adapt_menu_layout(
+    window: Single<&Window, With<PrimaryWindow>>,
+    mut previous: Local<Option<MenuLayout>>,
+    mut nodes: ParamSet<(
+        Query<&mut Node, With<GameMenuRoot>>,
+        Query<&mut Node, (With<GameMenuPanel>, Without<GameMenuRoot>)>,
+        Query<(&MenuAction, &mut Node), (Without<GameMenuRoot>, Without<GameMenuPanel>)>,
+        Query<(&ResponsiveMenuGap, &mut Node), (Without<GameMenuRoot>, Without<GameMenuPanel>)>,
+        Query<&mut Node, With<MultiplayerGameIdInput>>,
+        Query<&mut Node, With<MenuSubtitle>>,
+    )>,
+    mut text: Query<(&MenuTextSize, &mut TextFont)>,
+) {
+    let layout = menu_layout_for_size(window.width(), window.height());
+    if *previous == Some(layout) {
+        return;
+    }
+    *previous = Some(layout);
+
+    let (
+        root_padding,
+        panel_padding_x,
+        panel_padding_y,
+        panel_gap,
+        scale,
+        button_height,
+        start_height,
+    ) = match layout {
+        MenuLayout::Regular => (18.0, 34.0, 28.0, 17.0, 1.0, 44.0, 54.0),
+        MenuLayout::Compact => (8.0, 14.0, 12.0, 9.0, 0.84, 38.0, 46.0),
+        MenuLayout::Tiny => (4.0, 8.0, 4.0, 4.0, 0.7, 28.0, 34.0),
+    };
+    let gap_scale = match layout {
+        MenuLayout::Regular => 1.0,
+        MenuLayout::Compact => 0.7,
+        MenuLayout::Tiny => 0.42,
+    };
+
+    for mut root in &mut nodes.p0() {
+        root.padding = UiRect::all(px(root_padding));
+    }
+    for mut panel in &mut nodes.p1() {
+        panel.width = percent(if layout == MenuLayout::Regular {
+            92
+        } else {
+            98
+        });
+        panel.max_height = percent(if layout == MenuLayout::Regular {
+            96
+        } else {
+            99
+        });
+        panel.padding = UiRect::axes(px(panel_padding_x), px(panel_padding_y));
+        panel.row_gap = px(panel_gap);
+    }
+    for (action, mut button) in &mut nodes.p2() {
+        let is_start = matches!(action, MenuAction::Start);
+        button.min_width = px(0);
+        button.height = px(if is_start {
+            start_height
+        } else {
+            button_height
+        });
+        button.padding = UiRect::axes(
+            px(12.0 * scale),
+            px(if layout == MenuLayout::Tiny {
+                2.0
+            } else {
+                8.0 * scale
+            }),
+        );
+    }
+    for (size, mut font) in &mut text {
+        font.font_size = FontSize::Px(size.0 * scale);
+    }
+    for mut subtitle in &mut nodes.p5() {
+        subtitle.display = if layout == MenuLayout::Regular {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    for (gap, mut node) in &mut nodes.p3() {
+        node.row_gap = px(gap.row * gap_scale);
+        node.column_gap = px(gap.column * gap_scale);
+    }
+    for mut input in &mut nodes.p4() {
+        input.min_height = px(match layout {
+            MenuLayout::Regular => 44.0,
+            MenuLayout::Compact => 38.0,
+            MenuLayout::Tiny => 30.0,
+        });
+        input.padding = UiRect::axes(px(14.0 * scale), px(9.0 * scale));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -655,22 +826,105 @@ fn sync_multiplayer_game_id(
     mut menu: ResMut<GameMenuState>,
 ) {
     for input in &inputs {
-        menu.multiplayer_game_id = input.value().to_string();
+        let value = input.value().to_string();
+        if menu.multiplayer_game_id != value {
+            menu.multiplayer_game_id = value;
+        }
     }
 }
 
-fn sync_multiplayer_input_from_state(
+fn reset_multiplayer_input_on_menu_open(
     menu: Res<GameMenuState>,
+    mut was_open: Local<bool>,
     mut inputs: Query<&mut EditableText, With<MultiplayerGameIdInput>>,
 ) {
-    if !menu.is_changed() || !menu.open || !menu.multiplayer_game_id.is_empty() {
+    let just_opened = menu.open && !*was_open;
+    *was_open = menu.open;
+    if !just_opened {
         return;
     }
     for mut input in &mut inputs {
-        if !input.value().to_string().is_empty() {
+        if input.value().to_string() != menu.multiplayer_game_id {
             input.clear();
+            input.editor_mut().set_text(&menu.multiplayer_game_id);
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sync_browser_multiplayer_input() {}
+
+#[cfg(target_arch = "wasm32")]
+fn sync_browser_multiplayer_input(
+    mut menu: ResMut<GameMenuState>,
+    mut inputs: Query<
+        (&mut EditableText, &ComputedNode, &UiGlobalTransform),
+        With<MultiplayerGameIdInput>,
+    >,
+    mut was_visible: Local<bool>,
+) {
+    let Some(input_element) = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id("capablanca-game-id-input"))
+        .and_then(|element| element.dyn_into::<web_sys::HtmlInputElement>().ok())
+    else {
+        return;
+    };
+    let visible = menu.open && menu.selected_mode == GameMode::Multiplayer;
+    if !visible {
+        if *was_visible {
+            let _ = input_element.style().set_property("display", "none");
+            let _ = input_element.blur();
+        }
+        *was_visible = false;
+        return;
+    }
+
+    let Ok((mut editable, computed, transform)) = inputs.single_mut() else {
+        return;
+    };
+    if computed.is_empty() {
+        let _ = input_element.style().set_property("display", "none");
+        return;
+    }
+
+    let inverse_scale = computed.inverse_scale_factor();
+    let size = computed.size() * inverse_scale;
+    let (_, _, center) = transform.to_scale_angle_translation();
+    let center = center * inverse_scale;
+    let top_left = center - size * 0.5;
+    let style = input_element.style();
+    let _ = style.set_property("display", "block");
+    let _ = style.set_property("left", &format!("{}px", top_left.x));
+    let _ = style.set_property("top", &format!("{}px", top_left.y));
+    let _ = style.set_property("width", &format!("{}px", size.x));
+    let _ = style.set_property("height", &format!("{}px", size.y));
+
+    if !*was_visible {
+        input_element.set_value(&menu.multiplayer_game_id);
+    }
+    let value = normalize_game_id_input(&input_element.value());
+    if input_element.value() != value {
+        input_element.set_value(&value);
+    }
+    if editable.value().to_string() != value {
+        editable.clear();
+        editable.editor_mut().set_text(&value);
+    }
+    if menu.multiplayer_game_id != value {
+        menu.multiplayer_game_id = value;
+    }
+    *was_visible = true;
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn normalize_game_id_input(value: &str) -> String {
+    value
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(12)
+        .map(|character| character.to_ascii_uppercase())
+        .collect()
 }
 
 fn sync_multiplayer_status(
@@ -965,6 +1219,14 @@ mod tests {
         assert_eq!(
             starting_camera_side(GameMode::Ai, SideChoice::Black, 0),
             Side::Black
+        );
+    }
+
+    #[test]
+    fn browser_game_id_input_is_sanitized_and_uppercase() {
+        assert_eq!(
+            normalize_game_id_input(" ab-c23_deF456789 "),
+            "ABC23DEF4567"
         );
     }
 }

@@ -5,6 +5,7 @@ use bevy::{
     ecs::system::SystemParam,
     prelude::*,
     render::render_resource::TextureFormat,
+    window::PrimaryWindow,
 };
 use capablanca_chess_plus::{Color as Side, Move, PieceKind};
 
@@ -40,6 +41,7 @@ impl Plugin for PromotionPlugin {
                     sync_promotion_popup,
                     center_promotion_previews,
                     rotate_promotion_previews,
+                    adapt_promotion_layout,
                     style_promotion_choices,
                 )
                     .chain()
@@ -57,6 +59,18 @@ struct PromotionUiState {
 
 #[derive(Component)]
 struct PromotionPopupRoot;
+
+#[derive(Component)]
+struct PromotionPanel;
+
+#[derive(Component)]
+struct PromotionGrid;
+
+#[derive(Component)]
+struct PromotionChoiceImage;
+
+#[derive(Component)]
+struct PromotionTextSize(f32);
 
 #[derive(Component)]
 struct PromotionPreviewEntity;
@@ -201,12 +215,14 @@ fn sync_promotion_popup(params: PromotionPopupParams) {
                     Node {
                         width: percent(94),
                         max_width: px(1_080),
+                        max_height: percent(98),
                         padding: UiRect::axes(px(24), px(22)),
                         border: UiRect::all(px(1)),
                         border_radius: BorderRadius::all(px(24)),
                         flex_direction: FlexDirection::Column,
                         align_items: AlignItems::Center,
                         row_gap: px(8),
+                        overflow: Overflow::clip_y(),
                         ..default()
                     },
                     BackgroundColor(PANEL),
@@ -218,6 +234,7 @@ fn sync_promotion_popup(params: PromotionPopupParams) {
                         px(5),
                         px(36),
                     ),
+                    PromotionPanel,
                 ))
                 .with_children(|panel| {
                     panel.spawn(popup_text(&font, "CHOOSE PROMOTION", 24.0, ACCENT));
@@ -228,15 +245,18 @@ fn sync_promotion_popup(params: PromotionPopupParams) {
                         Color::srgb(0.67, 0.64, 0.72),
                     ));
                     panel
-                        .spawn(Node {
-                            width: percent(100),
-                            margin: UiRect::top(px(10)),
-                            flex_wrap: FlexWrap::Wrap,
-                            justify_content: JustifyContent::Center,
-                            column_gap: px(10),
-                            row_gap: px(10),
-                            ..default()
-                        })
+                        .spawn((
+                            Node {
+                                width: percent(100),
+                                margin: UiRect::top(px(10)),
+                                flex_wrap: FlexWrap::Wrap,
+                                justify_content: JustifyContent::Center,
+                                column_gap: px(10),
+                                row_gap: px(10),
+                                ..default()
+                            },
+                            PromotionGrid,
+                        ))
                         .with_children(|grid| {
                             for (promotion, image) in previews {
                                 spawn_promotion_choice(grid, &font, promotion, image);
@@ -353,6 +373,7 @@ fn spawn_promotion_choice(
                     ..default()
                 },
                 Pickable::IGNORE,
+                PromotionChoiceImage,
             ));
             button.spawn((
                 popup_text(
@@ -390,7 +411,93 @@ fn popup_text(font: &Handle<Font>, value: &str, size: f32, color: Color) -> impl
             ..default()
         },
         TextColor(color),
+        PromotionTextSize(size),
     )
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PromotionLayout {
+    Regular,
+    Compact,
+    Tiny,
+}
+
+fn promotion_layout_for_size(width: f32, height: f32) -> PromotionLayout {
+    if width < 380.0 || height < 440.0 {
+        PromotionLayout::Tiny
+    } else if width < 640.0 || height < 680.0 {
+        PromotionLayout::Compact
+    } else {
+        PromotionLayout::Regular
+    }
+}
+
+fn adapt_promotion_layout(
+    window: Single<&Window, With<PrimaryWindow>>,
+    mut nodes: ParamSet<(
+        Query<&mut Node, With<PromotionPopupRoot>>,
+        Query<&mut Node, (With<PromotionPanel>, Without<PromotionPopupRoot>)>,
+        Query<&mut Node, (With<PromotionGrid>, Without<PromotionPanel>)>,
+        Query<&mut Node, (With<PromotionChoice>, Without<PromotionChoiceImage>)>,
+        Query<&mut Node, With<PromotionChoiceImage>>,
+    )>,
+    mut text: Query<(&PromotionTextSize, &mut TextFont)>,
+) {
+    let layout = promotion_layout_for_size(window.width(), window.height());
+    let (
+        root_padding,
+        panel_x,
+        panel_y,
+        panel_gap,
+        grid_gap,
+        card_width,
+        card_height,
+        image_width,
+        image_height,
+        text_scale,
+    ) = match layout {
+        PromotionLayout::Regular => (18.0, 24.0, 22.0, 8.0, 10.0, 136.0, 174.0, 122.0, 132.0, 1.0),
+        PromotionLayout::Compact => (8.0, 10.0, 10.0, 6.0, 7.0, 96.0, 126.0, 82.0, 90.0, 0.8),
+        PromotionLayout::Tiny => (4.0, 6.0, 5.0, 4.0, 6.0, 82.0, 105.0, 70.0, 74.0, 0.7),
+    };
+
+    for mut root in &mut nodes.p0() {
+        root.padding = UiRect::all(px(root_padding));
+    }
+    for mut panel in &mut nodes.p1() {
+        panel.width = percent(if layout == PromotionLayout::Regular {
+            94
+        } else {
+            99
+        });
+        panel.padding = UiRect::axes(px(panel_x), px(panel_y));
+        panel.row_gap = px(panel_gap);
+    }
+    for mut grid in &mut nodes.p2() {
+        grid.margin = UiRect::top(px(if layout == PromotionLayout::Regular {
+            10.0
+        } else {
+            3.0
+        }));
+        grid.column_gap = px(grid_gap);
+        grid.row_gap = px(grid_gap);
+    }
+    for mut card in &mut nodes.p3() {
+        card.width = px(card_width);
+        card.height = px(card_height);
+        card.padding = UiRect::all(px(if layout == PromotionLayout::Regular {
+            7.0
+        } else {
+            4.0
+        }));
+    }
+    for mut image in &mut nodes.p4() {
+        image.width = px(image_width);
+        image.height = px(image_height);
+    }
+    for (size, mut font) in &mut text {
+        font.font_size = FontSize::Px(size.0 * text_scale);
+    }
 }
 
 fn promotion_options(moves: &[Move]) -> Vec<Option<PieceKind>> {
