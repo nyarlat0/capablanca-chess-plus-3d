@@ -13,7 +13,7 @@ use capablanca_chess_plus::{BoardSize, GameOutcome, MoveKind, Square};
 
 use crate::{
     app::FrontendSet,
-    game::{ChessMatch, MoveRequest, handle_square_selection},
+    game::{ChessMatch, MoveRequest, handle_square_selection, side_to_move_message},
     menu::GameMenuState,
     pieces::PieceAnimationState,
     reflection::{
@@ -116,6 +116,7 @@ struct BoardRenderState {
 struct BoardPointerState {
     hovered_square: Option<Square>,
     primary_dragged: bool,
+    secondary_dragged: bool,
 }
 
 impl BoardPointerState {
@@ -133,9 +134,19 @@ impl BoardPointerState {
         self.primary_dragged = false;
     }
 
+    fn begin_secondary_press(&mut self) {
+        self.secondary_dragged = false;
+    }
+
     fn record_primary_drag(&mut self, distance: Vec2) {
         if distance.length_squared() >= ORBIT_CLICK_CANCEL_DISTANCE.powi(2) {
             self.primary_dragged = true;
+        }
+    }
+
+    fn record_secondary_drag(&mut self, distance: Vec2) {
+        if distance.length_squared() >= ORBIT_CLICK_CANCEL_DISTANCE.powi(2) {
+            self.secondary_dragged = true;
         }
     }
 }
@@ -686,30 +697,48 @@ fn on_square_click(
     mut chess_match: ResMut<ChessMatch>,
     mut move_requests: MessageWriter<MoveRequest>,
 ) {
-    if menu.open
-        || !animation.is_settled(chess_match.generation)
-        || click.button != PointerButton::Primary
-        || pointer.primary_dragged
-    {
+    if menu.open || !animation.is_settled(chess_match.generation) {
         return;
     }
+
+    if click.button == PointerButton::Secondary {
+        if pointer.secondary_dragged || chess_match.pending_promotion.is_some() {
+            return;
+        }
+
+        if chess_match.selected.take().is_some() {
+            chess_match.status = side_to_move_message(&chess_match);
+        }
+
+        return;
+    }
+
+    if click.button != PointerButton::Primary || pointer.primary_dragged {
+        return;
+    }
+
     let Ok(clicked) = squares.get(click.entity) else {
         return;
     };
+
     if let Some(chess_move) = handle_square_selection(&mut chess_match, clicked.0) {
         move_requests.write(MoveRequest(chess_move));
     }
 }
 
 fn on_square_press(press: On<Pointer<Press>>, mut pointer: ResMut<BoardPointerState>) {
-    if press.button == PointerButton::Primary {
-        pointer.begin_primary_press();
+    match press.button {
+        PointerButton::Primary => pointer.begin_primary_press(),
+        PointerButton::Secondary => pointer.begin_secondary_press(),
+        _ => {}
     }
 }
 
 fn on_square_drag(drag: On<Pointer<Drag>>, mut pointer: ResMut<BoardPointerState>) {
-    if drag.button == PointerButton::Primary {
-        pointer.record_primary_drag(drag.distance);
+    match drag.button {
+        PointerButton::Primary => pointer.record_primary_drag(drag.distance),
+        PointerButton::Secondary => pointer.record_secondary_drag(drag.distance),
+        _ => {}
     }
 }
 
