@@ -54,22 +54,23 @@ pub(crate) struct EnvironmentPlugin;
 
 impl Plugin for EnvironmentPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(DirectionalLightShadowMap {
-            size: DIRECTIONAL_SHADOW_MAP_SIZE,
-        })
-        .init_resource::<LocalCameraState>()
-        .init_resource::<CameraAutoTurn>()
-        .add_systems(Startup, setup_environment)
-        .add_systems(
-            Update,
-            (
-                orient_camera_after_local_move,
-                handle_manual_camera_recenter,
-                animate_automatic_camera_turn,
-            )
-                .chain()
-                .in_set(FrontendSet::Camera),
-        );
+        app.insert_resource(ClearColor(Color::BLACK))
+            .insert_resource(DirectionalLightShadowMap {
+                size: DIRECTIONAL_SHADOW_MAP_SIZE,
+            })
+            .init_resource::<LocalCameraState>()
+            .init_resource::<CameraAutoTurn>()
+            .add_systems(Startup, setup_environment)
+            .add_systems(
+                Update,
+                (
+                    orient_camera_after_local_move,
+                    handle_manual_camera_recenter,
+                    animate_automatic_camera_turn,
+                )
+                    .chain()
+                    .in_set(FrontendSet::Camera),
+            );
 
         #[cfg(target_arch = "wasm32")]
         app.add_systems(Update, update_web_camera_fill.in_set(FrontendSet::Camera));
