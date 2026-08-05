@@ -9,8 +9,16 @@ staging_parent="$repo_root/dist"
 
 cargo_command=${CAPABLANCA_CARGO:-cargo}
 wasm_bindgen_command=${CAPABLANCA_WASM_BINDGEN:-wasm-bindgen}
+wasm_opt_command=${CAPABLANCA_WASM_OPT:-wasm-opt}
+brotli_command=${CAPABLANCA_BROTLI:-brotli}
 
-for command in "$cargo_command" "$wasm_bindgen_command" sha256sum install rsync gzip; do
+for command in \
+    "$cargo_command" \
+    "$wasm_bindgen_command" \
+    "$wasm_opt_command" \
+    "$brotli_command" \
+    sha256sum install rsync gzip
+do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "Required command not found: $command" >&2
         exit 1
@@ -89,6 +97,22 @@ mkdir -p "$bindgen_dir"
     --out-name capablanca \
     "$repo_root/target/wasm32-unknown-unknown/web-release/bevy-front.wasm"
 
+optimized_wasm="$bindgen_dir/capablanca_bg.optimized.wasm"
+
+echo "Optimizing browser WebAssembly"
+"$wasm_opt_command" \
+    "$bindgen_dir/capablanca_bg.wasm" \
+    -Os \
+    --enable-multivalue \
+    --enable-mutable-globals \
+    --enable-reference-types \
+    --enable-sign-ext \
+    --enable-nontrapping-float-to-int \
+    --enable-bulk-memory \
+    -o "$optimized_wasm"
+
+mv "$optimized_wasm" "$bindgen_dir/capablanca_bg.wasm"
+
 release_hash=$(
     cd "$bindgen_dir"
     sha256sum capablanca.js capablanca_bg.wasm | sha256sum | cut -c1-16
@@ -102,16 +126,26 @@ sed \
     -e "s#__CAPABLANCA_ASSET_ROOT__#$asset_root#g" \
     "$html_template" >"$public_dir/index.html"
 
-# Precompression happens on the build machine, not on the weak production
-# server. Caddy selects these sidecars without recompressing every response.
+# Produce both compression variants expected by Caddy. Versioned files are
+# immutable, so the compression cost is paid only once on the build machine.
 while IFS= read -r -d '' source_file; do
     gzip -9 -c "$source_file" >"$source_file.gz"
-    if command -v brotli >/dev/null 2>&1; then
-        brotli --quality=9 --force --output="$source_file.br" "$source_file"
-    fi
+
+    "$brotli_command" \
+        --quality=11 \
+        --force \
+        --output="$source_file.br" \
+        "$source_file"
 done < <(
     find "$public_dir" -type f \
-        \( -name '*.js' -o -name '*.wasm' -o -name '*.glb' -o -name '*.ttf' -o -name '*.wgsl' -o -name '*.ini' \) \
+        \( \
+            -name '*.js' \
+            -o -name '*.wasm' \
+            -o -name '*.glb' \
+            -o -name '*.ttf' \
+            -o -name '*.wgsl' \
+            -o -name '*.ini' \
+        \) \
         -print0
 )
 
