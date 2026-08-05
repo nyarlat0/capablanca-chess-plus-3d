@@ -97,29 +97,19 @@ if [[ "${build_environment}" == true ]]; then
     done
 
     ktx create \
-        --format R8G8B8A8_SRGB \
-        --assign-tf srgb \
-        --cubemap \
-        --generate-mipmap \
-        --mipmap-filter lanczos4 \
-        --encode uastc \
-        --uastc-quality 2 \
-        --uastc-rdo \
-        --uastc-rdo-l 0.75 \
-        --zstd 18 \
-        "${work_dir}/skybox_faces/0.png" \
-        "${work_dir}/skybox_faces/1.png" \
-        "${work_dir}/skybox_faces/2.png" \
-        "${work_dir}/skybox_faces/3.png" \
-        "${work_dir}/skybox_faces/4.png" \
-        "${work_dir}/skybox_faces/5.png" \
-        "${work_dir}/out/space_skybox.native.ktx2"
-
-    # WebGL2 guarantees ETC2. Transcoding once here avoids shipping the C++ Basis
-    # Universal transcoder inside the wasm module and removes startup CPU work.
-    ktx transcode --target etc-rgb --zstd 18 \
-        "${work_dir}/out/space_skybox.native.ktx2" \
-        "${work_dir}/out/space_skybox.ktx2"
+      --format R8G8B8A8_SRGB \
+      --assign-tf srgb \
+      --cubemap \
+      --generate-mipmap \
+      --mipmap-filter lanczos4 \
+      --zstd 18 \
+      "${work_dir}/skybox_faces/0.png" \
+      "${work_dir}/skybox_faces/1.png" \
+      "${work_dir}/skybox_faces/2.png" \
+      "${work_dir}/skybox_faces/3.png" \
+      "${work_dir}/skybox_faces/4.png" \
+      "${work_dir}/skybox_faces/5.png" \
+      "${work_dir}/out/space_skybox.ktx2"
 
     # glTF-IBL-Sampler accepts an equirectangular panorama. Prefer a supplied HDR
     # source, but retain the six-face PNG workflow by converting it deterministically.
@@ -188,18 +178,38 @@ create_color_texture() {
     local source_name=$1
     local output_stem=$2
     local output_name=${output_stem}.ktx2
-    local intermediate="${work_dir}/out/${output_stem}.native.ktx2"
-    convert "${source_dir}/${source_name}" -alpha off -colorspace sRGB \
+    local native_name=${output_stem}.native.ktx2
+
+    convert "${source_dir}/${source_name}" \
+        -alpha off \
+        -colorspace sRGB \
         "${work_dir}/pbr/${output_stem}.png"
+
+    # Browser: universal RGBA8, no GPU block compression.
     ktx create \
         --format R8G8B8A8_SRGB \
         --assign-tf srgb \
-        --generate-mipmap --mipmap-filter lanczos4 --mipmap-wrap wrap \
-        --encode uastc --uastc-quality 2 --uastc-rdo --uastc-rdo-l 0.75 \
+        --generate-mipmap \
+        --mipmap-filter lanczos4 \
+        --mipmap-wrap wrap \
         --zstd 18 \
-        "${work_dir}/pbr/${output_stem}.png" "${intermediate}"
-    ktx transcode --target etc-rgb --zstd 18 \
-        "${intermediate}" "${work_dir}/out/${output_name}"
+        "${work_dir}/pbr/${output_stem}.png" \
+        "${work_dir}/out/${output_name}"
+
+    # Native: transcodable UASTC.
+    ktx create \
+        --format R8G8B8A8_SRGB \
+        --assign-tf srgb \
+        --generate-mipmap \
+        --mipmap-filter lanczos4 \
+        --mipmap-wrap wrap \
+        --encode uastc \
+        --uastc-quality 2 \
+        --uastc-rdo \
+        --uastc-rdo-l 0.75 \
+        --zstd 18 \
+        "${work_dir}/pbr/${output_stem}.png" \
+        "${work_dir}/out/${native_name}"
 }
 
 create_normal_texture() {
@@ -236,18 +246,38 @@ create_roughness_texture() {
     local source_name=$1
     local output_stem=$2
     local output_name=${output_stem}.ktx2
-    local intermediate="${work_dir}/out/${output_stem}.native.ktx2"
-    # Expand grayscale to RGB: StandardMaterial samples roughness from G.
-    convert "${source_dir}/${source_name}" -alpha off -colorspace Gray \
+    local native_name=${output_stem}.native.ktx2
+
+    convert "${source_dir}/${source_name}" \
+        -alpha off \
+        -colorspace Gray \
         "${work_dir}/pbr/${output_stem}.png"
+
+    # Browser: universal RGBA8.
     ktx create \
-        --format R8G8B8A8_UNORM --assign-tf linear \
-        --generate-mipmap --mipmap-filter lanczos4 --mipmap-wrap wrap \
-        --encode uastc --uastc-quality 2 --uastc-rdo --uastc-rdo-l 0.75 \
+        --format R8G8B8A8_UNORM \
+        --assign-tf linear \
+        --generate-mipmap \
+        --mipmap-filter lanczos4 \
+        --mipmap-wrap wrap \
         --zstd 18 \
-        "${work_dir}/pbr/${output_stem}.png" "${intermediate}"
-    ktx transcode --target etc-rgb --zstd 18 \
-        "${intermediate}" "${work_dir}/out/${output_name}"
+        "${work_dir}/pbr/${output_stem}.png" \
+        "${work_dir}/out/${output_name}"
+
+    # Native: transcodable UASTC.
+    ktx create \
+        --format R8G8B8A8_UNORM \
+        --assign-tf linear \
+        --generate-mipmap \
+        --mipmap-filter lanczos4 \
+        --mipmap-wrap wrap \
+        --encode uastc \
+        --uastc-quality 2 \
+        --uastc-rdo \
+        --uastc-rdo-l 0.75 \
+        --zstd 18 \
+        "${work_dir}/pbr/${output_stem}.png" \
+        "${work_dir}/out/${native_name}"
 }
 
 if [[ "${build_board}" == true ]]; then

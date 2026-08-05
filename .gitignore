@@ -3,3 +3,4 @@
 .codex
 .agents
 /dist
+/bevy-front/assets/textures/generated
