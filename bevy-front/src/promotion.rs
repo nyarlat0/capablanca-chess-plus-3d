@@ -178,8 +178,8 @@ fn sync_promotion_popup(params: PromotionPopupParams) {
         let image = images.add(Image::new_target_texture(
             PREVIEW_TEXTURE_SIZE,
             PREVIEW_TEXTURE_SIZE,
-            TextureFormat::Rgba8Unorm,
-            Some(TextureFormat::Rgba8UnormSrgb),
+            TextureFormat::Rgba8UnormSrgb,
+            None,
         ));
         spawn_promotion_preview(
             &mut commands,
