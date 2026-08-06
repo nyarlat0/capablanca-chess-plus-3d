@@ -26,7 +26,6 @@ use crate::{
     game::{ChessMatch, Controller, restart_match},
     multiplayer::{MultiplayerCommand, MultiplayerPhase, MultiplayerState},
     scene::{CameraAutoTurn, start_camera_turn},
-    settings::GraphicsSettings,
 };
 
 const ACCENT: Color = Color::srgb(0.98, 0.19, 0.52);
@@ -49,7 +48,6 @@ impl Plugin for GameMenuPlugin {
                 Update,
                 (
                     handle_menu_interactions,
-                    sync_low_end_mode_label,
                     sync_menu_visibility,
                     sync_ai_controls_visibility,
                     sync_multiplayer_controls_visibility,
@@ -122,9 +120,6 @@ struct MenuSubtitle;
 struct MenuTextSize(f32);
 
 #[derive(Component)]
-struct LowEndModeLabel;
-
-#[derive(Component)]
 struct ResponsiveMenuGap {
     row: f32,
     column: f32,
@@ -135,7 +130,6 @@ enum MenuAction {
     Mode(GameMode),
     Variant(Variant),
     Side(SideChoice),
-    ToggleLowEndMode,
     Start,
 }
 
@@ -169,11 +163,7 @@ struct MultiplayerStatusLabel;
 #[derive(Component)]
 struct StartButtonLabel;
 
-fn setup_game_menu(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    graphics: Res<GraphicsSettings>,
-) {
+fn setup_game_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
     let font: Handle<Font> = asset_server.load("fonts/FiraSans-Bold.ttf");
     commands
         .spawn((
@@ -306,7 +296,6 @@ fn setup_game_menu(
                         percent(30),
                     );
                 });
-                spawn_low_end_button(panel, &font, graphics.low_end_mode);
 
                 spawn_menu_button(panel, &font, "START GAME", MenuAction::Start, percent(100));
             });
@@ -578,54 +567,6 @@ fn spawn_row(parent: &mut ChildSpawnerCommands, children: impl FnOnce(&mut Child
         .with_children(children);
 }
 
-fn low_end_mode_label(enabled: bool) -> &'static str {
-    if enabled {
-        "☑ LOW-END PC · RELOAD REQUIRED"
-    } else {
-        "☐ LOW-END PC · DISABLE SKYBOX"
-    }
-}
-
-fn sync_low_end_mode_label(
-    graphics: Res<GraphicsSettings>,
-    mut labels: Query<&mut Text, With<LowEndModeLabel>>,
-) {
-    if !graphics.is_changed() {
-        return;
-    }
-
-    for mut label in &mut labels {
-        **label = low_end_mode_label(graphics.low_end_mode).to_owned();
-    }
-}
-
-fn spawn_low_end_button(parent: &mut ChildSpawnerCommands, font: &Handle<Font>, enabled: bool) {
-    parent
-        .spawn((
-            Button,
-            Node {
-                width: percent(100),
-                min_width: px(0),
-                height: px(44),
-                flex_grow: 1.0,
-                padding: UiRect::axes(px(12), px(8)),
-                border: UiRect::all(px(1)),
-                border_radius: BorderRadius::all(px(12)),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            BackgroundColor(BUTTON),
-            BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.1)),
-            MenuAction::ToggleLowEndMode,
-        ))
-        .with_child((
-            text(font, low_end_mode_label(enabled), 14.0, TEXT_PRIMARY),
-            MenuButtonLabel,
-            LowEndModeLabel,
-        ));
-}
-
 fn spawn_menu_button(
     parent: &mut ChildSpawnerCommands,
     font: &Handle<Font>,
@@ -805,7 +746,6 @@ fn handle_menu_interactions(
     mut camera: Single<&mut PanOrbitCamera>,
     multiplayer: Res<MultiplayerState>,
     mut multiplayer_commands: MessageWriter<MultiplayerCommand>,
-    mut graphics: ResMut<GraphicsSettings>,
 ) {
     for (interaction, action) in &interactions {
         if *interaction != Interaction::Pressed {
@@ -827,7 +767,6 @@ fn handle_menu_interactions(
                 }
             }
             MenuAction::Side(side) => menu.selected_side = side,
-            MenuAction::ToggleLowEndMode => graphics.toggle_low_end_mode(),
             MenuAction::Start => {
                 let mode = menu.selected_mode;
                 if mode == GameMode::Multiplayer {
@@ -1205,7 +1144,6 @@ fn action_selected(action: MenuAction, menu: &GameMenuState) -> bool {
         MenuAction::Mode(mode) => menu.selected_mode == mode,
         MenuAction::Variant(variant) => menu.selected_variant == variant,
         MenuAction::Side(side) => menu.selected_side == side,
-        MenuAction::ToggleLowEndMode => false,
         MenuAction::Start => false,
     }
 }

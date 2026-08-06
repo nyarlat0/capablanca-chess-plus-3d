@@ -5,12 +5,9 @@ use bevy::{
 };
 use bevy_panorbit_camera::PanOrbitCamera;
 
-use crate::{
-    render_tuning::{
-        ENVIRONMENT_DIFFUSE_PATH, ENVIRONMENT_LIGHT_INTENSITY, ENVIRONMENT_SPECULAR_PATH,
-        SKYBOX_BRIGHTNESS, SKYBOX_PATH, environment_rotation,
-    },
-    settings::GraphicsSettings,
+use crate::render_tuning::{
+    ENVIRONMENT_DIFFUSE_PATH, ENVIRONMENT_LIGHT_INTENSITY, ENVIRONMENT_SPECULAR_PATH,
+    SKYBOX_BRIGHTNESS, SKYBOX_PATH, environment_rotation,
 };
 
 pub(crate) struct SkyboxPlugin;
@@ -24,7 +21,7 @@ impl Plugin for SkyboxPlugin {
 
 #[derive(Resource)]
 struct EnvironmentAssets {
-    skybox: Option<Handle<Image>>,
+    skybox: Handle<Image>,
     diffuse: Handle<Image>,
     specular: Handle<Image>,
 }
@@ -32,16 +29,10 @@ struct EnvironmentAssets {
 #[derive(Component)]
 struct EnvironmentAttached;
 
-fn load_environment_maps(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    graphics: Res<GraphicsSettings>,
-) {
+fn load_environment_maps(mut commands: Commands, asset_server: Res<AssetServer>) {
     let cubemap_sampler = ImageSampler::Descriptor(ImageSamplerDescriptor::linear());
-
     let load_cubemap = |path: &'static str| {
         let sampler = cubemap_sampler.clone();
-
         asset_server
             .load_builder()
             .with_settings(move |settings: &mut ImageLoaderSettings| {
@@ -51,7 +42,7 @@ fn load_environment_maps(
     };
 
     commands.insert_resource(EnvironmentAssets {
-        skybox: (!graphics.low_end_mode).then(|| load_cubemap(SKYBOX_PATH)),
+        skybox: load_cubemap(SKYBOX_PATH),
         diffuse: load_cubemap(ENVIRONMENT_DIFFUSE_PATH),
         specular: load_cubemap(ENVIRONMENT_SPECULAR_PATH),
     });
@@ -74,9 +65,9 @@ fn attach_environment_maps(
             },
             EnvironmentAttached,
         ));
-        if is_main_camera && let Some(skybox) = &assets.skybox {
+        if is_main_camera {
             entity_commands.insert(Skybox {
-                image: Some(skybox.clone()),
+                image: Some(assets.skybox.clone()),
                 brightness: SKYBOX_BRIGHTNESS,
                 rotation: environment_rotation(),
             });
