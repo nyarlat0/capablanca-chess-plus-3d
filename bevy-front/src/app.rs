@@ -17,7 +17,7 @@ use crate::{
     ai::AiPlugin, audio::GameAudioPlugin, board::BoardPlugin, game::GamePlugin, hud::HudPlugin,
     input::InputPlugin, menu::GameMenuPlugin, multiplayer::MultiplayerPlugin, pieces::PiecesPlugin,
     promotion::PromotionPlugin, reflection::PlanarReflectionPlugin, scene::EnvironmentPlugin,
-    skybox::SkyboxPlugin,
+    settings::GraphicsSettings, skybox::SkyboxPlugin,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -50,40 +50,41 @@ pub struct FrontendPlugin;
 
 impl Plugin for FrontendPlugin {
     fn build(&self, app: &mut App) {
-        app.configure_sets(
-            Update,
-            (
-                FrontendSet::Menu,
-                FrontendSet::Multiplayer,
-                FrontendSet::Input,
-                FrontendSet::MoveDispatch,
-                FrontendSet::AiPoll,
-                FrontendSet::AiStart,
-                FrontendSet::Camera,
-                FrontendSet::BoardSync,
-                FrontendSet::PieceSync,
-                FrontendSet::Highlights,
-                FrontendSet::Animation,
-                FrontendSet::Audio,
-                FrontendSet::Hud,
+        app.init_resource::<GraphicsSettings>()
+            .configure_sets(
+                Update,
+                (
+                    FrontendSet::Menu,
+                    FrontendSet::Multiplayer,
+                    FrontendSet::Input,
+                    FrontendSet::MoveDispatch,
+                    FrontendSet::AiPoll,
+                    FrontendSet::AiStart,
+                    FrontendSet::Camera,
+                    FrontendSet::BoardSync,
+                    FrontendSet::PieceSync,
+                    FrontendSet::Highlights,
+                    FrontendSet::Animation,
+                    FrontendSet::Audio,
+                    FrontendSet::Hud,
+                )
+                    .chain(),
             )
-                .chain(),
-        )
-        .add_plugins((
-            GamePlugin,
-            GameAudioPlugin,
-            GameMenuPlugin,
-            MultiplayerPlugin,
-            AiPlugin,
-            InputPlugin,
-            EnvironmentPlugin,
-            SkyboxPlugin,
-            PlanarReflectionPlugin,
-            BoardPlugin,
-            PiecesPlugin,
-            PromotionPlugin,
-            HudPlugin,
-        ));
+            .add_plugins((
+                GamePlugin,
+                GameAudioPlugin,
+                GameMenuPlugin,
+                MultiplayerPlugin,
+                AiPlugin,
+                InputPlugin,
+                EnvironmentPlugin,
+                SkyboxPlugin,
+                PlanarReflectionPlugin,
+                BoardPlugin,
+                PiecesPlugin,
+                PromotionPlugin,
+                HudPlugin,
+            ));
     }
 }
 

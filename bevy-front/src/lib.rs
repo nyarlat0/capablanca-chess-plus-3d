@@ -12,6 +12,7 @@ mod promotion;
 mod reflection;
 mod render_tuning;
 mod scene;
+mod settings;
 mod skybox;
 
 pub use app::{FrontendPlugin, build_app, run};
