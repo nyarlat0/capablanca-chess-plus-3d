@@ -1,4 +1,5 @@
-//! A reusable rules and search engine for Capablanca-family chess variants.
+//! A reusable rules and search engine for Capablanca-family chess variants,
+//! Grand Chess, and Shako Chess.
 //!
 //! The crate deliberately separates immutable [`VariantRules`] from a mutable
 //! [`Position`]. This makes non-standard starting arrays and their castling
@@ -11,7 +12,6 @@ pub mod game;
 pub mod mv;
 pub mod position;
 pub mod rules;
-pub mod search;
 pub mod types;
 
 pub use board::{Board, BoardSize};
@@ -21,5 +21,4 @@ pub use position::{FenError, MoveError, Position};
 pub use rules::{
     CastleRoute, CastlingRights, CastlingRules, PromotionRule, RuleError, Variant, VariantRules,
 };
-pub use search::{Engine, SearchLimits, SearchResult};
 pub use types::{Color, Piece, PieceKind, Square};

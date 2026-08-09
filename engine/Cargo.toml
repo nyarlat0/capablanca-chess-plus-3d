@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 license.workspace = true
-description = "Rules and search engine for Capablanca-family chess variants and Grand Chess"
-keywords = ["chess", "capablanca", "gothic", "grand-chess", "engine"]
+description = "Rules engine for Capablanca-family variants, Grand Chess, and Shako Chess"
+keywords = ["chess", "capablanca", "gothic", "shako", "engine"]
 categories = ["game-development"]
 
 [dependencies]

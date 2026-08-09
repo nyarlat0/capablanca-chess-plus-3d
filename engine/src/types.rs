@@ -49,6 +49,11 @@ pub enum PieceKind {
     Archbishop,
     /// Rook + knight. Also called chancellor, marshal, or empress.
     Chancellor,
+    /// Shako/Xiangqi cannon: slides like a rook, but captures only by jumping
+    /// exactly one intervening piece.
+    Cannon,
+    /// Shako elephant: leaps one or two squares diagonally.
+    Elephant,
 }
 
 impl PieceKind {
@@ -59,6 +64,16 @@ impl PieceKind {
         Self::Rook,
         Self::Bishop,
         Self::Knight,
+    ];
+
+    /// Promotion choices in Shako Chess.
+    pub const SHAKO_PROMOTION_PIECES: [Self; 6] = [
+        Self::Queen,
+        Self::Rook,
+        Self::Bishop,
+        Self::Knight,
+        Self::Elephant,
+        Self::Cannon,
     ];
 
     #[must_use]
@@ -72,6 +87,10 @@ impl PieceKind {
             Self::King => 'k',
             Self::Archbishop => 'a',
             Self::Chancellor => 'c',
+            // `c` is intentionally shared with Chancellor. Extended FEN uses
+            // the variant rules to disambiguate the two established notations.
+            Self::Cannon => 'c',
+            Self::Elephant => 'e',
         }
     }
 
@@ -90,25 +109,12 @@ impl PieceKind {
             'q' => Self::Queen,
             'k' => Self::King,
             'a' => Self::Archbishop,
+            'e' => Self::Elephant,
             // `m` is accepted for Grand Chess software that writes "marshal".
             'c' | 'm' => Self::Chancellor,
             _ => return None,
         };
         Some((kind, color))
-    }
-
-    #[must_use]
-    pub const fn material_value(self) -> i32 {
-        match self {
-            Self::Pawn => 100,
-            Self::Knight => 320,
-            Self::Bishop => 350,
-            Self::Rook => 525,
-            Self::Queen => 1_000,
-            Self::King => 20_000,
-            Self::Archbishop => 875,
-            Self::Chancellor => 900,
-        }
     }
 }
 

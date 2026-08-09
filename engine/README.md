@@ -1,9 +1,8 @@
 # Capablanca Chess Plus
 
-A dependency-free Rust rules and search library for chess on 10-file boards.
+A dependency-free Rust rules library for chess on 10-file boards.
 It supports legal move generation, checks and mates, en passant, promotion,
-variant-specific castling, extended FEN, repetition tracking, and a reference
-alpha-beta engine.
+variant-specific castling, extended FEN, and repetition tracking.
 
 ## Variants
 
@@ -16,24 +15,27 @@ alpha-beta engine.
 | Bird | 10x8 | `RNBCQKABNR` | King `f` to `c` or `i` |
 | Carrera | 10x8 | `RCNBKQBNAR` | None (historical rules) |
 | Grand | 10x10 | Grand Chess array | None |
+| Shako | 10x10 | `C/ERNBQKBNRE/pawns` on three ranks | Orthodox two-square castling from `f2`/`f9` |
 
 `A` is the archbishop/cardinal (bishop + knight). `C` is the
 chancellor/marshal (rook + knight). Grand Chess promotion is optional on a
 player's eighth and ninth ranks, mandatory on the tenth, and restricted to
 captured pieces from that player's initial material.
 
+In Shako, `C` means the Xiangqi-style cannon and `E` means the elephant. A
+cannon moves without capture like a rook and captures the first piece beyond
+exactly one intervening screen. An elephant leaps one or two squares
+diagonally. Pawns promote on rank ten to queen, rook, bishop, knight, elephant,
+or cannon.
+
 ## Library Use
 
 ```rust
-use capablanca_chess_plus::{Engine, Game, SearchLimits, Variant};
+use capablanca_chess_plus::{Game, Variant};
 
 let mut game = Game::new(Variant::Gothic.starting_position());
 game.play_uci("e2e4")?;
-
-let result = Engine::new()
-    .search(game.position(), SearchLimits::depth(4))
-    .expect("the game is not over");
-println!("best move: {}", result.best_move);
+println!("{}", game.position().to_fen());
 
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
@@ -68,15 +70,17 @@ let position = rules.into_starting_position();
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Extended FEN uses `A` for archbishop and `C` for chancellor. The parser also
-accepts `M` as a marshal alias. Coordinate moves support rank 10, for example
-`a9a10q`.
+Extended FEN uses `A` for archbishop and `E` for Shako elephant. `C` is resolved
+from the supplied rules as a Capablanca chancellor or Shako cannon; `M` is
+always accepted as a marshal/chancellor alias. Coordinate moves support rank
+10, for example `a9a10q` or the Shako cannon promotion `a9a10c`.
 
 ## Rule References
 
 - [GNU XBoard Gothic Chess rules](https://www.gnu.org/software/xboard/whats_new/rules/Gothic.html)
 - [Schoolbook Chess rules from its creator](https://samiam.org/schoolbook/)
 - [Grand Chess rules licensed from MindSports](https://www.yucata.de/en/Rules/GrandChess)
+- [Shako Chess rules](https://musketeerchess.net/p/games/shako/rules/rules.php)
 - [Capablanca-family arrays and historical notes](https://mats-winther.github.io/bg/capablanca.htm)
 
 ## License

@@ -17,6 +17,16 @@ const KNIGHT_OFFSETS: [(i8, i8); 8] = [
     (-2, 1),
     (-1, 2),
 ];
+const ELEPHANT_OFFSETS: [(i8, i8); 8] = [
+    (1, 1),
+    (1, -1),
+    (-1, 1),
+    (-1, -1),
+    (2, 2),
+    (2, -2),
+    (-2, 2),
+    (-2, -2),
+];
 
 /// A complete game position under one immutable set of variant rules.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -43,8 +53,10 @@ impl Position {
         }
     }
 
-    /// Parses extended FEN. `A` denotes an archbishop/cardinal and `C` (or
-    /// accepted input alias `M`) denotes a chancellor/marshal.
+    /// Parses extended FEN. `A` denotes an archbishop/cardinal, `E` a Shako
+    /// elephant, and `C` is resolved as a Shako cannon or Capablanca
+    /// chancellor from the supplied rules. `M` is always accepted as a
+    /// chancellor/marshal.
     pub fn from_fen(rules: impl Into<Arc<VariantRules>>, fen: &str) -> Result<Self, FenError> {
         let rules = rules.into();
         let fields: Vec<_> = fen.split_whitespace().collect();
@@ -77,8 +89,9 @@ impl Position {
                     continue;
                 }
 
-                let (kind, color) =
-                    PieceKind::from_fen_char(value).ok_or(FenError::UnknownPiece(value))?;
+                let (kind, color) = rules
+                    .piece_from_fen_char(value)
+                    .ok_or(FenError::UnknownPiece(value))?;
                 if file >= size.files() {
                     return Err(FenError::InvalidPlacement(contents.to_owned()));
                 }
@@ -301,6 +314,10 @@ impl Position {
                 self.generate_slides(from, piece.color, &ORTHOGONAL_DIRECTIONS, moves);
                 self.generate_leaps(from, piece.color, moves);
             }
+            PieceKind::Cannon => self.generate_cannon_moves(from, piece.color, moves),
+            PieceKind::Elephant => {
+                self.generate_offset_moves(from, piece.color, &ELEPHANT_OFFSETS, moves);
+            }
         }
     }
 
@@ -404,12 +421,46 @@ impl Position {
     }
 
     fn generate_leaps(&self, from: Square, color: Color, moves: &mut Vec<Move>) {
-        for (file_delta, rank_delta) in KNIGHT_OFFSETS {
+        self.generate_offset_moves(from, color, &KNIGHT_OFFSETS, moves);
+    }
+
+    fn generate_offset_moves(
+        &self,
+        from: Square,
+        color: Color,
+        offsets: &[(i8, i8)],
+        moves: &mut Vec<Move>,
+    ) {
+        for &(file_delta, rank_delta) in offsets {
             if let Some(to) = from
                 .offset(file_delta, rank_delta)
                 .filter(|square| self.board.size().contains(*square))
             {
                 self.push_non_pawn_move(from, to, color, moves);
+            }
+        }
+    }
+
+    fn generate_cannon_moves(&self, from: Square, color: Color, moves: &mut Vec<Move>) {
+        for &(file_delta, rank_delta) in &ORTHOGONAL_DIRECTIONS {
+            let mut current = from;
+            let mut found_screen = false;
+            while let Some(to) = current
+                .offset(file_delta, rank_delta)
+                .filter(|square| self.board.size().contains(*square))
+            {
+                match (found_screen, self.board.piece_at(to)) {
+                    (false, None) => moves.push(Move::normal(from, to)),
+                    (false, Some(_)) => found_screen = true,
+                    (true, None) => {}
+                    (true, Some(piece)) => {
+                        if piece.color != color && piece.kind != PieceKind::King {
+                            moves.push(Move::normal(from, to));
+                        }
+                        break;
+                    }
+                }
+                current = to;
             }
         }
     }
@@ -662,7 +713,7 @@ impl Position {
                             value.push_str(&empty.to_string());
                             empty = 0;
                         }
-                        value.push(piece.fen_char());
+                        value.push(self.rules.piece_fen_char(piece));
                     }
                     None => empty += 1,
                 }
@@ -771,6 +822,18 @@ fn is_square_attacked_on(board: &Board, target: Square, by: Color) -> bool {
         }
     }
 
+    for (file_delta, rank_delta) in ELEPHANT_OFFSETS {
+        if target
+            .offset(file_delta, rank_delta)
+            .filter(|square| board.size().contains(*square))
+            .is_some_and(|square| {
+                board.piece_at(square) == Some(Piece::new(by, PieceKind::Elephant))
+            })
+        {
+            return true;
+        }
+    }
+
     if attacked_along(
         board,
         target,
@@ -784,6 +847,10 @@ fn is_square_attacked_on(board: &Board, target: Square, by: Color) -> bool {
         &DIAGONAL_DIRECTIONS,
         &[PieceKind::Bishop, PieceKind::Queen, PieceKind::Archbishop],
     ) {
+        return true;
+    }
+
+    if attacked_by_cannon(board, target, by) {
         return true;
     }
 
@@ -801,6 +868,29 @@ fn is_square_attacked_on(board: &Board, target: Square, by: Color) -> bool {
             {
                 return true;
             }
+        }
+    }
+    false
+}
+
+fn attacked_by_cannon(board: &Board, target: Square, by: Color) -> bool {
+    for &(file_delta, rank_delta) in &ORTHOGONAL_DIRECTIONS {
+        let mut current = target;
+        let mut occupied = 0;
+        while let Some(square) = current
+            .offset(file_delta, rank_delta)
+            .filter(|square| board.size().contains(*square))
+        {
+            if let Some(piece) = board.piece_at(square) {
+                occupied += 1;
+                if occupied == 2 {
+                    if piece == Piece::new(by, PieceKind::Cannon) {
+                        return true;
+                    }
+                    break;
+                }
+            }
+            current = square;
         }
     }
     false

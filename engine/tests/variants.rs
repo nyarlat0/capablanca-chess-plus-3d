@@ -1,6 +1,6 @@
 use capablanca_chess_plus::{
-    CastleSide, Color, DrawReason, Engine, Game, GameOutcome, MoveKind, Piece, PieceKind, Position,
-    SearchLimits, Square, Variant,
+    CastleSide, Color, DrawReason, Game, GameOutcome, MoveKind, Piece, PieceKind, Position, Square,
+    Variant,
 };
 
 fn uci_moves(position: &Position) -> Vec<String> {
@@ -44,6 +44,10 @@ fn built_in_starting_arrays_and_fen_are_stable() {
             Variant::Grand,
             "r8r/1nbqkcabn1/pppppppppp/10/10/10/10/PPPPPPPPPP/1NBQKCABN1/R8R w - - 0 1",
         ),
+        (
+            Variant::Shako,
+            "c8c/ernbqkbnre/pppppppppp/10/10/10/10/PPPPPPPPPP/ERNBQKBNRE/C8C w KQkq - 0 1",
+        ),
     ];
 
     for (variant, fen) in expected {
@@ -67,6 +71,7 @@ fn opening_move_counts_cover_compound_pieces_and_grand_layout() {
         (Variant::Bird, 28),
         (Variant::Carrera, 28),
         (Variant::Grand, 65),
+        (Variant::Shako, 58),
     ];
 
     for (variant, count) in expected {
@@ -79,6 +84,189 @@ fn opening_move_counts_cover_compound_pieces_and_grand_layout() {
 
     assert_eq!(Variant::Capablanca.starting_position().perft(2), 784);
     assert_eq!(Variant::Grand.starting_position().perft(2), 4_225);
+    assert_eq!(Variant::Shako.starting_position().perft(2), 3_364);
+    assert_eq!(Variant::Shako.starting_position().perft(3), 185_938);
+}
+
+#[test]
+fn shako_starting_material_and_notation_are_unambiguous() {
+    let position = Variant::Shako.starting_position();
+    for color in Color::ALL {
+        assert_eq!(position.board().count(color, PieceKind::King), 1);
+        assert_eq!(position.board().count(color, PieceKind::Queen), 1);
+        assert_eq!(position.board().count(color, PieceKind::Rook), 2);
+        assert_eq!(position.board().count(color, PieceKind::Bishop), 2);
+        assert_eq!(position.board().count(color, PieceKind::Knight), 2);
+        assert_eq!(position.board().count(color, PieceKind::Pawn), 10);
+        assert_eq!(position.board().count(color, PieceKind::Cannon), 2);
+        assert_eq!(position.board().count(color, PieceKind::Elephant), 2);
+        assert_eq!(position.board().count(color, PieceKind::Chancellor), 0);
+    }
+
+    let capablanca = Position::from_fen(
+        Variant::Capablanca.rules(),
+        "4k5/10/10/10/10/10/10/4K1C3 w - - 0 1",
+    )
+    .unwrap();
+    assert_eq!(
+        capablanca.board().piece_at("g1".parse().unwrap()),
+        Some(Piece::new(Color::White, PieceKind::Chancellor))
+    );
+}
+
+#[test]
+fn shako_cannon_slides_without_a_screen_and_captures_only_over_one_screen() {
+    let mut position = Position::from_fen(
+        Variant::Shako.rules(),
+        "9k/3r6/10/10/3P6/10/3C1p2n1/10/10/K9 w - - 0 1",
+    )
+    .unwrap();
+    let from = "d4".parse::<Square>().unwrap();
+    let moves: Vec<_> = uci_moves(&position)
+        .into_iter()
+        .filter(|value| value.starts_with("d4"))
+        .collect();
+    assert_eq!(
+        moves,
+        [
+            "d4a4", "d4b4", "d4c4", "d4d1", "d4d2", "d4d3", "d4d5", "d4d9", "d4e4", "d4i4",
+        ]
+        .map(str::to_owned)
+    );
+    assert!(!moves.contains(&"d4f4".to_owned()));
+    assert!(!moves.contains(&"d4g4".to_owned()));
+    assert!(!moves.contains(&"d4h4".to_owned()));
+
+    position.play_uci("d4d9").unwrap();
+    assert_eq!(
+        position.board().piece_at("d9".parse().unwrap()),
+        Some(Piece::new(Color::White, PieceKind::Cannon))
+    );
+    assert_eq!(position.board().piece_at(from), None);
+}
+
+#[test]
+fn shako_cannon_checks_through_exactly_one_piece() {
+    let one_screen = Position::from_fen(
+        Variant::Shako.rules(),
+        "9k/3c6/10/10/10/3P6/10/10/10/3K6 w - - 0 1",
+    )
+    .unwrap();
+    assert!(one_screen.is_in_check(Color::White));
+
+    let no_screen = Position::from_fen(
+        Variant::Shako.rules(),
+        "9k/3c6/10/10/10/10/10/10/10/3K6 w - - 0 1",
+    )
+    .unwrap();
+    assert!(!no_screen.is_in_check(Color::White));
+
+    let two_screens = Position::from_fen(
+        Variant::Shako.rules(),
+        "9k/3c6/10/3p6/10/3B6/10/10/10/3K6 w - - 0 1",
+    )
+    .unwrap();
+    assert!(!two_screens.is_in_check(Color::White));
+    assert!(
+        uci_moves(&two_screens)
+            .into_iter()
+            .all(|value| !value.starts_with("d5"))
+    );
+}
+
+#[test]
+fn shako_elephant_leaps_one_or_two_diagonal_squares() {
+    let position = Position::from_fen(
+        Variant::Shako.rules(),
+        "9k/10/10/6r3/5P4/4E5/10/10/10/K9 w - - 0 1",
+    )
+    .unwrap();
+    let moves: Vec<_> = uci_moves(&position)
+        .into_iter()
+        .filter(|value| value.starts_with("e5"))
+        .collect();
+    assert_eq!(
+        moves,
+        ["e5c3", "e5c7", "e5d4", "e5d6", "e5f4", "e5g3", "e5g7"].map(str::to_owned)
+    );
+    assert!(moves.contains(&"e5g7".to_owned()));
+    assert!(!moves.contains(&"e5f6".to_owned()));
+    assert!(!moves.contains(&"e5h8".to_owned()));
+
+    let check = Position::from_fen(
+        Variant::Shako.rules(),
+        "9k/10/10/10/10/4K5/3p6/2e7/10/10 w - - 0 1",
+    )
+    .unwrap();
+    assert!(check.is_in_check(Color::White));
+}
+
+#[test]
+fn shako_castling_uses_the_second_rank_rooks() {
+    let mut position = Position::from_fen(
+        Variant::Shako.rules(),
+        "10/5k4/10/10/10/10/10/10/1R3K2R1/10 w KQ - 0 1",
+    )
+    .unwrap();
+    let moves = uci_moves(&position);
+    assert!(moves.contains(&"f2d2".to_owned()));
+    assert!(moves.contains(&"f2h2".to_owned()));
+
+    let castle = position.parse_uci_move("f2d2").unwrap();
+    assert_eq!(castle.kind, MoveKind::Castle(CastleSide::QueenSide));
+    position.play(castle).unwrap();
+    assert_eq!(
+        position.board().piece_at("d2".parse().unwrap()),
+        Some(Piece::new(Color::White, PieceKind::King))
+    );
+    assert_eq!(
+        position.board().piece_at("e2".parse().unwrap()),
+        Some(Piece::new(Color::White, PieceKind::Rook))
+    );
+}
+
+#[test]
+fn shako_pawns_double_from_third_rank_and_support_en_passant() {
+    let mut position = Position::from_fen(
+        Variant::Shako.rules(),
+        "9k/10/10/10/10/1p8/10/P9/10/9K w - - 0 1",
+    )
+    .unwrap();
+    position.play_uci("a3a5").unwrap();
+    assert_eq!(position.en_passant(), Some("a4".parse().unwrap()));
+    let capture = position.parse_uci_move("b5a4").unwrap();
+    assert_eq!(capture.kind, MoveKind::EnPassant);
+    position.play(capture).unwrap();
+    assert_eq!(position.board().piece_at("a5".parse().unwrap()), None);
+    assert_eq!(
+        position.board().piece_at("a4".parse().unwrap()),
+        Some(Piece::new(Color::Black, PieceKind::Pawn))
+    );
+}
+
+#[test]
+fn shako_promotion_is_mandatory_and_offers_exactly_the_six_shako_pieces() {
+    let mut position = Position::from_fen(
+        Variant::Shako.rules(),
+        "9k/P9/10/10/10/10/10/10/10/9K w - - 0 1",
+    )
+    .unwrap();
+    let promotions: Vec<_> = uci_moves(&position)
+        .into_iter()
+        .filter(|value| value.starts_with("a9a10"))
+        .collect();
+    assert_eq!(
+        promotions,
+        ["a9a10b", "a9a10c", "a9a10e", "a9a10n", "a9a10q", "a9a10r"].map(str::to_owned)
+    );
+    assert!(!promotions.contains(&"a9a10".to_owned()));
+    assert!(!promotions.contains(&"a9a10a".to_owned()));
+
+    position.play_uci("a9a10c").unwrap();
+    assert_eq!(
+        position.board().piece_at("a10".parse().unwrap()),
+        Some(Piece::new(Color::White, PieceKind::Cannon))
+    );
 }
 
 #[test]
@@ -385,18 +573,4 @@ fn mate_stalemate_and_invalid_fen_rights_are_recognized() {
         )
         .is_err()
     );
-}
-
-#[test]
-fn search_returns_a_legal_principal_variation() {
-    let position = Variant::Gothic.starting_position();
-    let legal = position.legal_moves();
-    let result = Engine::new()
-        .search(&position, SearchLimits::depth(2))
-        .unwrap();
-
-    assert!(legal.contains(&result.best_move));
-    assert_eq!(result.depth, 2);
-    assert!(result.nodes > 0);
-    assert_eq!(result.principal_variation.first(), Some(&result.best_move));
 }

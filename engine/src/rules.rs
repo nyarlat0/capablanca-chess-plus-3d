@@ -163,7 +163,7 @@ pub struct VariantRules {
     pawn_start_ranks: [u8; 2],
     castling: CastlingRules,
     promotion: PromotionRule,
-    initial_material: [[u8; 8]; 2],
+    initial_material: [[u8; 10]; 2],
 }
 
 impl VariantRules {
@@ -293,6 +293,92 @@ impl VariantRules {
         .expect("built-in Grand Chess rules must be valid")
     }
 
+    fn shako() -> Self {
+        let size = BoardSize::GRAND;
+        let mut board = Board::empty(size);
+        let inner = [
+            PieceKind::Rook,
+            PieceKind::Knight,
+            PieceKind::Bishop,
+            PieceKind::Queen,
+            PieceKind::King,
+            PieceKind::Bishop,
+            PieceKind::Knight,
+            PieceKind::Rook,
+        ];
+
+        for color in Color::ALL {
+            let (cannon_rank, piece_rank, pawn_rank) = match color {
+                Color::White => (0, 1, 2),
+                Color::Black => (9, 8, 7),
+            };
+            for file in 0..10 {
+                board.set_piece_unchecked(
+                    Square::new(file, pawn_rank),
+                    Some(Piece::new(color, PieceKind::Pawn)),
+                );
+            }
+            for file in [0, 9] {
+                board.set_piece_unchecked(
+                    Square::new(file, cannon_rank),
+                    Some(Piece::new(color, PieceKind::Cannon)),
+                );
+                board.set_piece_unchecked(
+                    Square::new(file, piece_rank),
+                    Some(Piece::new(color, PieceKind::Elephant)),
+                );
+            }
+            for (offset, kind) in inner.into_iter().enumerate() {
+                board.set_piece_unchecked(
+                    Square::new(offset as u8 + 1, piece_rank),
+                    Some(Piece::new(color, kind)),
+                );
+            }
+        }
+
+        let castling = CastlingRules::new(
+            [
+                Some(CastleRoute::new(
+                    Square::new(5, 1),
+                    Square::new(1, 1),
+                    Square::new(3, 1),
+                    Square::new(4, 1),
+                )),
+                Some(CastleRoute::new(
+                    Square::new(5, 1),
+                    Square::new(8, 1),
+                    Square::new(7, 1),
+                    Square::new(6, 1),
+                )),
+            ],
+            [
+                Some(CastleRoute::new(
+                    Square::new(5, 8),
+                    Square::new(1, 8),
+                    Square::new(3, 8),
+                    Square::new(4, 8),
+                )),
+                Some(CastleRoute::new(
+                    Square::new(5, 8),
+                    Square::new(8, 8),
+                    Square::new(7, 8),
+                    Square::new(6, 8),
+                )),
+            ],
+        );
+
+        Self::from_parts(
+            "Shako Chess".to_owned(),
+            board,
+            [2, 7],
+            castling,
+            PromotionRule::LastRank {
+                choices: PieceKind::SHAKO_PROMOTION_PIECES.to_vec(),
+            },
+        )
+        .expect("built-in Shako Chess rules must be valid")
+    }
+
     /// Builds fully custom rules. This is intended for applications that need
     /// positions beyond the built-in presets.
     pub fn custom(
@@ -347,7 +433,7 @@ impl VariantRules {
             return Err(RuleError::InvalidPromotionChoices);
         }
 
-        let mut initial_material = [[0; 8]; 2];
+        let mut initial_material = [[0; 10]; 2];
         for (_, piece) in starting_board.pieces() {
             initial_material[piece.color.index()][piece_index(piece.kind)] += 1;
         }
@@ -391,6 +477,42 @@ impl VariantRules {
     #[must_use]
     pub(crate) fn initial_count(&self, color: Color, kind: PieceKind) -> u8 {
         self.initial_material[color.index()][piece_index(kind)]
+    }
+
+    /// Resolves the established `C` notation, which means chancellor in the
+    /// Capablanca family and cannon in Shako.
+    pub(crate) fn piece_from_fen_char(&self, value: char) -> Option<(PieceKind, Color)> {
+        let color = if value.is_ascii_uppercase() {
+            Color::White
+        } else {
+            Color::Black
+        };
+        if value.eq_ignore_ascii_case(&'c') && self.uses_piece(PieceKind::Cannon) {
+            return Some((PieceKind::Cannon, color));
+        }
+        PieceKind::from_fen_char(value)
+    }
+
+    pub(crate) fn piece_fen_char(&self, piece: Piece) -> char {
+        let kind = if piece.kind == PieceKind::Chancellor && self.uses_piece(PieceKind::Cannon) {
+            'm'
+        } else {
+            piece.kind.fen_char()
+        };
+        match piece.color {
+            Color::White => kind.to_ascii_uppercase(),
+            Color::Black => kind,
+        }
+    }
+
+    fn uses_piece(&self, kind: PieceKind) -> bool {
+        self.initial_material
+            .iter()
+            .any(|material| material[piece_index(kind)] > 0)
+            || match &self.promotion {
+                PromotionRule::LastRank { choices } => choices.contains(&kind),
+                PromotionRule::Grand => PieceKind::PROMOTION_PIECES.contains(&kind),
+            }
     }
 
     #[must_use]
@@ -453,6 +575,8 @@ pub(crate) const fn piece_index(kind: PieceKind) -> usize {
         PieceKind::King => 5,
         PieceKind::Archbishop => 6,
         PieceKind::Chancellor => 7,
+        PieceKind::Cannon => 8,
+        PieceKind::Elephant => 9,
     }
 }
 
@@ -467,10 +591,11 @@ pub enum Variant {
     /// Carrera's historical rules, which do not include castling.
     Carrera,
     Grand,
+    Shako,
 }
 
 impl Variant {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Capablanca,
         Self::Gothic,
         Self::Embassy,
@@ -478,6 +603,7 @@ impl Variant {
         Self::Bird,
         Self::Carrera,
         Self::Grand,
+        Self::Shako,
     ];
 
     #[must_use]
@@ -517,6 +643,7 @@ impl Variant {
                 false,
             ),
             Self::Grand => return VariantRules::grand(),
+            Self::Shako => return VariantRules::shako(),
         }
         .expect("built-in variant rules must be valid")
     }
