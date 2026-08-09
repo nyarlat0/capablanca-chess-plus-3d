@@ -1,9 +1,10 @@
 # Capablanca Chess Plus 3D frontend
 
-This crate is the Bevy 0.19 frontend for `capablanca-engine`. It supports all
-seven built-in variants, runtime 10×8 and 10×10 boards, human or engine control
-for either side, two-player online rooms, legal-move highlighting, promotion
-choices, and asynchronous Fairy-Stockfish searches.
+This crate is the Bevy 0.19 frontend for `capablanca-engine`. Its new-game menu
+offers Gothic, Embassy, Grand, and Shako Chess on runtime 10×8 and 10×10 boards,
+with human or engine control for either side, two-player online rooms,
+legal-move highlighting, promotion choices, and asynchronous Fairy-Stockfish
+searches.
 
 ## Requirements
 

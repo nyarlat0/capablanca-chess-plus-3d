@@ -258,7 +258,7 @@ fn setup_game_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
                         },
                     ))
                     .with_children(|grid| {
-                        for variant in Variant::ALL {
+                        for variant in MENU_VARIANTS {
                             spawn_menu_button(
                                 grid,
                                 &font,
@@ -1195,8 +1195,16 @@ fn variant_label(variant: Variant) -> &'static str {
         Variant::Bird => "Bird",
         Variant::Carrera => "Carrera",
         Variant::Grand => "Grand Chess",
+        Variant::Shako => "Shako Chess",
     }
 }
+
+const MENU_VARIANTS: [Variant; 4] = [
+    Variant::Gothic,
+    Variant::Embassy,
+    Variant::Grand,
+    Variant::Shako,
+];
 
 #[cfg(test)]
 mod tests {
@@ -1208,6 +1216,19 @@ mod tests {
         assert_eq!(menu.selected_mode, GameMode::Local);
         assert_eq!(menu.selected_variant, Variant::Gothic);
         assert_eq!(menu.selected_side, SideChoice::Random);
+    }
+
+    #[test]
+    fn menu_exposes_only_current_product_variants() {
+        assert_eq!(
+            MENU_VARIANTS,
+            [
+                Variant::Gothic,
+                Variant::Embassy,
+                Variant::Grand,
+                Variant::Shako,
+            ]
+        );
     }
 
     #[test]

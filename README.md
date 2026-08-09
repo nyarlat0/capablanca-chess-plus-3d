@@ -1,7 +1,7 @@
 # Capablanca Chess Plus 3D
 
-A 3D chess application for Capablanca-family variants and Grand Chess, written
-in Rust with Bevy 0.19. It runs as a native desktop application or as a WebAssembly
+A 3D chess application for Gothic, Embassy, Grand, and Shako Chess, written in
+Rust with Bevy 0.19. It runs as a native desktop application or as a WebAssembly
 frontend in the browser, with Local, Fairy-Stockfish, and online multiplayer modes.
 
 The project is under active development. The rules engine and multiplayer server
@@ -10,7 +10,7 @@ responsible for interaction, animation, sound, and rendering.
 
 ## Highlights
 
-- Seven playable variants on 10x8 and 10x10 boards.
+- Four playable variants on 10x8 and 10x10 boards.
 - Complete legal move generation, check, mate, stalemate, castling, en passant,
   promotion, repetition tracking, and extended FEN support.
 - A Bevy 0.19 frontend with animated pieces, captured-piece trays, a 3D promotion
@@ -26,24 +26,22 @@ responsible for interaction, animation, sound, and rendering.
 
 | Variant | Board | Back rank / arrangement | Castling |
 | --- | --- | --- | --- |
-| Capablanca | 10x8 | `RNABQKBCNR` | King `f` to `c` or `i` |
 | Gothic | 10x8 | `RNBQCKABNR` | King `f` to `c` or `i` |
 | Embassy | 10x8 | `RNBQKCABNR` | King `e` to `b` or `h` |
-| Schoolbook | 10x8 | `RQNBAKBNCR` | King `f` to `c` or `i` |
-| Bird | 10x8 | `RNBCQKABNR` | King `f` to `c` or `i` |
-| Carrera | 10x8 | `RCNBKQBNAR` | None under the historical preset |
 | Grand | 10x10 | Grand Chess arrangement | None |
+| Shako | 10x10 | Cannons on rank 1/10, orthodox army and elephants on rank 2/9 | Orthodox two-square castling |
 
 `A` is the archbishop/cardinal (bishop + knight). `C` is the
 chancellor/marshal (rook + knight). Grand Chess promotion uses captured
 material: an eligible captured piece is returned to play when selected for
-promotion.
+promotion. In Shako, the cannon moves like a rook without capture and captures
+through exactly one screen; the elephant leaps one or two squares diagonally.
 
 ## Workspace layout
 
 | Path | Purpose |
 | --- | --- |
-| [`engine`](engine/) | Dependency-free rules, game state, move generation, FEN, and reference search engine. |
+| [`engine`](engine/) | Dependency-free rules, game state, move generation, and FEN. |
 | [`bevy-front`](bevy-front/) | Bevy desktop/WASM client, rendering, UI, animation, audio, Fairy-Stockfish integration, and multiplayer client. |
 | [`multiplayer-protocol`](multiplayer-protocol/) | Shared versioned WebSocket message types. |
 | [`backend`](backend/) | Actix WebSocket server with authoritative validation and PostgreSQL persistence. |

@@ -51,6 +51,8 @@ pub(crate) struct PieceAssets {
     king: Handle<WorldAsset>,
     archbishop: Handle<WorldAsset>,
     chancellor: Handle<WorldAsset>,
+    cannon: Handle<WorldAsset>,
+    elephant: Handle<WorldAsset>,
     white_material: Handle<StandardMaterial>,
     black_material: Handle<StandardMaterial>,
 }
@@ -66,6 +68,8 @@ impl PieceAssets {
             PieceKind::King => &self.king,
             PieceKind::Archbishop => &self.archbishop,
             PieceKind::Chancellor => &self.chancellor,
+            PieceKind::Cannon => &self.cannon,
+            PieceKind::Elephant => &self.elephant,
         }
         .clone()
     }
@@ -182,6 +186,8 @@ fn setup_piece_assets(
         king: load_piece_scene(&asset_server, "models/king.glb"),
         archbishop: load_piece_scene(&asset_server, "models/archbishop.glb"),
         chancellor: load_piece_scene(&asset_server, "models/chancellor.glb"),
+        cannon: load_piece_scene(&asset_server, "models/cannon.glb"),
+        elephant: load_piece_scene(&asset_server, "models/elephant.glb"),
         white_material: materials.add(StandardMaterial {
             base_color: Color::srgb(0.92, 0.82, 0.66),
             perceptual_roughness: 0.36,

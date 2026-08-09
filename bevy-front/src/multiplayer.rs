@@ -571,6 +571,7 @@ fn variant_to_wire(variant: EngineVariant) -> Variant {
         EngineVariant::Bird => Variant::Bird,
         EngineVariant::Carrera => Variant::Carrera,
         EngineVariant::Grand => Variant::Grand,
+        EngineVariant::Shako => Variant::Shako,
     }
 }
 
@@ -583,6 +584,7 @@ fn variant_from_wire(variant: Variant) -> EngineVariant {
         Variant::Bird => EngineVariant::Bird,
         Variant::Carrera => EngineVariant::Carrera,
         Variant::Grand => EngineVariant::Grand,
+        Variant::Shako => EngineVariant::Shako,
     }
 }
 
@@ -659,5 +661,13 @@ mod tests {
         assert_eq!(chess_match.controllers[1], Controller::Human);
         assert!(!chess_match.animate_last_move);
         assert_eq!(chess_match.last_move.unwrap().to_uci(), "a7a6");
+    }
+
+    #[test]
+    fn shako_variant_round_trips_through_the_wire_protocol() {
+        assert_eq!(
+            variant_from_wire(variant_to_wire(EngineVariant::Shako)),
+            EngineVariant::Shako
+        );
     }
 }

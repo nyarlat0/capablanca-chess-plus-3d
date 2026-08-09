@@ -39,6 +39,7 @@ pub enum Variant {
     Bird,
     Carrera,
     Grand,
+    Shako,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -116,5 +117,14 @@ mod tests {
         assert_eq!(value["revision"], 7);
         assert_eq!(value["uci"], "a2a4");
         assert_eq!(value.as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn shako_variant_uses_stable_wire_name() {
+        assert_eq!(serde_json::to_string(&Variant::Shako).unwrap(), "\"shako\"");
+        assert_eq!(
+            serde_json::from_str::<Variant>("\"shako\"").unwrap(),
+            Variant::Shako
+        );
     }
 }

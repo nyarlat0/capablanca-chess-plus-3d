@@ -409,6 +409,7 @@ fn variant_name(variant: Variant) -> &'static str {
         Variant::Bird => "bird",
         Variant::Carrera => "carrera",
         Variant::Grand => "grand",
+        Variant::Shako => "shako",
     }
 }
 
@@ -421,6 +422,7 @@ fn parse_variant(value: &str, game_id: &str) -> Result<Variant, RepositoryError>
         "bird" => Ok(Variant::Bird),
         "carrera" => Ok(Variant::Carrera),
         "grand" => Ok(Variant::Grand),
+        "shako" => Ok(Variant::Shako),
         _ => Err(RepositoryError::Corrupt {
             game_id: game_id.to_owned(),
             detail: format!("unknown variant {value:?}"),
@@ -437,6 +439,7 @@ fn engine_variant(variant: Variant) -> EngineVariant {
         Variant::Bird => EngineVariant::Bird,
         Variant::Carrera => EngineVariant::Carrera,
         Variant::Grand => EngineVariant::Grand,
+        Variant::Shako => EngineVariant::Shako,
     }
 }
 
@@ -494,5 +497,19 @@ mod tests {
 
         let error = replay_game(Variant::Gothic, &["a2a5".to_owned()], "TESTROOM").unwrap_err();
         assert!(matches!(error, RepositoryError::Corrupt { .. }));
+    }
+
+    #[test]
+    fn shako_rooms_use_the_shared_shako_rules() {
+        assert_eq!(variant_name(Variant::Shako), "shako");
+        assert_eq!(parse_variant("shako", "TESTROOM").unwrap(), Variant::Shako);
+
+        let game = replay_game(
+            Variant::Shako,
+            &["a3a5".to_owned(), "a8a6".to_owned()],
+            "TESTROOM",
+        )
+        .unwrap();
+        assert_eq!(game.position().side_to_move(), EngineSide::White);
     }
 }

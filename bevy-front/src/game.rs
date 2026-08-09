@@ -299,6 +299,8 @@ pub(crate) const fn piece_name(kind: PieceKind) -> &'static str {
         PieceKind::King => "king",
         PieceKind::Archbishop => "archbishop",
         PieceKind::Chancellor => "chancellor",
+        PieceKind::Cannon => "cannon",
+        PieceKind::Elephant => "elephant",
     }
 }
 

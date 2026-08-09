@@ -399,6 +399,8 @@ const fn promotion_label(promotion: Option<PieceKind>) -> &'static str {
         Some(PieceKind::King) => "King",
         Some(PieceKind::Archbishop) => "Archbishop",
         Some(PieceKind::Chancellor) => "Chancellor",
+        Some(PieceKind::Cannon) => "Cannon",
+        Some(PieceKind::Elephant) => "Elephant",
     }
 }
 
