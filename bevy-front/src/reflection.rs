@@ -15,7 +15,13 @@ use bevy::{
 };
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraSystemSet};
 
-use crate::pieces::PieceRoot;
+use crate::{
+    pieces::PieceRoot,
+    render_tuning::{
+        LOW_REFLECTION_RENDER_SCALE, MEDIUM_REFLECTION_RENDER_SCALE, ULTRA_REFLECTION_RENDER_SCALE,
+    },
+    skybox::{ActiveGraphicsPreset, GraphicsPreset},
+};
 
 const REFLECTION_LAYER: usize = 1;
 const MAX_REFLECTION_TEXTURE_DIMENSION: u32 = 2_048;
@@ -35,7 +41,10 @@ impl Plugin for PlanarReflectionPlugin {
                 Startup,
                 setup_planar_reflection.in_set(PlanarReflectionStartup),
             )
-            .add_systems(Update, resize_reflection_texture)
+            .add_systems(
+                Update,
+                (apply_reflection_profile, resize_reflection_texture).chain(),
+            )
             .add_systems(
                 PostUpdate,
                 update_reflection_camera
@@ -114,9 +123,10 @@ fn setup_planar_reflection(
     mut commands: Commands,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut images: ResMut<Assets<Image>>,
+    active: Res<ActiveGraphicsPreset>,
 ) {
     let window = windows.single().expect("the primary window exists");
-    let texture_size = reflection_texture_size(window);
+    let texture_size = reflection_texture_size(window, active.0);
     let image = images.add(create_reflection_image(texture_size));
 
     commands.insert_resource(PlanarReflectionImage(image.clone()));
@@ -140,24 +150,23 @@ fn setup_planar_reflection(
 }
 
 fn resize_reflection_texture(
-    windows: Query<&Window>,
+    window: Single<&Window, With<PrimaryWindow>>,
     mut resize_events: MessageReader<WindowResized>,
+    active: Res<ActiveGraphicsPreset>,
     reflection_image: Option<ResMut<PlanarReflectionImage>>,
     mut reflection_targets: Query<&mut RenderTarget, With<PlanarReflectionCamera>>,
     mut board_materials: ResMut<Assets<PlanarBoardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut dirty: ResMut<ReflectionDirty>,
 ) {
-    let Some(event) = resize_events.read().last() else {
+    let window_resized = resize_events.read().last().is_some();
+    if !window_resized && !active.is_changed() {
         return;
-    };
-    let Ok(window) = windows.get(event.window) else {
-        return;
-    };
+    }
     let Some(mut reflection_image) = reflection_image else {
         return;
     };
-    let size = reflection_texture_size(window);
+    let size = reflection_texture_size(*window, active.0);
     let Some(previous_image) = images.get(&reflection_image.0) else {
         return;
     };
@@ -181,6 +190,22 @@ fn resize_reflection_texture(
     }
     images.remove(previous_image.id());
     dirty.request_frames(RENDER_TARGET_REFRESH_FRAMES);
+}
+
+fn apply_reflection_profile(
+    mut commands: Commands,
+    active: Res<ActiveGraphicsPreset>,
+    camera: Single<Entity, With<PlanarReflectionCamera>>,
+) {
+    if !active.is_changed() {
+        return;
+    }
+    let mut camera = commands.entity(*camera);
+    if active.0 == GraphicsPreset::Low {
+        camera.remove::<Fxaa>();
+    } else {
+        camera.insert(Fxaa::default());
+    }
 }
 
 fn update_reflection_camera(
@@ -242,18 +267,27 @@ fn calculate_reflection_camera(
     (reflected_transform, projection)
 }
 
-fn reflection_texture_size(window: &Window) -> UVec2 {
+fn reflection_texture_size(window: &Window, preset: GraphicsPreset) -> UVec2 {
     let full_size = uvec2(
         window.physical_width().max(1),
         window.physical_height().max(1),
     );
-    let largest_dimension = full_size.max_element();
+    let render_scale = match preset {
+        GraphicsPreset::Low => LOW_REFLECTION_RENDER_SCALE,
+        GraphicsPreset::Medium => MEDIUM_REFLECTION_RENDER_SCALE,
+        GraphicsPreset::Ultra => ULTRA_REFLECTION_RENDER_SCALE,
+    };
+    let scaled_size = (full_size.as_vec2() * render_scale)
+        .round()
+        .as_uvec2()
+        .max(UVec2::ONE);
+    let largest_dimension = scaled_size.max_element();
     if largest_dimension <= MAX_REFLECTION_TEXTURE_DIMENSION {
-        return full_size;
+        return scaled_size;
     }
 
     let scale = MAX_REFLECTION_TEXTURE_DIMENSION as f32 / largest_dimension as f32;
-    (full_size.as_vec2() * scale)
+    (scaled_size.as_vec2() * scale)
         .round()
         .as_uvec2()
         .max(UVec2::ONE)
@@ -313,5 +347,25 @@ mod tests {
         assert!(dirty.consume_frame());
         assert!(dirty.consume_frame());
         assert!(!dirty.consume_frame());
+    }
+
+    #[test]
+    fn graphics_presets_scale_the_reflection_target() {
+        let window = Window {
+            resolution: (1920, 1080).into(),
+            ..default()
+        };
+        assert_eq!(
+            reflection_texture_size(&window, GraphicsPreset::Low),
+            uvec2(960, 540)
+        );
+        assert_eq!(
+            reflection_texture_size(&window, GraphicsPreset::Medium),
+            uvec2(1440, 810)
+        );
+        assert_eq!(
+            reflection_texture_size(&window, GraphicsPreset::Ultra),
+            uvec2(1920, 1080)
+        );
     }
 }

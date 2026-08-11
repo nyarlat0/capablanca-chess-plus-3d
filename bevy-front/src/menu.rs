@@ -26,6 +26,7 @@ use crate::{
     game::{ChessMatch, Controller, restart_match},
     multiplayer::{MultiplayerCommand, MultiplayerPhase, MultiplayerState},
     scene::{CameraAutoTurn, start_camera_turn},
+    skybox::{ActiveGraphicsPreset, GraphicsPreset, GraphicsSelection, save_graphics_preset},
 };
 
 const ACCENT: Color = Color::srgb(0.98, 0.19, 0.52);
@@ -47,6 +48,7 @@ impl Plugin for GameMenuPlugin {
             .add_systems(
                 Update,
                 (
+                    sync_graphics_preset,
                     handle_menu_interactions,
                     sync_menu_visibility,
                     sync_ai_controls_visibility,
@@ -59,6 +61,7 @@ impl Plugin for GameMenuPlugin {
                     sync_ai_difficulty,
                     adapt_menu_layout,
                     style_menu_buttons,
+                    style_graphics_preset_slider,
                     style_ai_difficulty_slider,
                     animate_menu_background,
                 )
@@ -163,7 +166,23 @@ struct MultiplayerStatusLabel;
 #[derive(Component)]
 struct StartButtonLabel;
 
-fn setup_game_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
+#[derive(Component)]
+struct GraphicsPresetSlider;
+
+#[derive(Component)]
+struct GraphicsPresetSliderThumb;
+
+#[derive(Component)]
+struct GraphicsPresetSliderFill;
+
+#[derive(Component)]
+struct GraphicsPresetValueLabel;
+
+fn setup_game_menu(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    graphics_selection: Res<GraphicsSelection>,
+) {
     let font: Handle<Font> = asset_server.load("fonts/FiraSans-Bold.ttf");
     commands
         .spawn((
@@ -297,6 +316,7 @@ fn setup_game_menu(mut commands: Commands, asset_server: Res<AssetServer>) {
                     );
                 });
 
+                spawn_graphics_preset_controls(panel, &font, graphics_selection.0);
                 spawn_menu_button(panel, &font, "START GAME", MenuAction::Start, percent(100));
             });
         });
@@ -368,6 +388,171 @@ fn spawn_multiplayer_controls(parent: &mut ChildSpawnerCommands, font: &Handle<F
                 ),
                 MultiplayerStatusLabel,
             ));
+        });
+}
+
+fn spawn_graphics_preset_controls(
+    parent: &mut ChildSpawnerCommands,
+    font: &Handle<Font>,
+    preset: GraphicsPreset,
+) {
+    parent
+        .spawn((
+            Node {
+                width: percent(100),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(9),
+                ..default()
+            },
+            ResponsiveMenuGap {
+                row: 9.0,
+                column: 0.0,
+            },
+        ))
+        .with_children(|controls| {
+            controls
+                .spawn((
+                    Node {
+                        width: percent(100),
+                        flex_wrap: FlexWrap::Wrap,
+                        justify_content: JustifyContent::SpaceBetween,
+                        align_items: AlignItems::Center,
+                        column_gap: px(6),
+                        row_gap: px(3),
+                        ..default()
+                    },
+                    ResponsiveMenuGap {
+                        row: 3.0,
+                        column: 6.0,
+                    },
+                ))
+                .with_children(|header| {
+                    header.spawn(text(
+                        font,
+                        "GRAPHICS QUALITY",
+                        12.0,
+                        Color::srgba(1.0, 0.48, 0.7, 0.9),
+                    ));
+                    header.spawn((
+                        text(font, preset.label(), 12.0, TEXT_PRIMARY),
+                        GraphicsPresetValueLabel,
+                    ));
+                });
+
+            controls
+                .spawn((
+                    Node {
+                        width: percent(100),
+                        height: px(28),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    Hovered::default(),
+                    Slider {
+                        track_click: TrackClick::Snap,
+                        ..default()
+                    },
+                    SliderValue(preset.slider_value()),
+                    SliderRange::new(0.0, 2.0),
+                    SliderStep(1.0),
+                    SliderPrecision(0),
+                    GraphicsPresetSlider,
+                    observe(slider_self_update),
+                ))
+                .with_children(|slider| {
+                    slider.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: px(8),
+                            right: px(8),
+                            top: px(11.5),
+                            height: px(5),
+                            border_radius: BorderRadius::all(px(3)),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.14)),
+                        Pickable::IGNORE,
+                    ));
+                    slider
+                        .spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: px(8),
+                                right: px(8),
+                                top: px(11.5),
+                                height: px(5),
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ))
+                        .with_child((
+                            Node {
+                                width: percent(0),
+                                height: percent(100),
+                                border_radius: BorderRadius::all(px(3)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(1.0, 0.22, 0.55, 0.84)),
+                            Pickable::IGNORE,
+                            GraphicsPresetSliderFill,
+                        ));
+                    slider
+                        .spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: px(8),
+                                right: px(8),
+                                top: px(0),
+                                bottom: px(0),
+                                justify_content: JustifyContent::SpaceBetween,
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ))
+                        .with_children(|ticks| {
+                            for _ in 0..=2 {
+                                ticks.spawn((
+                                    Node {
+                                        width: px(3),
+                                        height: px(3),
+                                        border_radius: BorderRadius::MAX,
+                                        ..default()
+                                    },
+                                    BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.48)),
+                                ));
+                            }
+                        });
+                    slider
+                        .spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: px(0),
+                                right: px(16),
+                                top: px(0),
+                                bottom: px(0),
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ))
+                        .with_child((
+                            SliderThumb,
+                            GraphicsPresetSliderThumb,
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: percent(0),
+                                top: px(6),
+                                width: px(16),
+                                height: px(16),
+                                border: UiRect::all(px(2)),
+                                border_radius: BorderRadius::MAX,
+                                ..default()
+                            },
+                            BackgroundColor(ACCENT),
+                            BorderColor::all(Color::srgba(1.0, 0.72, 0.85, 0.95)),
+                        ));
+                });
         });
 }
 
@@ -746,6 +931,8 @@ fn handle_menu_interactions(
     mut camera: Single<&mut PanOrbitCamera>,
     multiplayer: Res<MultiplayerState>,
     mut multiplayer_commands: MessageWriter<MultiplayerCommand>,
+    graphics_selection: Res<GraphicsSelection>,
+    mut active_graphics: ResMut<ActiveGraphicsPreset>,
 ) {
     for (interaction, action) in &interactions {
         if *interaction != Interaction::Pressed {
@@ -768,6 +955,7 @@ fn handle_menu_interactions(
             }
             MenuAction::Side(side) => menu.selected_side = side,
             MenuAction::Start => {
+                active_graphics.0 = graphics_selection.0;
                 let mode = menu.selected_mode;
                 if mode == GameMode::Multiplayer {
                     if matches!(
@@ -993,6 +1181,77 @@ fn sync_ai_controls_visibility(
         } else {
             Display::None
         };
+    }
+}
+
+fn sync_graphics_preset(
+    sliders: Query<&SliderValue, (Changed<SliderValue>, With<GraphicsPresetSlider>)>,
+    mut selection: ResMut<GraphicsSelection>,
+) {
+    for value in &sliders {
+        let selected = GraphicsPreset::from_slider_value(value.0);
+        if selection.0 != selected {
+            selection.0 = selected;
+        }
+        save_graphics_preset(selected);
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn style_graphics_preset_slider(
+    sliders: Query<
+        (
+            Entity,
+            &SliderValue,
+            &SliderRange,
+            &Hovered,
+            &SliderDragState,
+        ),
+        (
+            With<GraphicsPresetSlider>,
+            Or<(
+                Changed<SliderValue>,
+                Changed<Hovered>,
+                Changed<SliderDragState>,
+            )>,
+        ),
+    >,
+    children: Query<&Children>,
+    mut thumbs: Query<
+        (&mut Node, &mut BackgroundColor),
+        (
+            With<GraphicsPresetSliderThumb>,
+            Without<GraphicsPresetSliderFill>,
+        ),
+    >,
+    mut fills: Query<
+        &mut Node,
+        (
+            With<GraphicsPresetSliderFill>,
+            Without<GraphicsPresetSliderThumb>,
+        ),
+    >,
+    mut labels: Query<&mut Text, With<GraphicsPresetValueLabel>>,
+) {
+    for (slider, value, range, hovered, drag_state) in &sliders {
+        let position = range.thumb_position(value.0) * 100.0;
+        for descendant in children.iter_descendants(slider) {
+            if let Ok((mut node, mut background)) = thumbs.get_mut(descendant) {
+                node.left = percent(position);
+                background.0 = if hovered.0 || drag_state.dragging {
+                    ACCENT_HOVER
+                } else {
+                    ACCENT
+                };
+            }
+            if let Ok(mut node) = fills.get_mut(descendant) {
+                node.width = percent(position);
+            }
+        }
+        let preset = GraphicsPreset::from_slider_value(value.0);
+        for mut label in &mut labels {
+            **label = preset.label().to_owned();
+        }
     }
 }
 

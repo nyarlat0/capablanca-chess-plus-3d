@@ -10,6 +10,10 @@ use bevy::prelude::*;
 pub(crate) const ENVIRONMENT_ROTATION_X_DEGREES: f32 = 30.0;
 pub(crate) const ENVIRONMENT_ROTATION_Y_DEGREES: f32 = 220.0;
 pub(crate) const ENVIRONMENT_ROTATION_Z_DEGREES: f32 = 0.0;
+// Both NightSky presets share one authored orientation and IBL.
+pub(crate) const NIGHT_SKY_ROTATION_X_DEGREES: f32 = 155.0;
+pub(crate) const NIGHT_SKY_ROTATION_Y_DEGREES: f32 = -30.0;
+pub(crate) const NIGHT_SKY_ROTATION_Z_DEGREES: f32 = 20.0;
 pub(crate) const SKYBOX_BRIGHTNESS: f32 = 700.0;
 // Broad image-based light replaces part of the directional key's energy. This
 // keeps the scene readable without producing another concentrated board glare.
@@ -26,6 +30,14 @@ pub(crate) const SKYBOX_PATH: &str = "textures/generated/space_skybox.ktx2";
 pub(crate) const SKYBOX_PATH: &str = "textures/generated/space_skybox.native.ktx2";
 pub(crate) const ENVIRONMENT_DIFFUSE_PATH: &str = "textures/generated/space_diffuse.ktx2";
 pub(crate) const ENVIRONMENT_SPECULAR_PATH: &str = "textures/generated/space_specular.ktx2";
+// The two visible NightSky cubemaps share compact lighting maps. The 4K source
+// produces 1024px faces; the 8K source produces 2048px faces.
+pub(crate) const NIGHT_4K_SKYBOX_PATH: &str = "textures/generated/low_end_skybox.ktx2";
+pub(crate) const NIGHT_8K_SKYBOX_PATH: &str = "textures/generated/night_8k_skybox.ktx2";
+pub(crate) const NIGHT_ENVIRONMENT_DIFFUSE_PATH: &str = "textures/generated/low_end_diffuse.ktx2";
+pub(crate) const NIGHT_ENVIRONMENT_SPECULAR_PATH: &str = "textures/generated/low_end_specular.ktx2";
+pub(crate) const NIGHT_SKY_BRIGHTNESS: f32 = 700.0;
+pub(crate) const NIGHT_ENVIRONMENT_LIGHT_INTENSITY: f32 = 350.0;
 
 pub(crate) fn generated_surface_texture_path(stem: &str) -> String {
     let target_suffix = if cfg!(target_arch = "wasm32") {
@@ -78,8 +90,15 @@ pub(crate) const BLACK_PIECE_CLEARCOAT_ROUGHNESS: f32 = 0.22;
 // A single tightly bounded cascade has much higher texel density than Bevy's
 // general-purpose 150-unit default and matches WebGL2's one-cascade limit.
 pub(crate) const DIRECTIONAL_SHADOW_MAP_SIZE: usize = 2_048;
+pub(crate) const LOW_DIRECTIONAL_SHADOW_MAP_SIZE: usize = 1_024;
 pub(crate) const SHADOW_MINIMUM_DISTANCE: f32 = 0.1;
 pub(crate) const SHADOW_MAXIMUM_DISTANCE: f32 = 32.0;
+
+// Planar reflections render the scene a second time. Scaling both dimensions
+// to 50% cuts their pixel cost to one quarter on Low.
+pub(crate) const LOW_REFLECTION_RENDER_SCALE: f32 = 0.5;
+pub(crate) const MEDIUM_REFLECTION_RENDER_SCALE: f32 = 0.75;
+pub(crate) const ULTRA_REFLECTION_RENDER_SCALE: f32 = 1.0;
 
 // Bloom is deliberately thresholded: only luminous stars, nebula cores and
 // the strongest material highlights produce a halo, rather than softening the
@@ -90,6 +109,7 @@ pub(crate) const BLOOM_HIGH_PASS_FREQUENCY: f32 = 0.9;
 pub(crate) const BLOOM_THRESHOLD: f32 = 0.5;
 pub(crate) const BLOOM_THRESHOLD_SOFTNESS: f32 = 0.55;
 pub(crate) const BLOOM_MAX_MIP_DIMENSION: u32 = 256;
+pub(crate) const MEDIUM_BLOOM_MAX_MIP_DIMENSION: u32 = 128;
 
 pub(crate) const COLOR_GRADING_EXPOSURE: f32 = 0.0;
 pub(crate) const COLOR_GRADING_TINT: f32 = 0.006;
@@ -105,5 +125,14 @@ pub(crate) fn environment_rotation() -> Quat {
         ENVIRONMENT_ROTATION_X_DEGREES.to_radians(),
         ENVIRONMENT_ROTATION_Y_DEGREES.to_radians(),
         ENVIRONMENT_ROTATION_Z_DEGREES.to_radians(),
+    )
+}
+
+pub(crate) fn night_sky_rotation() -> Quat {
+    Quat::from_euler(
+        EulerRot::XYZ,
+        NIGHT_SKY_ROTATION_X_DEGREES.to_radians(),
+        NIGHT_SKY_ROTATION_Y_DEGREES.to_radians(),
+        NIGHT_SKY_ROTATION_Z_DEGREES.to_radians(),
     )
 }

@@ -28,12 +28,14 @@ use crate::{
         BLOOM_THRESHOLD_SOFTNESS, CAMERA_FILL_COLOR, CAMERA_FILL_ILLUMINANCE,
         CAMERA_FILL_PITCH_DEGREES, CAMERA_FILL_YAW_DEGREES, COLOR_GRADING_EXPOSURE,
         COLOR_GRADING_SATURATION, COLOR_GRADING_TINT, COSMIC_FILL_COLOR, COSMIC_FILL_ILLUMINANCE,
-        DIRECTIONAL_SHADOW_MAP_SIZE, MATERIAL_TEXTURE_MIP_BIAS, NEBULA_KEY_COLOR,
-        NEBULA_KEY_ILLUMINANCE, SHADOW_MAXIMUM_DISTANCE, SHADOW_MINIMUM_DISTANCE,
-        VIGNETTE_INTENSITY, VIGNETTE_RADIUS, VIGNETTE_SMOOTHNESS, WEB_CAMERA_FILL_MIN_RANGE,
-        WEB_CAMERA_FILL_RADIUS, WEB_CAMERA_FILL_RANGE_MULTIPLIER, WEB_COSMIC_FILL_POSITION,
-        WEB_COSMIC_FILL_RADIUS, WEB_COSMIC_FILL_RANGE,
+        DIRECTIONAL_SHADOW_MAP_SIZE, LOW_DIRECTIONAL_SHADOW_MAP_SIZE, MATERIAL_TEXTURE_MIP_BIAS,
+        MEDIUM_BLOOM_MAX_MIP_DIMENSION, NEBULA_KEY_COLOR, NEBULA_KEY_ILLUMINANCE,
+        SHADOW_MAXIMUM_DISTANCE, SHADOW_MINIMUM_DISTANCE, VIGNETTE_INTENSITY, VIGNETTE_RADIUS,
+        VIGNETTE_SMOOTHNESS, WEB_CAMERA_FILL_MIN_RANGE, WEB_CAMERA_FILL_RADIUS,
+        WEB_CAMERA_FILL_RANGE_MULTIPLIER, WEB_COSMIC_FILL_POSITION, WEB_COSMIC_FILL_RADIUS,
+        WEB_COSMIC_FILL_RANGE,
     },
+    skybox::{ActiveGraphicsPreset, GraphicsPreset},
 };
 
 // Duration of the automatic half-turn after a move or starting a game.
@@ -64,6 +66,7 @@ impl Plugin for EnvironmentPlugin {
             .add_systems(
                 Update,
                 (
+                    apply_graphics_profile,
                     orient_camera_after_local_move,
                     handle_manual_camera_recenter,
                     animate_automatic_camera_turn,
@@ -204,16 +207,7 @@ fn setup_environment(mut commands: Commands) {
         ));
     }
 
-    let mut bloom = Bloom::NATURAL;
-    bloom.intensity = BLOOM_INTENSITY;
-    bloom.low_frequency_boost = BLOOM_LOW_FREQUENCY_BOOST;
-    bloom.high_pass_frequency = BLOOM_HIGH_PASS_FREQUENCY;
-    bloom.prefilter = BloomPrefilter {
-        threshold: BLOOM_THRESHOLD,
-        threshold_softness: BLOOM_THRESHOLD_SOFTNESS,
-    };
-    bloom.composite_mode = BloomCompositeMode::Additive;
-    bloom.max_mip_dimension = BLOOM_MAX_MIP_DIMENSION;
+    let bloom = configured_bloom(BLOOM_MAX_MIP_DIMENSION);
 
     let mut camera = commands.spawn((
         Camera3d::default(),
@@ -234,12 +228,7 @@ fn setup_environment(mut commands: Commands) {
             },
             ..default()
         },
-        Vignette {
-            intensity: VIGNETTE_INTENSITY,
-            radius: VIGNETTE_RADIUS,
-            smoothness: VIGNETTE_SMOOTHNESS,
-            ..default()
-        },
+        configured_vignette(),
         Transform::from_xyz(0.0, 10.5, -13.5).looking_at(Vec3::ZERO, Vec3::Y),
         chess_camera_controller(),
     ));
@@ -278,6 +267,66 @@ fn setup_environment(mut commands: Commands) {
             ));
         }
     });
+}
+
+fn configured_bloom(max_mip_dimension: u32) -> Bloom {
+    let mut bloom = Bloom::NATURAL;
+    bloom.intensity = BLOOM_INTENSITY;
+    bloom.low_frequency_boost = BLOOM_LOW_FREQUENCY_BOOST;
+    bloom.high_pass_frequency = BLOOM_HIGH_PASS_FREQUENCY;
+    bloom.prefilter = BloomPrefilter {
+        threshold: BLOOM_THRESHOLD,
+        threshold_softness: BLOOM_THRESHOLD_SOFTNESS,
+    };
+    bloom.composite_mode = BloomCompositeMode::Additive;
+    bloom.max_mip_dimension = max_mip_dimension;
+    bloom
+}
+
+fn configured_vignette() -> Vignette {
+    Vignette {
+        intensity: VIGNETTE_INTENSITY,
+        radius: VIGNETTE_RADIUS,
+        smoothness: VIGNETTE_SMOOTHNESS,
+        ..default()
+    }
+}
+
+fn apply_graphics_profile(
+    mut commands: Commands,
+    active: Res<ActiveGraphicsPreset>,
+    mut shadow_map: ResMut<DirectionalLightShadowMap>,
+    camera: Single<(Entity, &mut Smaa), With<PanOrbitCamera>>,
+) {
+    if !active.is_changed() {
+        return;
+    }
+
+    let (entity, mut smaa) = camera.into_inner();
+    let mut camera_commands = commands.entity(entity);
+    match active.0 {
+        GraphicsPreset::Low => {
+            shadow_map.size = LOW_DIRECTIONAL_SHADOW_MAP_SIZE;
+            smaa.preset = SmaaPreset::Low;
+            camera_commands.remove::<Bloom>().remove::<Vignette>();
+        }
+        GraphicsPreset::Medium => {
+            shadow_map.size = DIRECTIONAL_SHADOW_MAP_SIZE;
+            smaa.preset = SmaaPreset::High;
+            camera_commands.insert((
+                configured_bloom(MEDIUM_BLOOM_MAX_MIP_DIMENSION),
+                configured_vignette(),
+            ));
+        }
+        GraphicsPreset::Ultra => {
+            shadow_map.size = DIRECTIONAL_SHADOW_MAP_SIZE;
+            smaa.preset = SmaaPreset::Ultra;
+            camera_commands.insert((
+                configured_bloom(BLOOM_MAX_MIP_DIMENSION),
+                configured_vignette(),
+            ));
+        }
+    }
 }
 
 fn point_light_lumens(illuminance: f32, distance: f32) -> f32 {

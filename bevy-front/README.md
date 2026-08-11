@@ -43,6 +43,8 @@ cargo run -p bevy-front
 - Mouse wheel: zoom
 - The startup menu selects Local/AI/Multiplayer mode, variant, player color, and
   the discrete Fairy-Stockfish strength in AI mode
+- The `LOW / MEDIUM / ULTRA` slider remembers the browser preference but applies
+  it only on Start; the initial menu always uses lightweight NightSky 4K
 - In Multiplayer, leave Game ID empty to create a room or paste an existing ID
   to join it; the browser remembers the secret player token for reconnection
 - The corner arrow opens the in-game menu and its New game button
@@ -107,6 +109,11 @@ The application loads browser-friendly KTX2 textures from
 Run that command from the workspace root. The first run builds a pinned Docker
 image containing Khronos KTX-Software and glTF-IBL-Sampler; subsequent runs
 reuse Docker's build cache. The pipeline:
+
+```sh
+# Rebuild only the compact EXR-derived skybox and IBL maps.
+./tools/rebuild-render-assets.sh night-environment
+```
 
 - builds the nebula skybox and its mip chain, with display-only contrast and
   saturation enhancement kept separate from scene lighting;

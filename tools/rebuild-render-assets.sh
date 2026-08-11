@@ -7,13 +7,13 @@ image_name=capablanca-render-assets:ktx-4.4.2
 scope=${1:-all}
 
 if (( $# > 1 )); then
-    echo "Usage: $0 [all|board|environment]" >&2
+    echo "Usage: $0 [all|board|environment|night-environment]" >&2
     exit 2
 fi
 case "${scope}" in
-    all|board|environment) ;;
+    all|board|environment|night-environment|low-environment) ;;
     *)
-        echo "Usage: $0 [all|board|environment]" >&2
+        echo "Usage: $0 [all|board|environment|night-environment]" >&2
         exit 2
         ;;
 esac

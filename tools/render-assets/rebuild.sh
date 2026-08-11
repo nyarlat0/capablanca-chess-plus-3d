@@ -10,18 +10,26 @@ trap 'rm -rf "${work_dir}"' EXIT
 case "${scope}" in
     all)
         build_environment=true
+        build_low_environment=true
         build_board=true
         ;;
     environment)
         build_environment=true
+        build_low_environment=true
+        build_board=false
+        ;;
+    night-environment|low-environment)
+        build_environment=false
+        build_low_environment=true
         build_board=false
         ;;
     board)
         build_environment=false
+        build_low_environment=false
         build_board=true
         ;;
     *)
-        echo "Unknown render asset scope: ${scope} (expected all, environment, or board)" >&2
+        echo "Unknown render asset scope: ${scope} (expected all, environment, night-environment, or board)" >&2
         exit 2
         ;;
 esac
@@ -34,6 +42,13 @@ skybox_names=(
     Front_4K_TEX.png
     Back_4K_TEX.png
 )
+night_4k_environment_name=NightSkyHDRI008_4K_HDR.exr
+night_8k_environment_name=NightSkyHDRI008_8K_HDR.exr
+night_4k_skybox_face_size=1024
+night_8k_skybox_face_size=2048
+# Strong S-curve separates the dark sky from the stars. It grades only the
+# visible cubemaps; the shared IBL retains source HDR radiance unchanged.
+night_skybox_sigmoidal_contrast="12x52%"
 pbr_names=(
     Marble001_1K-PNG_Color.png
     Marble001_1K-PNG_NormalGL.png
@@ -172,6 +187,115 @@ if [[ "${build_environment}" == true ]]; then
         "${work_dir}/space_diffuse.raw.ktx2" "${work_dir}/out/space_diffuse.ktx2"
     ktx deflate --zstd 18 \
         "${work_dir}/space_specular.raw.ktx2" "${work_dir}/out/space_specular.ktx2"
+fi
+
+create_night_skybox() {
+    local source_name=$1
+    local face_size=$2
+    local output_name=$3
+    local stem=${output_name%.ktx2}
+    local face_dir="${work_dir}/${stem}_faces"
+    local width=$((face_size * 3))
+    local height=$((face_size * 2))
+
+    mkdir -p "${face_dir}"
+    ffmpeg -hide_banner -loglevel warning -y \
+        -i "${source_dir}/${source_name}" \
+        -vf "format=gbrpf32le,tonemap=mobius:param=0.3:desat=0,v360=input=equirect:output=c3x2:interp=lanczos:w=${width}:h=${height},eq=gamma=2.2,format=rgb24" \
+        -frames:v 1 -update 1 "${work_dir}/${stem}-c3x2.png"
+    convert "${work_dir}/${stem}-c3x2.png" \
+        -sigmoidal-contrast "${night_skybox_sigmoidal_contrast}" \
+        "${work_dir}/${stem}-graded-c3x2.png"
+
+    for index in 0 1 2 3 4 5; do
+        column=$((index % 3))
+        row=$((index / 3))
+        x=$((column * face_size))
+        y=$((row * face_size))
+        convert "${work_dir}/${stem}-graded-c3x2.png" \
+            -crop "${face_size}x${face_size}+${x}+${y}" \
+            +repage "${face_dir}/${index}.png"
+    done
+
+    ktx create \
+        --format R8G8B8A8_SRGB \
+        --assign-tf srgb \
+        --cubemap \
+        --generate-mipmap \
+        --mipmap-filter lanczos4 \
+        --zstd 18 \
+        "${face_dir}/0.png" \
+        "${face_dir}/1.png" \
+        "${face_dir}/2.png" \
+        "${face_dir}/3.png" \
+        "${face_dir}/4.png" \
+        "${face_dir}/5.png" \
+        "${work_dir}/out/${output_name}"
+}
+
+if [[ "${build_low_environment}" == true ]]; then
+    for name in "${night_4k_environment_name}" "${night_8k_environment_name}"; do
+        if [[ ! -f "${source_dir}/${name}" ]]; then
+            echo "Missing NightSky environment texture: ${source_dir}/${name}" >&2
+            exit 1
+        fi
+    done
+
+    create_night_skybox \
+        "${night_4k_environment_name}" \
+        "${night_4k_skybox_face_size}" \
+        low_end_skybox.ktx2
+    create_night_skybox \
+        "${night_8k_environment_name}" \
+        "${night_8k_skybox_face_size}" \
+        night_8k_skybox.ktx2
+
+    # Both NightSky sources contain the same radiance. The 4K panorama already
+    # exceeds the resolution of the shared 32px/256px IBL maps and filters much
+    # faster, so only the visible high preset pays for the 8K source.
+    ffmpeg -hide_banner -loglevel error -y \
+        -i "${source_dir}/${night_4k_environment_name}" \
+        -frames:v 1 "${work_dir}/low_end_environment.hdr"
+
+    lavapipe_icd=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)
+    if [[ -z "${lavapipe_icd}" ]]; then
+        echo "Mesa Lavapipe Vulkan driver was not found in the container" >&2
+        exit 1
+    fi
+    export VK_DRIVER_FILES="${lavapipe_icd}"
+    if [[ ! -e "${work_dir}/shaders" ]]; then
+        ln -s /opt/ibl/shaders "${work_dir}/shaders"
+    fi
+
+    (
+        cd "${work_dir}"
+        LD_LIBRARY_PATH="/opt/ibl:/opt/ktx/lib" cli \
+            -inputPath "${work_dir}/low_end_environment.hdr" \
+            -outCubeMap "${work_dir}/low_end_diffuse.raw.ktx2" \
+            -outLUT "${work_dir}/low_end_diffuse-lut.png" \
+            -distribution Lambertian \
+            -sampleCount 256 \
+            -cubeMapResolution 32 \
+            -mipLevelCount 1 \
+            -targetFormat R16G16B16A16_SFLOAT
+
+        LD_LIBRARY_PATH="/opt/ibl:/opt/ktx/lib" cli \
+            -inputPath "${work_dir}/low_end_environment.hdr" \
+            -outCubeMap "${work_dir}/low_end_specular.raw.ktx2" \
+            -outLUT "${work_dir}/low_end_specular-lut.png" \
+            -distribution GGX \
+            -sampleCount 512 \
+            -cubeMapResolution 256 \
+            -mipLevelCount 9 \
+            -targetFormat R16G16B16A16_SFLOAT
+    )
+
+    ktx deflate --zstd 18 \
+        "${work_dir}/low_end_diffuse.raw.ktx2" \
+        "${work_dir}/out/low_end_diffuse.ktx2"
+    ktx deflate --zstd 18 \
+        "${work_dir}/low_end_specular.raw.ktx2" \
+        "${work_dir}/out/low_end_specular.ktx2"
 fi
 
 create_color_texture() {
