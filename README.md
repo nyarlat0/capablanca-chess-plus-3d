@@ -1,6 +1,6 @@
 # Capablanca Chess Plus 3D
 
-A 3D chess application for Gothic, Embassy, Grand, and Shako Chess, written in
+A 3D chess application for Gothic, Embassy, Grand, Shako Chess, and Pemba, written in
 Rust with Bevy 0.19. It runs as a native desktop application or as a WebAssembly
 frontend in the browser, with Local, Fairy-Stockfish, and online multiplayer modes.
 
@@ -10,7 +10,7 @@ responsible for interaction, animation, sound, and rendering.
 
 ## Highlights
 
-- Four playable variants on 10x8 and 10x10 boards.
+- Five playable variants on 10x8 and 10x10 boards.
 - Complete legal move generation, check, mate, stalemate, castling, en passant,
   promotion, repetition tracking, and extended FEN support.
 - A Bevy 0.19 frontend with animated pieces, captured-piece trays, a 3D promotion
@@ -30,12 +30,15 @@ responsible for interaction, animation, sound, and rendering.
 | Embassy | 10x8 | `RNBQKCABNR` | King `e` to `b` or `h` |
 | Grand | 10x10 | Grand Chess arrangement | None |
 | Shako | 10x10 | Cannons on rank 1/10, orthodox army and elephants on rank 2/9 | Orthodox two-square castling |
+| Pemba | 10x10 | 30 pieces per side across three ranks | Orthodox two-square castling from `f2`/`f9` |
 
 `A` is the archbishop/cardinal (bishop + knight). `C` is the
 chancellor/marshal (rook + knight). Grand Chess promotion uses captured
 material: an eligible captured piece is returned to play when selected for
 promotion. In Shako, the cannon moves like a rook without capture and captures
 through exactly one screen; the elephant leaps one or two squares diagonally.
+Pemba extends that army with camels `(3,1)`, giraffes `(3,2)`, diagonal-cannon
+archers, and orthogonal one-or-two-square machines.
 
 ## Workspace layout
 

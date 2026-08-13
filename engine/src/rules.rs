@@ -163,7 +163,7 @@ pub struct VariantRules {
     pawn_start_ranks: [u8; 2],
     castling: CastlingRules,
     promotion: PromotionRule,
-    initial_material: [[u8; 10]; 2],
+    initial_material: [[u8; PieceKind::COUNT]; 2],
 }
 
 impl VariantRules {
@@ -336,47 +336,76 @@ impl VariantRules {
             }
         }
 
-        let castling = CastlingRules::new(
-            [
-                Some(CastleRoute::new(
-                    Square::new(5, 1),
-                    Square::new(1, 1),
-                    Square::new(3, 1),
-                    Square::new(4, 1),
-                )),
-                Some(CastleRoute::new(
-                    Square::new(5, 1),
-                    Square::new(8, 1),
-                    Square::new(7, 1),
-                    Square::new(6, 1),
-                )),
-            ],
-            [
-                Some(CastleRoute::new(
-                    Square::new(5, 8),
-                    Square::new(1, 8),
-                    Square::new(3, 8),
-                    Square::new(4, 8),
-                )),
-                Some(CastleRoute::new(
-                    Square::new(5, 8),
-                    Square::new(8, 8),
-                    Square::new(7, 8),
-                    Square::new(6, 8),
-                )),
-            ],
-        );
-
         Self::from_parts(
             "Shako Chess".to_owned(),
             board,
             [2, 7],
-            castling,
+            decimal_second_rank_castling(),
             PromotionRule::LastRank {
                 choices: PieceKind::SHAKO_PROMOTION_PIECES.to_vec(),
             },
         )
         .expect("built-in Shako Chess rules must be valid")
+    }
+
+    fn pemba() -> Self {
+        let size = BoardSize::GRAND;
+        let outer = [
+            PieceKind::Cannon,
+            PieceKind::Camel,
+            PieceKind::Archer,
+            PieceKind::Giraffe,
+            PieceKind::Machine,
+            PieceKind::Machine,
+            PieceKind::Giraffe,
+            PieceKind::Archer,
+            PieceKind::Camel,
+            PieceKind::Cannon,
+        ];
+        let inner = [
+            PieceKind::Elephant,
+            PieceKind::Rook,
+            PieceKind::Knight,
+            PieceKind::Bishop,
+            PieceKind::Queen,
+            PieceKind::King,
+            PieceKind::Bishop,
+            PieceKind::Knight,
+            PieceKind::Rook,
+            PieceKind::Elephant,
+        ];
+        let mut board = Board::empty(size);
+        for color in Color::ALL {
+            let (outer_rank, inner_rank, pawn_rank) = match color {
+                Color::White => (0, 1, 2),
+                Color::Black => (9, 8, 7),
+            };
+            for file in 0..10 {
+                board.set_piece_unchecked(
+                    Square::new(file, outer_rank),
+                    Some(Piece::new(color, outer[usize::from(file)])),
+                );
+                board.set_piece_unchecked(
+                    Square::new(file, inner_rank),
+                    Some(Piece::new(color, inner[usize::from(file)])),
+                );
+                board.set_piece_unchecked(
+                    Square::new(file, pawn_rank),
+                    Some(Piece::new(color, PieceKind::Pawn)),
+                );
+            }
+        }
+
+        Self::from_parts(
+            "Pemba".to_owned(),
+            board,
+            [2, 7],
+            decimal_second_rank_castling(),
+            PromotionRule::LastRank {
+                choices: PieceKind::PEMBA_PROMOTION_PIECES.to_vec(),
+            },
+        )
+        .expect("built-in Pemba rules must be valid")
     }
 
     /// Builds fully custom rules. This is intended for applications that need
@@ -433,7 +462,7 @@ impl VariantRules {
             return Err(RuleError::InvalidPromotionChoices);
         }
 
-        let mut initial_material = [[0; 10]; 2];
+        let mut initial_material = [[0; PieceKind::COUNT]; 2];
         for (_, piece) in starting_board.pieces() {
             initial_material[piece.color.index()][piece_index(piece.kind)] += 1;
         }
@@ -489,6 +518,9 @@ impl VariantRules {
         };
         if value.eq_ignore_ascii_case(&'c') && self.uses_piece(PieceKind::Cannon) {
             return Some((PieceKind::Cannon, color));
+        }
+        if value.eq_ignore_ascii_case(&'m') && self.uses_piece(PieceKind::Camel) {
+            return Some((PieceKind::Camel, color));
         }
         PieceKind::from_fen_char(value)
     }
@@ -577,6 +609,10 @@ pub(crate) const fn piece_index(kind: PieceKind) -> usize {
         PieceKind::Chancellor => 7,
         PieceKind::Cannon => 8,
         PieceKind::Elephant => 9,
+        PieceKind::Camel => 10,
+        PieceKind::Giraffe => 11,
+        PieceKind::Archer => 12,
+        PieceKind::Machine => 13,
     }
 }
 
@@ -592,10 +628,11 @@ pub enum Variant {
     Carrera,
     Grand,
     Shako,
+    Pemba,
 }
 
 impl Variant {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Capablanca,
         Self::Gothic,
         Self::Embassy,
@@ -604,6 +641,7 @@ impl Variant {
         Self::Carrera,
         Self::Grand,
         Self::Shako,
+        Self::Pemba,
     ];
 
     #[must_use]
@@ -644,6 +682,7 @@ impl Variant {
             ),
             Self::Grand => return VariantRules::grand(),
             Self::Shako => return VariantRules::shako(),
+            Self::Pemba => return VariantRules::pemba(),
         }
         .expect("built-in variant rules must be valid")
     }
@@ -652,6 +691,39 @@ impl Variant {
     pub fn starting_position(self) -> Position {
         self.rules().into_starting_position()
     }
+}
+
+fn decimal_second_rank_castling() -> CastlingRules {
+    CastlingRules::new(
+        [
+            Some(CastleRoute::new(
+                Square::new(5, 1),
+                Square::new(1, 1),
+                Square::new(3, 1),
+                Square::new(4, 1),
+            )),
+            Some(CastleRoute::new(
+                Square::new(5, 1),
+                Square::new(8, 1),
+                Square::new(7, 1),
+                Square::new(6, 1),
+            )),
+        ],
+        [
+            Some(CastleRoute::new(
+                Square::new(5, 8),
+                Square::new(1, 8),
+                Square::new(3, 8),
+                Square::new(4, 8),
+            )),
+            Some(CastleRoute::new(
+                Square::new(5, 8),
+                Square::new(8, 8),
+                Square::new(7, 8),
+                Square::new(6, 8),
+            )),
+        ],
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

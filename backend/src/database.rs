@@ -410,6 +410,7 @@ fn variant_name(variant: Variant) -> &'static str {
         Variant::Carrera => "carrera",
         Variant::Grand => "grand",
         Variant::Shako => "shako",
+        Variant::Pemba => "pemba",
     }
 }
 
@@ -423,6 +424,7 @@ fn parse_variant(value: &str, game_id: &str) -> Result<Variant, RepositoryError>
         "carrera" => Ok(Variant::Carrera),
         "grand" => Ok(Variant::Grand),
         "shako" => Ok(Variant::Shako),
+        "pemba" => Ok(Variant::Pemba),
         _ => Err(RepositoryError::Corrupt {
             game_id: game_id.to_owned(),
             detail: format!("unknown variant {value:?}"),
@@ -440,6 +442,7 @@ fn engine_variant(variant: Variant) -> EngineVariant {
         Variant::Carrera => EngineVariant::Carrera,
         Variant::Grand => EngineVariant::Grand,
         Variant::Shako => EngineVariant::Shako,
+        Variant::Pemba => EngineVariant::Pemba,
     }
 }
 
@@ -506,6 +509,20 @@ mod tests {
 
         let game = replay_game(
             Variant::Shako,
+            &["a3a5".to_owned(), "a8a6".to_owned()],
+            "TESTROOM",
+        )
+        .unwrap();
+        assert_eq!(game.position().side_to_move(), EngineSide::White);
+    }
+
+    #[test]
+    fn pemba_rooms_use_the_shared_pemba_rules() {
+        assert_eq!(variant_name(Variant::Pemba), "pemba");
+        assert_eq!(parse_variant("pemba", "TESTROOM").unwrap(), Variant::Pemba);
+
+        let game = replay_game(
+            Variant::Pemba,
             &["a3a5".to_owned(), "a8a6".to_owned()],
             "TESTROOM",
         )

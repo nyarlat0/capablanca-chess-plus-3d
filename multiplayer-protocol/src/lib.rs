@@ -40,6 +40,7 @@ pub enum Variant {
     Carrera,
     Grand,
     Shako,
+    Pemba,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -120,11 +121,16 @@ mod tests {
     }
 
     #[test]
-    fn shako_variant_uses_stable_wire_name() {
+    fn decimal_variants_use_stable_wire_names() {
         assert_eq!(serde_json::to_string(&Variant::Shako).unwrap(), "\"shako\"");
         assert_eq!(
             serde_json::from_str::<Variant>("\"shako\"").unwrap(),
             Variant::Shako
+        );
+        assert_eq!(serde_json::to_string(&Variant::Pemba).unwrap(), "\"pemba\"");
+        assert_eq!(
+            serde_json::from_str::<Variant>("\"pemba\"").unwrap(),
+            Variant::Pemba
         );
     }
 }

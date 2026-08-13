@@ -1,5 +1,5 @@
 //! A reusable rules and search engine for Capablanca-family chess variants,
-//! Grand Chess, and Shako Chess.
+//! Grand Chess, Shako Chess, and Pemba.
 //!
 //! The crate deliberately separates immutable [`VariantRules`] from a mutable
 //! [`Position`]. This makes non-standard starting arrays and their castling

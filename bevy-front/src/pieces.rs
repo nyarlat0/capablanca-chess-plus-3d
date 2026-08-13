@@ -53,6 +53,10 @@ pub(crate) struct PieceAssets {
     chancellor: Handle<WorldAsset>,
     cannon: Handle<WorldAsset>,
     elephant: Handle<WorldAsset>,
+    camel: Handle<WorldAsset>,
+    giraffe: Handle<WorldAsset>,
+    archer: Handle<WorldAsset>,
+    machine: Handle<WorldAsset>,
     white_material: Handle<StandardMaterial>,
     black_material: Handle<StandardMaterial>,
 }
@@ -70,6 +74,10 @@ impl PieceAssets {
             PieceKind::Chancellor => &self.chancellor,
             PieceKind::Cannon => &self.cannon,
             PieceKind::Elephant => &self.elephant,
+            PieceKind::Camel => &self.camel,
+            PieceKind::Giraffe => &self.giraffe,
+            PieceKind::Archer => &self.archer,
+            PieceKind::Machine => &self.machine,
         }
         .clone()
     }
@@ -188,6 +196,10 @@ fn setup_piece_assets(
         chancellor: load_piece_scene(&asset_server, "models/chancellor.glb"),
         cannon: load_piece_scene(&asset_server, "models/cannon.glb"),
         elephant: load_piece_scene(&asset_server, "models/elephant.glb"),
+        camel: load_piece_scene(&asset_server, "models/camel.glb"),
+        giraffe: load_piece_scene(&asset_server, "models/giraffe.glb"),
+        archer: load_piece_scene(&asset_server, "models/archer.glb"),
+        machine: load_piece_scene(&asset_server, "models/machine.glb"),
         white_material: materials.add(StandardMaterial {
             base_color: Color::srgb(0.92, 0.82, 0.66),
             perceptual_roughness: 0.36,

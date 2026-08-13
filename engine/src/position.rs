@@ -27,6 +27,36 @@ const ELEPHANT_OFFSETS: [(i8, i8); 8] = [
     (-2, 2),
     (-2, -2),
 ];
+const CAMEL_OFFSETS: [(i8, i8); 8] = [
+    (1, 3),
+    (3, 1),
+    (3, -1),
+    (1, -3),
+    (-1, -3),
+    (-3, -1),
+    (-3, 1),
+    (-1, 3),
+];
+const GIRAFFE_OFFSETS: [(i8, i8); 8] = [
+    (2, 3),
+    (3, 2),
+    (3, -2),
+    (2, -3),
+    (-2, -3),
+    (-3, -2),
+    (-3, 2),
+    (-2, 3),
+];
+const MACHINE_OFFSETS: [(i8, i8); 8] = [
+    (1, 0),
+    (-1, 0),
+    (0, 1),
+    (0, -1),
+    (2, 0),
+    (-2, 0),
+    (0, 2),
+    (0, -2),
+];
 
 /// A complete game position under one immutable set of variant rules.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,10 +83,11 @@ impl Position {
         }
     }
 
-    /// Parses extended FEN. `A` denotes an archbishop/cardinal, `E` a Shako
-    /// elephant, and `C` is resolved as a Shako cannon or Capablanca
-    /// chancellor from the supplied rules. `M` is always accepted as a
-    /// chancellor/marshal.
+    /// Parses extended FEN. `A` denotes an archbishop/cardinal, `E` an
+    /// elephant, and `C` is resolved as a cannon or Capablanca chancellor from
+    /// the supplied rules. In Pemba, `M`, `Z`, `V`, and `W` denote camel,
+    /// giraffe, archer, and machine; otherwise `M` remains accepted as a
+    /// chancellor/marshal alias.
     pub fn from_fen(rules: impl Into<Arc<VariantRules>>, fen: &str) -> Result<Self, FenError> {
         let rules = rules.into();
         let fields: Vec<_> = fen.split_whitespace().collect();
@@ -318,6 +349,18 @@ impl Position {
             PieceKind::Elephant => {
                 self.generate_offset_moves(from, piece.color, &ELEPHANT_OFFSETS, moves);
             }
+            PieceKind::Camel => {
+                self.generate_offset_moves(from, piece.color, &CAMEL_OFFSETS, moves);
+            }
+            PieceKind::Giraffe => {
+                self.generate_offset_moves(from, piece.color, &GIRAFFE_OFFSETS, moves);
+            }
+            PieceKind::Archer => {
+                self.generate_screen_slider_moves(from, piece.color, &DIAGONAL_DIRECTIONS, moves);
+            }
+            PieceKind::Machine => {
+                self.generate_offset_moves(from, piece.color, &MACHINE_OFFSETS, moves);
+            }
         }
     }
 
@@ -442,7 +485,17 @@ impl Position {
     }
 
     fn generate_cannon_moves(&self, from: Square, color: Color, moves: &mut Vec<Move>) {
-        for &(file_delta, rank_delta) in &ORTHOGONAL_DIRECTIONS {
+        self.generate_screen_slider_moves(from, color, &ORTHOGONAL_DIRECTIONS, moves);
+    }
+
+    fn generate_screen_slider_moves(
+        &self,
+        from: Square,
+        color: Color,
+        directions: &[(i8, i8)],
+        moves: &mut Vec<Move>,
+    ) {
+        for &(file_delta, rank_delta) in directions {
             let mut current = from;
             let mut found_screen = false;
             while let Some(to) = current
@@ -834,6 +887,22 @@ fn is_square_attacked_on(board: &Board, target: Square, by: Color) -> bool {
         }
     }
 
+    for (offsets, kind) in [
+        (&CAMEL_OFFSETS[..], PieceKind::Camel),
+        (&GIRAFFE_OFFSETS[..], PieceKind::Giraffe),
+        (&MACHINE_OFFSETS[..], PieceKind::Machine),
+    ] {
+        if offsets.iter().any(|&(file_delta, rank_delta)| {
+            target
+                .offset(file_delta, rank_delta)
+                .filter(|square| board.size().contains(*square))
+                .and_then(|square| board.piece_at(square))
+                .is_some_and(|piece| piece == Piece::new(by, kind))
+        }) {
+            return true;
+        }
+    }
+
     if attacked_along(
         board,
         target,
@@ -851,6 +920,9 @@ fn is_square_attacked_on(board: &Board, target: Square, by: Color) -> bool {
     }
 
     if attacked_by_cannon(board, target, by) {
+        return true;
+    }
+    if attacked_by_screen_slider(board, target, by, &DIAGONAL_DIRECTIONS, PieceKind::Archer) {
         return true;
     }
 
@@ -874,7 +946,17 @@ fn is_square_attacked_on(board: &Board, target: Square, by: Color) -> bool {
 }
 
 fn attacked_by_cannon(board: &Board, target: Square, by: Color) -> bool {
-    for &(file_delta, rank_delta) in &ORTHOGONAL_DIRECTIONS {
+    attacked_by_screen_slider(board, target, by, &ORTHOGONAL_DIRECTIONS, PieceKind::Cannon)
+}
+
+fn attacked_by_screen_slider(
+    board: &Board,
+    target: Square,
+    by: Color,
+    directions: &[(i8, i8)],
+    attacker: PieceKind,
+) -> bool {
+    for &(file_delta, rank_delta) in directions {
         let mut current = target;
         let mut occupied = 0;
         while let Some(square) = current
@@ -884,7 +966,7 @@ fn attacked_by_cannon(board: &Board, target: Square, by: Color) -> bool {
             if let Some(piece) = board.piece_at(square) {
                 occupied += 1;
                 if occupied == 2 {
-                    if piece == Piece::new(by, PieceKind::Cannon) {
+                    if piece == Piece::new(by, attacker) {
                         return true;
                     }
                     break;

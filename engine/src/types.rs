@@ -54,9 +54,19 @@ pub enum PieceKind {
     Cannon,
     /// Shako elephant: leaps one or two squares diagonally.
     Elephant,
+    /// Pemba camel: a (3, 1) leaper.
+    Camel,
+    /// Pemba giraffe (zebra): a (3, 2) leaper.
+    Giraffe,
+    /// Pemba archer (Vao): slides diagonally and captures over one screen.
+    Archer,
+    /// Pemba machine: leaps one or two squares orthogonally.
+    Machine,
 }
 
 impl PieceKind {
+    pub(crate) const COUNT: usize = 14;
+
     pub const PROMOTION_PIECES: [Self; 6] = [
         Self::Queen,
         Self::Chancellor,
@@ -76,6 +86,20 @@ impl PieceKind {
         Self::Cannon,
     ];
 
+    /// Promotion choices in Pemba.
+    pub const PEMBA_PROMOTION_PIECES: [Self; 10] = [
+        Self::Queen,
+        Self::Rook,
+        Self::Bishop,
+        Self::Knight,
+        Self::Cannon,
+        Self::Elephant,
+        Self::Camel,
+        Self::Giraffe,
+        Self::Archer,
+        Self::Machine,
+    ];
+
     #[must_use]
     pub const fn fen_char(self) -> char {
         match self {
@@ -91,6 +115,10 @@ impl PieceKind {
             // the variant rules to disambiguate the two established notations.
             Self::Cannon => 'c',
             Self::Elephant => 'e',
+            Self::Camel => 'm',
+            Self::Giraffe => 'z',
+            Self::Archer => 'v',
+            Self::Machine => 'w',
         }
     }
 
@@ -110,6 +138,9 @@ impl PieceKind {
             'k' => Self::King,
             'a' => Self::Archbishop,
             'e' => Self::Elephant,
+            'z' => Self::Giraffe,
+            'v' => Self::Archer,
+            'w' => Self::Machine,
             // `m` is accepted for Grand Chess software that writes "marshal".
             'c' | 'm' => Self::Chancellor,
             _ => return None,

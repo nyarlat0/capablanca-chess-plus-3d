@@ -301,6 +301,10 @@ pub(crate) const fn piece_name(kind: PieceKind) -> &'static str {
         PieceKind::Chancellor => "chancellor",
         PieceKind::Cannon => "cannon",
         PieceKind::Elephant => "elephant",
+        PieceKind::Camel => "camel",
+        PieceKind::Giraffe => "giraffe",
+        PieceKind::Archer => "archer",
+        PieceKind::Machine => "machine",
     }
 }
 

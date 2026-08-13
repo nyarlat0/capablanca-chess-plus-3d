@@ -380,6 +380,7 @@ const fn fairy_variant(variant: Variant) -> &'static str {
         Variant::Carrera => "ccp_carrera",
         Variant::Grand => "grand",
         Variant::Shako => "shako",
+        Variant::Pemba => "ccp_pemba",
     }
 }
 
@@ -408,6 +409,7 @@ mod tests {
                 "ccp_carrera",
                 "grand",
                 "shako",
+                "ccp_pemba",
             ]
         );
     }

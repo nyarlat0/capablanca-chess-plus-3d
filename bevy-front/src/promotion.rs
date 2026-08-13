@@ -401,6 +401,10 @@ const fn promotion_label(promotion: Option<PieceKind>) -> &'static str {
         Some(PieceKind::Chancellor) => "Chancellor",
         Some(PieceKind::Cannon) => "Cannon",
         Some(PieceKind::Elephant) => "Elephant",
+        Some(PieceKind::Camel) => "Camel",
+        Some(PieceKind::Giraffe) => "Giraffe",
+        Some(PieceKind::Archer) => "Archer",
+        Some(PieceKind::Machine) => "Machine",
     }
 }
 
@@ -458,9 +462,9 @@ fn adapt_promotion_layout(
         image_height,
         text_scale,
     ) = match layout {
-        PromotionLayout::Regular => (18.0, 24.0, 22.0, 8.0, 10.0, 136.0, 174.0, 122.0, 132.0, 1.0),
-        PromotionLayout::Compact => (8.0, 10.0, 10.0, 6.0, 7.0, 96.0, 126.0, 82.0, 90.0, 0.8),
-        PromotionLayout::Tiny => (4.0, 6.0, 5.0, 4.0, 6.0, 82.0, 105.0, 70.0, 74.0, 0.7),
+        PromotionLayout::Regular => (18.0, 24.0, 22.0, 8.0, 10.0, 128.0, 164.0, 114.0, 122.0, 1.0),
+        PromotionLayout::Compact => (8.0, 10.0, 10.0, 6.0, 7.0, 68.0, 94.0, 58.0, 64.0, 0.72),
+        PromotionLayout::Tiny => (4.0, 6.0, 5.0, 4.0, 6.0, 60.0, 78.0, 50.0, 52.0, 0.62),
     };
 
     for mut root in &mut nodes.p0() {

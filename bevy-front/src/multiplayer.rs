@@ -572,6 +572,7 @@ fn variant_to_wire(variant: EngineVariant) -> Variant {
         EngineVariant::Carrera => Variant::Carrera,
         EngineVariant::Grand => Variant::Grand,
         EngineVariant::Shako => Variant::Shako,
+        EngineVariant::Pemba => Variant::Pemba,
     }
 }
 
@@ -585,6 +586,7 @@ fn variant_from_wire(variant: Variant) -> EngineVariant {
         Variant::Carrera => EngineVariant::Carrera,
         Variant::Grand => EngineVariant::Grand,
         Variant::Shako => EngineVariant::Shako,
+        Variant::Pemba => EngineVariant::Pemba,
     }
 }
 
@@ -664,10 +666,9 @@ mod tests {
     }
 
     #[test]
-    fn shako_variant_round_trips_through_the_wire_protocol() {
-        assert_eq!(
-            variant_from_wire(variant_to_wire(EngineVariant::Shako)),
-            EngineVariant::Shako
-        );
+    fn decimal_variants_round_trip_through_the_wire_protocol() {
+        for variant in [EngineVariant::Shako, EngineVariant::Pemba] {
+            assert_eq!(variant_from_wire(variant_to_wire(variant)), variant);
+        }
     }
 }

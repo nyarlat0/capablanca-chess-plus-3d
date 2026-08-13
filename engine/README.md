@@ -16,6 +16,7 @@ variant-specific castling, extended FEN, and repetition tracking.
 | Carrera | 10x8 | `RCNBKQBNAR` | None (historical rules) |
 | Grand | 10x10 | Grand Chess array | None |
 | Shako | 10x10 | `C/ERNBQKBNRE/pawns` on three ranks | Orthodox two-square castling from `f2`/`f9` |
+| Pemba | 10x10 | `CMVZWWZVMC/ERNBQKBNRE/pawns` on three ranks | Orthodox two-square castling from `f2`/`f9` |
 
 `A` is the archbishop/cardinal (bishop + knight). `C` is the
 chancellor/marshal (rook + knight). Grand Chess promotion is optional on a
@@ -27,6 +28,10 @@ cannon moves without capture like a rook and captures the first piece beyond
 exactly one intervening screen. An elephant leaps one or two squares
 diagonally. Pawns promote on rank ten to queen, rook, bishop, knight, elephant,
 or cannon.
+
+Pemba adds `M` camel `(3,1)`, `Z` giraffe `(3,2)`, `V` archer (a diagonal
+cannon), and `W` machine (one- or two-square orthogonal leaper). Its pawns may
+promote to any of its ten non-royal piece types.
 
 ## Library Use
 
@@ -70,10 +75,12 @@ let position = rules.into_starting_position();
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-Extended FEN uses `A` for archbishop and `E` for Shako elephant. `C` is resolved
-from the supplied rules as a Capablanca chancellor or Shako cannon; `M` is
-always accepted as a marshal/chancellor alias. Coordinate moves support rank
-10, for example `a9a10q` or the Shako cannon promotion `a9a10c`.
+Extended FEN uses `A` for archbishop and `E` for elephant. `C` is resolved from
+the supplied rules as a Capablanca chancellor or a cannon. Pemba uses `M`, `Z`,
+`V`, and `W` for camel, giraffe, archer, and machine; outside Pemba, `M` remains
+accepted as a marshal/chancellor alias. Coordinate moves support rank 10, for
+example `a9a10q`, the cannon promotion `a9a10c`, or Pemba machine promotion
+`a9a10w`.
 
 ## Rule References
 
@@ -81,6 +88,7 @@ always accepted as a marshal/chancellor alias. Coordinate moves support rank
 - [Schoolbook Chess rules from its creator](https://samiam.org/schoolbook/)
 - [Grand Chess rules licensed from MindSports](https://www.yucata.de/en/Rules/GrandChess)
 - [Shako Chess rules](https://musketeerchess.net/p/games/shako/rules/rules.php)
+- [Pemba rules](https://www.chessvariants.com/rules/pemba)
 - [Capablanca-family arrays and historical notes](https://mats-winther.github.io/bg/capablanca.htm)
 
 ## License

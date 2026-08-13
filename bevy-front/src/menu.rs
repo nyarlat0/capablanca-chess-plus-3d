@@ -1455,14 +1455,16 @@ fn variant_label(variant: Variant) -> &'static str {
         Variant::Carrera => "Carrera",
         Variant::Grand => "Grand Chess",
         Variant::Shako => "Shako Chess",
+        Variant::Pemba => "Pemba",
     }
 }
 
-const MENU_VARIANTS: [Variant; 4] = [
+const MENU_VARIANTS: [Variant; 5] = [
     Variant::Gothic,
     Variant::Embassy,
     Variant::Grand,
     Variant::Shako,
+    Variant::Pemba,
 ];
 
 #[cfg(test)]
@@ -1486,6 +1488,7 @@ mod tests {
                 Variant::Embassy,
                 Variant::Grand,
                 Variant::Shako,
+                Variant::Pemba,
             ]
         );
     }

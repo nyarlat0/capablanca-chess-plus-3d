@@ -48,6 +48,10 @@ fn built_in_starting_arrays_and_fen_are_stable() {
             Variant::Shako,
             "c8c/ernbqkbnre/pppppppppp/10/10/10/10/PPPPPPPPPP/ERNBQKBNRE/C8C w KQkq - 0 1",
         ),
+        (
+            Variant::Pemba,
+            "cmvzwwzvmc/ernbqkbnre/pppppppppp/10/10/10/10/PPPPPPPPPP/ERNBQKBNRE/CMVZWWZVMC w KQkq - 0 1",
+        ),
     ];
 
     for (variant, fen) in expected {
@@ -72,6 +76,7 @@ fn opening_move_counts_cover_compound_pieces_and_grand_layout() {
         (Variant::Carrera, 28),
         (Variant::Grand, 65),
         (Variant::Shako, 58),
+        (Variant::Pemba, 34),
     ];
 
     for (variant, count) in expected {
@@ -86,6 +91,187 @@ fn opening_move_counts_cover_compound_pieces_and_grand_layout() {
     assert_eq!(Variant::Grand.starting_position().perft(2), 4_225);
     assert_eq!(Variant::Shako.starting_position().perft(2), 3_364);
     assert_eq!(Variant::Shako.starting_position().perft(3), 185_938);
+    assert_eq!(Variant::Pemba.starting_position().perft(2), 1_156);
+    // Independently cross-checked against Fairy-Stockfish 14 using the Pemba
+    // Betza definition bundled with the frontend.
+    assert_eq!(Variant::Pemba.starting_position().perft(3), 42_444);
+}
+
+#[test]
+fn pemba_starting_material_contains_thirty_pieces_of_twelve_types() {
+    let position = Variant::Pemba.starting_position();
+    for color in Color::ALL {
+        for (kind, count) in [
+            (PieceKind::King, 1),
+            (PieceKind::Queen, 1),
+            (PieceKind::Bishop, 2),
+            (PieceKind::Knight, 2),
+            (PieceKind::Camel, 2),
+            (PieceKind::Rook, 2),
+            (PieceKind::Cannon, 2),
+            (PieceKind::Elephant, 2),
+            (PieceKind::Archer, 2),
+            (PieceKind::Giraffe, 2),
+            (PieceKind::Machine, 2),
+            (PieceKind::Pawn, 10),
+        ] {
+            assert_eq!(
+                position.board().count(color, kind),
+                count,
+                "{color:?} {kind:?}"
+            );
+        }
+        assert_eq!(position.board().count(color, PieceKind::Archbishop), 0);
+        assert_eq!(position.board().count(color, PieceKind::Chancellor), 0);
+    }
+}
+
+#[test]
+fn pemba_camel_and_giraffe_use_their_exact_leaper_offsets() {
+    let camel = Position::from_fen(
+        Variant::Pemba.rules(),
+        "9k/10/5P4/10/7r2/4M5/10/10/10/K9 w - - 0 1",
+    )
+    .unwrap();
+    let camel_moves: Vec<_> = uci_moves(&camel)
+        .into_iter()
+        .filter(|value| value.starts_with("e5"))
+        .collect();
+    assert_eq!(
+        camel_moves,
+        ["e5b4", "e5b6", "e5d2", "e5d8", "e5f2", "e5h4", "e5h6"].map(str::to_owned)
+    );
+
+    let giraffe = Position::from_fen(
+        Variant::Pemba.rules(),
+        "9k/10/10/10/10/4Z5/10/10/10/K9 w - - 0 1",
+    )
+    .unwrap();
+    let giraffe_moves: Vec<_> = uci_moves(&giraffe)
+        .into_iter()
+        .filter(|value| value.starts_with("e5"))
+        .collect();
+    assert_eq!(
+        giraffe_moves,
+        [
+            "e5b3", "e5b7", "e5c2", "e5c8", "e5g2", "e5g8", "e5h3", "e5h7"
+        ]
+        .map(str::to_owned)
+    );
+}
+
+#[test]
+fn pemba_machine_jumps_over_the_first_orthogonal_square() {
+    let position = Position::from_fen(
+        Variant::Pemba.rules(),
+        "9k/10/4r5/4P5/4W5/10/10/10/10/K9 w - - 0 1",
+    )
+    .unwrap();
+    let moves: Vec<_> = uci_moves(&position)
+        .into_iter()
+        .filter(|value| value.starts_with("e6"))
+        .collect();
+    assert_eq!(
+        moves,
+        ["e6c6", "e6d6", "e6e4", "e6e5", "e6e8", "e6f6", "e6g6"].map(str::to_owned)
+    );
+    assert!(moves.contains(&"e6e8".to_owned()));
+    assert!(!moves.contains(&"e6e7".to_owned()));
+}
+
+#[test]
+fn pemba_archer_slides_diagonally_but_captures_only_over_one_screen() {
+    let position = Position::from_fen(
+        Variant::Pemba.rules(),
+        "9k/8n1/7r2/10/5P4/10/3V6/10/10/K9 w - - 0 1",
+    )
+    .unwrap();
+    let moves: Vec<_> = uci_moves(&position)
+        .into_iter()
+        .filter(|value| value.starts_with("d4"))
+        .collect();
+    assert!(moves.contains(&"d4e5".to_owned()));
+    assert!(moves.contains(&"d4h8".to_owned()));
+    assert!(!moves.contains(&"d4f6".to_owned()));
+    assert!(!moves.contains(&"d4g7".to_owned()));
+    assert!(!moves.contains(&"d4i9".to_owned()));
+
+    let one_screen = Position::from_fen(
+        Variant::Pemba.rules(),
+        "9k/10/7v2/10/5P4/10/3K6/10/10/10 w - - 0 1",
+    )
+    .unwrap();
+    assert!(one_screen.is_in_check(Color::White));
+
+    let no_screen = Position::from_fen(
+        Variant::Pemba.rules(),
+        "9k/10/7v2/10/10/10/3K6/10/10/10 w - - 0 1",
+    )
+    .unwrap();
+    assert!(!no_screen.is_in_check(Color::White));
+
+    let two_screens = Position::from_fen(
+        Variant::Pemba.rules(),
+        "9k/10/7v2/6p3/5P4/10/3K6/10/10/10 w - - 0 1",
+    )
+    .unwrap();
+    assert!(!two_screens.is_in_check(Color::White));
+}
+
+#[test]
+fn pemba_new_leapers_participate_in_check_detection() {
+    for fen in [
+        "9k/10/10/7m2/4K5/10/10/10/10/10 w - - 0 1",
+        "9k/10/7z2/10/4K5/10/10/10/10/10 w - - 0 1",
+        "9k/10/10/10/4K1w3/10/10/10/10/10 w - - 0 1",
+    ] {
+        let position = Position::from_fen(Variant::Pemba.rules(), fen).unwrap();
+        assert!(position.is_in_check(Color::White), "{fen}");
+    }
+}
+
+#[test]
+fn pemba_castling_uses_the_second_rank_rooks() {
+    let mut position = Position::from_fen(
+        Variant::Pemba.rules(),
+        "10/5k4/10/10/10/10/10/10/1R3K2R1/10 w KQ - 0 1",
+    )
+    .unwrap();
+    let moves = uci_moves(&position);
+    assert!(moves.contains(&"f2d2".to_owned()));
+    assert!(moves.contains(&"f2h2".to_owned()));
+
+    position.play_uci("f2h2").unwrap();
+    assert_eq!(
+        position.board().piece_at("h2".parse().unwrap()),
+        Some(Piece::new(Color::White, PieceKind::King))
+    );
+    assert_eq!(
+        position.board().piece_at("g2".parse().unwrap()),
+        Some(Piece::new(Color::White, PieceKind::Rook))
+    );
+}
+
+#[test]
+fn pemba_promotion_is_mandatory_and_offers_all_ten_non_royal_pieces() {
+    let position = Position::from_fen(
+        Variant::Pemba.rules(),
+        "9k/P9/10/10/10/10/10/10/10/9K w - - 0 1",
+    )
+    .unwrap();
+    let promotions: Vec<_> = uci_moves(&position)
+        .into_iter()
+        .filter(|value| value.starts_with("a9a10"))
+        .collect();
+    assert_eq!(
+        promotions,
+        [
+            "a9a10b", "a9a10c", "a9a10e", "a9a10m", "a9a10n", "a9a10q", "a9a10r", "a9a10v",
+            "a9a10w", "a9a10z",
+        ]
+        .map(str::to_owned)
+    );
+    assert!(!promotions.contains(&"a9a10".to_owned()));
 }
 
 #[test]
