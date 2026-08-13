@@ -92,7 +92,8 @@ reuse it.
 - The square-corner button below the in-game menu arrow toggles fullscreen.
 - The `LOW / MEDIUM / ULTRA` graphics slider remembers the browser preference
   and applies it on `START GAME`. The initial menu always loads lightweight
-  NightSky 4K; Low also reduces reflections, shadows, antialiasing, and post FX.
+  NightSky 4K; Low also disables planar reflections and reduces shadows,
+  antialiasing, and post FX.
 - `Escape`: cancel the current selection.
 
 ### Touch

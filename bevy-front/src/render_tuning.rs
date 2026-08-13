@@ -94,9 +94,8 @@ pub(crate) const LOW_DIRECTIONAL_SHADOW_MAP_SIZE: usize = 1_024;
 pub(crate) const SHADOW_MINIMUM_DISTANCE: f32 = 0.1;
 pub(crate) const SHADOW_MAXIMUM_DISTANCE: f32 = 32.0;
 
-// Planar reflections render the scene a second time. Scaling both dimensions
-// to 50% cuts their pixel cost to one quarter on Low.
-pub(crate) const LOW_REFLECTION_RENDER_SCALE: f32 = 0.5;
+// Low disables the planar-reflection pass entirely. Medium and Ultra retain
+// reflections at these render-target scales.
 pub(crate) const MEDIUM_REFLECTION_RENDER_SCALE: f32 = 0.75;
 pub(crate) const ULTRA_REFLECTION_RENDER_SCALE: f32 = 1.0;
 

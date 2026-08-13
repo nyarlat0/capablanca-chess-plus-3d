@@ -44,7 +44,8 @@ cargo run -p bevy-front
 - The startup menu selects Local/AI/Multiplayer mode, variant, player color, and
   the discrete Fairy-Stockfish strength in AI mode
 - The `LOW / MEDIUM / ULTRA` slider remembers the browser preference but applies
-  it only on Start; the initial menu always uses lightweight NightSky 4K
+  it only on Start; the initial menu always uses lightweight NightSky 4K. Low
+  disables planar reflections and reduces shadows, antialiasing, and post FX.
 - In Multiplayer, leave Game ID empty to create a room or paste an existing ID
   to join it; the browser remembers the secret player token for reconnection
 - The corner arrow opens the in-game menu and its New game button

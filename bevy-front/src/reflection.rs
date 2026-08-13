@@ -17,9 +17,7 @@ use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraSystemSet};
 
 use crate::{
     pieces::PieceRoot,
-    render_tuning::{
-        LOW_REFLECTION_RENDER_SCALE, MEDIUM_REFLECTION_RENDER_SCALE, ULTRA_REFLECTION_RENDER_SCALE,
-    },
+    render_tuning::{MEDIUM_REFLECTION_RENDER_SCALE, ULTRA_REFLECTION_RENDER_SCALE},
     skybox::{ActiveGraphicsPreset, GraphicsPreset},
 };
 
@@ -57,8 +55,9 @@ impl Plugin for PlanarReflectionPlugin {
 
 #[derive(Clone, AsBindGroup, Asset, Reflect)]
 pub(crate) struct PlanarReflectionExtension {
-    // Vec4 keeps the uniform layout WebGL2-compatible. X stores reflection
-    // strength and Y the maximum roughness blur radius in target pixels.
+    // Vec4 keeps the uniform layout WebGL2-compatible. X stores the active
+    // reflection strength, Y the maximum roughness blur radius in target
+    // pixels, and Z the configured strength restored outside the Low preset.
     #[uniform(100)]
     reflection_strength: Vec4,
 }
@@ -66,8 +65,16 @@ pub(crate) struct PlanarReflectionExtension {
 impl PlanarReflectionExtension {
     pub(crate) fn new(strength: f32, max_blur_pixels: f32) -> Self {
         Self {
-            reflection_strength: Vec4::new(strength, max_blur_pixels, 0.0, 0.0),
+            reflection_strength: Vec4::new(strength, max_blur_pixels, strength, 0.0),
         }
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        self.reflection_strength.x = if enabled {
+            self.reflection_strength.z
+        } else {
+            0.0
+        };
     }
 }
 
@@ -136,6 +143,7 @@ fn setup_planar_reflection(
             order: -1,
             clear_color: Color::NONE.into(),
             invert_culling: true,
+            is_active: active.0 != GraphicsPreset::Low,
             ..default()
         },
         RenderTarget::Image(image.into()),
@@ -196,12 +204,18 @@ fn apply_reflection_profile(
     mut commands: Commands,
     active: Res<ActiveGraphicsPreset>,
     camera: Single<Entity, With<PlanarReflectionCamera>>,
+    mut board_materials: ResMut<Assets<PlanarBoardMaterial>>,
 ) {
     if !active.is_changed() {
         return;
     }
+    let enabled = active.0 != GraphicsPreset::Low;
+    for (_, material) in board_materials.iter_mut() {
+        material.extension.set_enabled(enabled);
+    }
+
     let mut camera = commands.entity(*camera);
-    if active.0 == GraphicsPreset::Low {
+    if !enabled {
         camera.remove::<Fxaa>();
     } else {
         camera.insert(Fxaa::default());
@@ -213,8 +227,19 @@ fn update_reflection_camera(
     reflection_camera: Single<ReflectionCameraData<'_>, ReflectionCameraFilter>,
     piece_roots: Query<Ref<Transform>, (With<PieceRoot>, Without<PlanarReflectionCamera>)>,
     added_reflected_meshes: Query<(), Added<ReflectedPieceMesh>>,
+    active: Res<ActiveGraphicsPreset>,
     mut dirty: ResMut<ReflectionDirty>,
 ) {
+    let (mut camera, mut reflected_transform, mut reflected_projection) =
+        reflection_camera.into_inner();
+    if active.0 == GraphicsPreset::Low {
+        camera.is_active = false;
+        return;
+    }
+    if active.is_changed() {
+        dirty.request_frames(RENDER_TARGET_REFRESH_FRAMES);
+    }
+
     let (main_transform, main_projection) = main_camera.into_inner();
     let camera_changed = main_transform.is_changed() || main_projection.is_changed();
     let pieces_changed = piece_roots.iter().any(|transform| transform.is_changed());
@@ -226,8 +251,6 @@ fn update_reflection_camera(
         dirty.request_frames(PIPELINE_WARMUP_FRAMES);
     }
     let needs_render = dirty.consume_frame() || camera_changed || pieces_changed;
-    let (mut camera, mut reflected_transform, mut reflected_projection) =
-        reflection_camera.into_inner();
 
     camera.is_active = needs_render;
     if !needs_render {
@@ -268,12 +291,18 @@ fn calculate_reflection_camera(
 }
 
 fn reflection_texture_size(window: &Window, preset: GraphicsPreset) -> UVec2 {
+    if preset == GraphicsPreset::Low {
+        // Low never renders or samples planar reflections. Keep only the
+        // smallest valid target so switching profiles remains cheap.
+        return UVec2::ONE;
+    }
+
     let full_size = uvec2(
         window.physical_width().max(1),
         window.physical_height().max(1),
     );
     let render_scale = match preset {
-        GraphicsPreset::Low => LOW_REFLECTION_RENDER_SCALE,
+        GraphicsPreset::Low => unreachable!("Low returned before reflection scaling"),
         GraphicsPreset::Medium => MEDIUM_REFLECTION_RENDER_SCALE,
         GraphicsPreset::Ultra => ULTRA_REFLECTION_RENDER_SCALE,
     };
@@ -357,7 +386,7 @@ mod tests {
         };
         assert_eq!(
             reflection_texture_size(&window, GraphicsPreset::Low),
-            uvec2(960, 540)
+            UVec2::ONE
         );
         assert_eq!(
             reflection_texture_size(&window, GraphicsPreset::Medium),
