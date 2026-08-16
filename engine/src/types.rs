@@ -49,23 +49,47 @@ pub enum PieceKind {
     Archbishop,
     /// Rook + knight. Also called chancellor, marshal, or empress.
     Chancellor,
-    /// Shako/Xiangqi cannon: slides like a rook, but captures only by jumping
+    /// Xiangqi cannon: slides like a rook, but captures only by jumping
     /// exactly one intervening piece.
     Cannon,
-    /// Shako elephant: leaps one or two squares diagonally.
+    /// Elephant: leaps one or two squares diagonally.
     Elephant,
-    /// Pemba camel: a (3, 1) leaper.
+    /// Camel: a (3, 1) leaper.
     Camel,
-    /// Pemba giraffe (zebra): a (3, 2) leaper.
+    /// Giraffe (zebra): a (3, 2) leaper.
     Giraffe,
-    /// Pemba archer (Vao): slides diagonally and captures over one screen.
+    /// Archer (Vao): slides diagonally and captures over one screen.
     Archer,
-    /// Pemba machine: leaps one or two squares orthogonally.
+    /// Machine: leaps one or two squares orthogonally.
     Machine,
+    /// Queen + knight.
+    Amazon,
+    /// King steps plus knight, alfil, and dabbaba leaps.
+    Lion,
+    /// Knight + camel + giraffe.
+    Buffalo,
+    /// Knight + non-royal king.
+    Centaur,
+    /// Rook + one-step diagonal moves.
+    Admiral,
+    /// Bishop + one-step orthogonal moves.
+    Missionary,
+    /// One diagonal step followed by an outward orthogonal slide.
+    Eagle,
+    /// One orthogonal step followed by an outward diagonal slide.
+    Rhinoceros,
+    /// Non-royal king with a non-capturing forward double step.
+    Prince,
+    /// Queen mover that captures over exactly one screen.
+    Sorceress,
+    /// One-to-three-square queen-direction leaper.
+    Duchess,
+    /// Three-square queen-direction leaper with pawn-like forward moves.
+    Troll,
 }
 
 impl PieceKind {
-    pub(crate) const COUNT: usize = 14;
+    pub(crate) const COUNT: usize = 26;
 
     pub const PROMOTION_PIECES: [Self; 6] = [
         Self::Queen,
@@ -119,6 +143,18 @@ impl PieceKind {
             Self::Giraffe => 'z',
             Self::Archer => 'v',
             Self::Machine => 'w',
+            Self::Amazon => 'a',
+            Self::Lion => 'l',
+            Self::Buffalo => 'f',
+            Self::Centaur => 'j',
+            Self::Admiral => 's',
+            Self::Missionary => 'y',
+            Self::Eagle => 'g',
+            Self::Rhinoceros => 'u',
+            Self::Prince => 'i',
+            Self::Sorceress => 'o',
+            Self::Duchess => 'd',
+            Self::Troll => 't',
         }
     }
 
@@ -141,6 +177,17 @@ impl PieceKind {
             'z' => Self::Giraffe,
             'v' => Self::Archer,
             'w' => Self::Machine,
+            'l' => Self::Lion,
+            'f' => Self::Buffalo,
+            'j' => Self::Centaur,
+            's' => Self::Admiral,
+            'y' => Self::Missionary,
+            'g' => Self::Eagle,
+            'u' => Self::Rhinoceros,
+            'i' => Self::Prince,
+            'o' => Self::Sorceress,
+            'd' => Self::Duchess,
+            't' => Self::Troll,
             // `m` is accepted for Grand Chess software that writes "marshal".
             'c' | 'm' => Self::Chancellor,
             _ => return None,
@@ -197,7 +244,7 @@ impl Square {
 
     #[must_use]
     pub(crate) const fn storage_index(self) -> usize {
-        self.rank as usize * 10 + self.file as usize
+        self.rank as usize * 16 + self.file as usize
     }
 
     #[must_use]
@@ -229,13 +276,13 @@ impl FromStr for Square {
         }
 
         let file = bytes[0].to_ascii_lowercase();
-        if !(b'a'..=b'j').contains(&file) {
+        if !(b'a'..=b'p').contains(&file) {
             return Err(ParseSquareError(value.to_owned()));
         }
         let rank = value[1..]
             .parse::<u8>()
             .ok()
-            .filter(|rank| (1..=10).contains(rank))
+            .filter(|rank| (1..=16).contains(rank))
             .ok_or_else(|| ParseSquareError(value.to_owned()))?;
 
         Ok(Self::new(file - b'a', rank - 1))
@@ -258,8 +305,8 @@ mod tests {
     use super::Square;
 
     #[test]
-    fn square_round_trip_supports_rank_ten() {
-        for value in ["a1", "j8", "e10"] {
+    fn square_round_trip_supports_sixteen_by_sixteen_boards() {
+        for value in ["a1", "j8", "e10", "p16"] {
             let square: Square = value.parse().unwrap();
             assert_eq!(square.to_string(), value);
         }

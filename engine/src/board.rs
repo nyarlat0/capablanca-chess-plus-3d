@@ -1,7 +1,8 @@
 use crate::{Color, Piece, PieceKind, Square};
 use std::fmt;
 
-const STORAGE_SQUARES: usize = 100;
+const STORAGE_FILES: usize = 16;
+const STORAGE_SQUARES: usize = STORAGE_FILES * STORAGE_FILES;
 
 /// Rectangular board dimensions supported by the engine.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -19,9 +20,13 @@ impl BoardSize {
         files: 10,
         ranks: 10,
     };
+    pub const TERACHESS: Self = Self {
+        files: 16,
+        ranks: 16,
+    };
 
     pub fn new(files: u8, ranks: u8) -> Result<Self, BoardError> {
-        if files == 0 || ranks == 0 || files > 10 || ranks > 10 {
+        if files == 0 || ranks == 0 || files > 16 || ranks > 16 {
             return Err(BoardError::InvalidSize { files, ranks });
         }
         Ok(Self { files, ranks })

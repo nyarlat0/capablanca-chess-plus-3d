@@ -1,5 +1,7 @@
 use crate::mv::{CastleSide, Move, MoveKind};
-use crate::rules::{CastleRoute, CastlingRights, PromotionRule, VariantRules};
+use crate::rules::{
+    CastleRoute, CastlingRights, PromotionRule, VariantRules, terachess_promotion_target,
+};
 use crate::{Board, Color, Piece, PieceKind, Square};
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -65,6 +67,7 @@ pub struct Position {
     board: Board,
     side_to_move: Color,
     castling_rights: CastlingRights,
+    king_jump_rights: [bool; 2],
     en_passant: Option<Square>,
     halfmove_clock: u32,
     fullmove_number: u32,
@@ -74,6 +77,7 @@ impl Position {
     pub(crate) fn from_starting_board(rules: Arc<VariantRules>, board: Board) -> Self {
         Self {
             castling_rights: CastlingRights::from_rules(rules.castling()),
+            king_jump_rights: [rules.king_initial_jump(); 2],
             rules,
             board,
             side_to_move: Color::White,
@@ -87,7 +91,9 @@ impl Position {
     /// elephant, and `C` is resolved as a cannon or Capablanca chancellor from
     /// the supplied rules. In Pemba, `M`, `Z`, `V`, and `W` denote camel,
     /// giraffe, archer, and machine; otherwise `M` remains accepted as a
-    /// chancellor/marshal alias.
+    /// chancellor/marshal alias. Terachess II uses the piece letters from its
+    /// reference diagram and `J`/`j` in the rights field for White's/Black's
+    /// still-available initial king jump.
     pub fn from_fen(rules: impl Into<Arc<VariantRules>>, fen: &str) -> Result<Self, FenError> {
         let rules = rules.into();
         let fields: Vec<_> = fen.split_whitespace().collect();
@@ -146,7 +152,7 @@ impl Position {
             "b" => Color::Black,
             value => return Err(FenError::InvalidSide(value.to_owned())),
         };
-        let castling_rights = parse_castling_rights(&rules, fields[2])?;
+        let (castling_rights, king_jump_rights) = parse_position_rights(&rules, fields[2])?;
         for color in Color::ALL {
             for side in CastleSide::ALL {
                 if !castling_rights.has(color, side) {
@@ -161,6 +167,13 @@ impl Position {
                 {
                     return Err(FenError::InvalidCastling(fields[2].to_owned()));
                 }
+            }
+        }
+        for color in Color::ALL {
+            if king_jump_rights[color.index()]
+                && board.king_square(color) != rules.initial_king_square(color)
+            {
+                return Err(FenError::InvalidCastling(fields[2].to_owned()));
             }
         }
         let en_passant = if fields[3] == "-" {
@@ -188,6 +201,7 @@ impl Position {
             board,
             side_to_move,
             castling_rights,
+            king_jump_rights,
             en_passant,
             halfmove_clock,
             fullmove_number,
@@ -212,6 +226,12 @@ impl Position {
     #[must_use]
     pub const fn castling_rights(&self) -> CastlingRights {
         self.castling_rights
+    }
+
+    /// Whether this side still has Terachess II's one-time initial king jump.
+    #[must_use]
+    pub const fn king_jump_available(&self, color: Color) -> bool {
+        self.king_jump_rights[color.index()]
     }
 
     #[must_use]
@@ -321,6 +341,7 @@ impl Position {
     }
 
     fn generate_piece_moves(&self, from: Square, piece: Piece, moves: &mut Vec<Move>) {
+        let first_move = moves.len();
         match piece.kind {
             PieceKind::Pawn => self.generate_pawn_moves(from, piece.color, moves),
             PieceKind::Knight => self.generate_leaps(from, piece.color, moves),
@@ -361,6 +382,48 @@ impl Position {
             PieceKind::Machine => {
                 self.generate_offset_moves(from, piece.color, &MACHINE_OFFSETS, moves);
             }
+            PieceKind::Amazon => {
+                self.generate_slides(from, piece.color, &ORTHOGONAL_DIRECTIONS, moves);
+                self.generate_slides(from, piece.color, &DIAGONAL_DIRECTIONS, moves);
+                self.generate_leaps(from, piece.color, moves);
+            }
+            PieceKind::Lion => self.generate_lion_moves(from, piece.color, moves),
+            PieceKind::Buffalo => {
+                self.generate_offset_moves(from, piece.color, &KNIGHT_OFFSETS, moves);
+                self.generate_offset_moves(from, piece.color, &CAMEL_OFFSETS, moves);
+                self.generate_offset_moves(from, piece.color, &GIRAFFE_OFFSETS, moves);
+            }
+            PieceKind::Centaur => {
+                self.generate_king_steps(from, piece.color, moves);
+                self.generate_leaps(from, piece.color, moves);
+            }
+            PieceKind::Admiral => {
+                self.generate_slides(from, piece.color, &ORTHOGONAL_DIRECTIONS, moves);
+                self.generate_offset_moves(from, piece.color, &DIAGONAL_DIRECTIONS, moves);
+            }
+            PieceKind::Missionary => {
+                self.generate_slides(from, piece.color, &DIAGONAL_DIRECTIONS, moves);
+                self.generate_offset_moves(from, piece.color, &ORTHOGONAL_DIRECTIONS, moves);
+            }
+            PieceKind::Eagle => self.generate_eagle_moves(from, piece.color, moves),
+            PieceKind::Rhinoceros => self.generate_rhinoceros_moves(from, piece.color, moves),
+            PieceKind::Prince => self.generate_prince_moves(from, piece.color, moves),
+            PieceKind::Sorceress => {
+                self.generate_screen_slider_moves(from, piece.color, &ORTHOGONAL_DIRECTIONS, moves);
+                self.generate_screen_slider_moves(from, piece.color, &DIAGONAL_DIRECTIONS, moves);
+            }
+            PieceKind::Duchess => self.generate_duchess_moves(from, piece.color, moves),
+            PieceKind::Troll => self.generate_troll_moves(from, piece.color, moves),
+        }
+
+        if matches!(self.rules.promotion(), PromotionRule::TerachessII)
+            && piece.kind != PieceKind::Pawn
+        {
+            for chess_move in &mut moves[first_move..] {
+                if self.terachess_promotion_applies(piece.kind, piece.color, *chess_move) {
+                    chess_move.promotion = terachess_promotion_target(piece.kind);
+                }
+            }
         }
     }
 
@@ -371,12 +434,12 @@ impl Position {
         }) {
             self.push_pawn_move(from, one_step, color, MoveKind::Normal, moves);
 
-            if from.rank() == self.rules.pawn_start_rank(color)
+            if self.rules.pawn_can_double_from(color, from.rank())
                 && let Some(two_step) = from.offset(0, direction * 2).filter(|square| {
                     self.board.size().contains(*square) && self.board.piece_at(*square).is_none()
                 })
             {
-                moves.push(Move::normal(from, two_step));
+                self.push_pawn_move(from, two_step, color, MoveKind::Normal, moves);
             }
         }
 
@@ -396,9 +459,12 @@ impl Position {
                 self.push_pawn_move(from, to, color, MoveKind::Normal, moves);
             } else if self.en_passant == Some(to) {
                 let captured = Square::new(to.file(), from.rank());
-                if self.board.piece_at(captured)
-                    == Some(Piece::new(color.opposite(), PieceKind::Pawn))
-                {
+                if self.board.piece_at(captured).is_some_and(|piece| {
+                    piece.color == color.opposite()
+                        && ((piece.kind == PieceKind::Pawn
+                            || (self.rules.rapid_pawns() && piece.kind == PieceKind::Prince))
+                            || self.terachess_promoted_en_passant_victim(piece, captured))
+                }) {
                     self.push_pawn_move(from, to, color, MoveKind::EnPassant, moves);
                 }
             }
@@ -445,6 +511,14 @@ impl Position {
                     kind,
                 }));
             }
+            PromotionRule::TerachessII if relative_rank == self.board.size().ranks() => {
+                moves.push(Move {
+                    from,
+                    to,
+                    promotion: Some(PieceKind::Queen),
+                    kind,
+                });
+            }
             _ => moves.push(Move {
                 from,
                 to,
@@ -465,6 +539,186 @@ impl Position {
 
     fn generate_leaps(&self, from: Square, color: Color, moves: &mut Vec<Move>) {
         self.generate_offset_moves(from, color, &KNIGHT_OFFSETS, moves);
+    }
+
+    fn generate_king_steps(&self, from: Square, color: Color, moves: &mut Vec<Move>) {
+        for file_delta in -1..=1 {
+            for rank_delta in -1..=1 {
+                if file_delta != 0 || rank_delta != 0 {
+                    self.generate_offset_moves(from, color, &[(file_delta, rank_delta)], moves);
+                }
+            }
+        }
+    }
+
+    fn generate_lion_moves(&self, from: Square, color: Color, moves: &mut Vec<Move>) {
+        self.generate_king_steps(from, color, moves);
+        self.generate_leaps(from, color, moves);
+        for &(file_delta, rank_delta) in ORTHOGONAL_DIRECTIONS
+            .iter()
+            .chain(DIAGONAL_DIRECTIONS.iter())
+        {
+            self.generate_offset_moves(from, color, &[(file_delta * 2, rank_delta * 2)], moves);
+        }
+    }
+
+    fn generate_prince_moves(&self, from: Square, color: Color, moves: &mut Vec<Move>) {
+        self.generate_king_steps(from, color, moves);
+        if !self.rules.rapid_pawns() {
+            return;
+        }
+        let direction = color.pawn_direction();
+        let one_step_is_clear = from.offset(0, direction).is_some_and(|square| {
+            self.board.size().contains(square) && self.board.piece_at(square).is_none()
+        });
+        if one_step_is_clear
+            && let Some(two_steps) = from.offset(0, direction * 2).filter(|square| {
+                self.board.size().contains(*square) && self.board.piece_at(*square).is_none()
+            })
+        {
+            moves.push(Move::normal(from, two_steps));
+        }
+    }
+
+    fn generate_troll_moves(&self, from: Square, color: Color, moves: &mut Vec<Move>) {
+        for &(file_delta, rank_delta) in ORTHOGONAL_DIRECTIONS
+            .iter()
+            .chain(DIAGONAL_DIRECTIONS.iter())
+        {
+            self.generate_offset_moves(from, color, &[(file_delta * 3, rank_delta * 3)], moves);
+        }
+
+        let direction = color.pawn_direction();
+        if let Some(to) = from.offset(0, direction).filter(|square| {
+            self.board.size().contains(*square) && self.board.piece_at(*square).is_none()
+        }) {
+            moves.push(Move::normal(from, to));
+        }
+        for file_delta in [-1, 1] {
+            if let Some(to) = from
+                .offset(file_delta, direction)
+                .filter(|square| self.board.size().contains(*square))
+                && self
+                    .board
+                    .piece_at(to)
+                    .is_some_and(|piece| piece.color != color && piece.kind != PieceKind::King)
+            {
+                moves.push(Move::normal(from, to));
+            }
+        }
+    }
+
+    fn generate_duchess_moves(&self, from: Square, color: Color, moves: &mut Vec<Move>) {
+        for distance in 1..=3 {
+            for &(file_delta, rank_delta) in ORTHOGONAL_DIRECTIONS
+                .iter()
+                .chain(DIAGONAL_DIRECTIONS.iter())
+            {
+                self.generate_offset_moves(
+                    from,
+                    color,
+                    &[(file_delta * distance, rank_delta * distance)],
+                    moves,
+                );
+            }
+        }
+    }
+
+    fn generate_eagle_moves(&self, from: Square, color: Color, moves: &mut Vec<Move>) {
+        for &(file_delta, rank_delta) in &DIAGONAL_DIRECTIONS {
+            self.generate_bent_slider_branch(
+                from,
+                color,
+                (file_delta, rank_delta),
+                &[(file_delta, 0), (0, rank_delta)],
+                moves,
+            );
+        }
+    }
+
+    fn generate_rhinoceros_moves(&self, from: Square, color: Color, moves: &mut Vec<Move>) {
+        for &(file_delta, rank_delta) in &ORTHOGONAL_DIRECTIONS {
+            let continuations = if file_delta == 0 {
+                [(1, rank_delta), (-1, rank_delta)]
+            } else {
+                [(file_delta, 1), (file_delta, -1)]
+            };
+            self.generate_bent_slider_branch(
+                from,
+                color,
+                (file_delta, rank_delta),
+                &continuations,
+                moves,
+            );
+        }
+    }
+
+    fn generate_bent_slider_branch(
+        &self,
+        from: Square,
+        color: Color,
+        first_delta: (i8, i8),
+        continuations: &[(i8, i8)],
+        moves: &mut Vec<Move>,
+    ) {
+        let Some(first) = from
+            .offset(first_delta.0, first_delta.1)
+            .filter(|square| self.board.size().contains(*square))
+        else {
+            return;
+        };
+        match self.board.piece_at(first) {
+            None => moves.push(Move::normal(from, first)),
+            Some(piece) if piece.color != color && piece.kind != PieceKind::King => {
+                moves.push(Move::normal(from, first));
+                return;
+            }
+            Some(_) => return,
+        }
+
+        for &(file_delta, rank_delta) in continuations {
+            let mut current = first;
+            while let Some(to) = current
+                .offset(file_delta, rank_delta)
+                .filter(|square| self.board.size().contains(*square))
+            {
+                match self.board.piece_at(to) {
+                    None => moves.push(Move::normal(from, to)),
+                    Some(piece) if piece.color != color && piece.kind != PieceKind::King => {
+                        moves.push(Move::normal(from, to));
+                        break;
+                    }
+                    Some(_) => break,
+                }
+                current = to;
+            }
+        }
+    }
+
+    fn terachess_promotion_applies(&self, kind: PieceKind, color: Color, chess_move: Move) -> bool {
+        let final_rank = match color {
+            Color::White => self.board.size().ranks() - 1,
+            Color::Black => 0,
+        };
+        if chess_move.to.rank() != final_rank || terachess_promotion_target(kind).is_none() {
+            return false;
+        }
+        kind != PieceKind::Troll
+            || (i16::from(chess_move.to.rank()) - i16::from(chess_move.from.rank())
+                == i16::from(color.pawn_direction())
+                && chess_move.from.file().abs_diff(chess_move.to.file()) <= 1)
+    }
+
+    fn terachess_promoted_en_passant_victim(&self, piece: Piece, square: Square) -> bool {
+        if !self.rules.rapid_pawns() {
+            return false;
+        }
+        let promotion_rank = match piece.color {
+            Color::White => self.board.size().ranks() - 1,
+            Color::Black => 0,
+        };
+        square.rank() == promotion_rank
+            && matches!(piece.kind, PieceKind::Queen | PieceKind::Amazon)
     }
 
     fn generate_offset_moves(
@@ -545,19 +799,7 @@ impl Position {
     }
 
     fn generate_king_moves(&self, from: Square, color: Color, moves: &mut Vec<Move>) {
-        for file_delta in -1..=1 {
-            for rank_delta in -1..=1 {
-                if file_delta == 0 && rank_delta == 0 {
-                    continue;
-                }
-                if let Some(to) = from
-                    .offset(file_delta, rank_delta)
-                    .filter(|square| self.board.size().contains(*square))
-                {
-                    self.push_non_pawn_move(from, to, color, moves);
-                }
-            }
-        }
+        self.generate_king_steps(from, color, moves);
 
         for side in CastleSide::ALL {
             if self.can_castle(color, side, from)
@@ -571,6 +813,50 @@ impl Position {
                 });
             }
         }
+
+        if self.king_jump_available(color) && !self.is_in_check(color) {
+            for file_delta in -2_i8..=2 {
+                for rank_delta in -2_i8..=2 {
+                    if file_delta.abs().max(rank_delta.abs()) != 2 {
+                        continue;
+                    }
+                    let Some(to) = from.offset(file_delta, rank_delta).filter(|square| {
+                        self.board.size().contains(*square)
+                            && self.board.piece_at(*square).is_none()
+                    }) else {
+                        continue;
+                    };
+                    if self.king_jump_intermediate_is_safe(from, color, file_delta, rank_delta) {
+                        moves.push(Move::normal(from, to));
+                    }
+                }
+            }
+        }
+    }
+
+    fn king_jump_intermediate_is_safe(
+        &self,
+        from: Square,
+        color: Color,
+        file_delta: i8,
+        rank_delta: i8,
+    ) -> bool {
+        let file_step = file_delta.signum();
+        let rank_step = rank_delta.signum();
+        if file_delta == 0 || rank_delta == 0 || file_delta.abs() == rank_delta.abs() {
+            return from
+                .offset(file_step, rank_step)
+                .is_some_and(|square| !self.is_square_attacked(square, color.opposite()));
+        }
+
+        let intermediates = if file_delta.abs() == 2 {
+            [from.offset(file_step, 0), from.offset(file_step, rank_step)]
+        } else {
+            [from.offset(0, rank_step), from.offset(file_step, rank_step)]
+        };
+        intermediates.into_iter().flatten().any(|square| {
+            self.board.size().contains(square) && !self.is_square_attacked(square, color.opposite())
+        })
     }
 
     fn push_non_pawn_move(&self, from: Square, to: Square, color: Color, moves: &mut Vec<Move>) {
@@ -658,6 +944,9 @@ impl Position {
             captured_piece,
             captured_square,
         );
+        if moving_piece.kind == PieceKind::King {
+            self.king_jump_rights[moving_piece.color.index()] = false;
+        }
 
         match chess_move.kind {
             MoveKind::Castle(side) => {
@@ -692,7 +981,8 @@ impl Position {
             }
         }
 
-        self.en_passant = if moving_piece.kind == PieceKind::Pawn
+        self.en_passant = if (moving_piece.kind == PieceKind::Pawn
+            || (self.rules.rapid_pawns() && moving_piece.kind == PieceKind::Prince))
             && chess_move.from.rank().abs_diff(chess_move.to.rank()) == 2
         {
             Some(Square::new(
@@ -781,7 +1071,7 @@ impl Position {
             Color::White => "w",
             Color::Black => "b",
         };
-        let castling = format_castling_rights(self.castling_rights);
+        let castling = format_position_rights(self.castling_rights, self.king_jump_rights);
         let en_passant = self
             .en_passant
             .map_or_else(|| "-".to_owned(), |square| square.to_string());
@@ -799,6 +1089,7 @@ impl Position {
         self.board.hash(state);
         self.side_to_move.hash(state);
         self.castling_rights.hash(state);
+        self.king_jump_rights.hash(state);
         self.legal_moves()
             .iter()
             .find(|chess_move| chess_move.kind == MoveKind::EnPassant)
@@ -807,28 +1098,47 @@ impl Position {
     }
 }
 
-fn parse_castling_rights(rules: &VariantRules, value: &str) -> Result<CastlingRights, FenError> {
+fn parse_position_rights(
+    rules: &VariantRules,
+    value: &str,
+) -> Result<(CastlingRights, [bool; 2]), FenError> {
     if value == "-" {
-        return Ok(CastlingRights::none());
+        return Ok((CastlingRights::none(), [false; 2]));
     }
     let mut rights = CastlingRights::none();
+    let mut king_jump_rights = [false; 2];
     for token in value.chars() {
-        let (color, side) = match token {
-            'K' => (Color::White, CastleSide::KingSide),
-            'Q' => (Color::White, CastleSide::QueenSide),
-            'k' => (Color::Black, CastleSide::KingSide),
-            'q' => (Color::Black, CastleSide::QueenSide),
-            _ => return Err(FenError::InvalidCastling(value.to_owned())),
-        };
-        if rules.castling().route(color, side).is_none() {
-            return Err(FenError::InvalidCastling(value.to_owned()));
+        match token {
+            'J' | 'j' => {
+                if !rules.king_initial_jump() {
+                    return Err(FenError::InvalidCastling(value.to_owned()));
+                }
+                let color = if token == 'J' {
+                    Color::White
+                } else {
+                    Color::Black
+                };
+                king_jump_rights[color.index()] = true;
+            }
+            _ => {
+                let (color, side) = match token {
+                    'K' => (Color::White, CastleSide::KingSide),
+                    'Q' => (Color::White, CastleSide::QueenSide),
+                    'k' => (Color::Black, CastleSide::KingSide),
+                    'q' => (Color::Black, CastleSide::QueenSide),
+                    _ => return Err(FenError::InvalidCastling(value.to_owned())),
+                };
+                if rules.castling().route(color, side).is_none() {
+                    return Err(FenError::InvalidCastling(value.to_owned()));
+                }
+                rights.set(color, side, true);
+            }
         }
-        rights.set(color, side, true);
     }
-    Ok(rights)
+    Ok((rights, king_jump_rights))
 }
 
-fn format_castling_rights(rights: CastlingRights) -> String {
+fn format_position_rights(rights: CastlingRights, king_jump_rights: [bool; 2]) -> String {
     let mut value = String::new();
     for (color, side, token) in [
         (Color::White, CastleSide::KingSide, 'K'),
@@ -840,6 +1150,12 @@ fn format_castling_rights(rights: CastlingRights) -> String {
             value.push(token);
         }
     }
+    if king_jump_rights[Color::White.index()] {
+        value.push('J');
+    }
+    if king_jump_rights[Color::Black.index()] {
+        value.push('j');
+    }
     if value.is_empty() {
         value.push('-');
     }
@@ -847,157 +1163,141 @@ fn format_castling_rights(rights: CastlingRights) -> String {
 }
 
 fn is_square_attacked_on(board: &Board, target: Square, by: Color) -> bool {
-    let pawn_source_delta = -by.pawn_direction();
-    for file_delta in [-1, 1] {
-        if target
-            .offset(file_delta, pawn_source_delta)
-            .filter(|square| board.size().contains(*square))
-            .is_some_and(|square| board.piece_at(square) == Some(Piece::new(by, PieceKind::Pawn)))
-        {
-            return true;
+    board
+        .pieces()
+        .filter(|(_, piece)| piece.color == by)
+        .any(|(from, piece)| piece_attacks_square(board, from, piece, target))
+}
+
+fn piece_attacks_square(board: &Board, from: Square, piece: Piece, target: Square) -> bool {
+    let file_delta = i16::from(target.file()) - i16::from(from.file());
+    let rank_delta = i16::from(target.rank()) - i16::from(from.rank());
+    if file_delta == 0 && rank_delta == 0 {
+        return false;
+    }
+    let abs_file = file_delta.unsigned_abs();
+    let abs_rank = rank_delta.unsigned_abs();
+    let orthogonal = file_delta == 0 || rank_delta == 0;
+    let diagonal = abs_file == abs_rank;
+    let king_step = abs_file <= 1 && abs_rank <= 1;
+    let knight_leap = (abs_file == 1 && abs_rank == 2) || (abs_file == 2 && abs_rank == 1);
+    let camel_leap = (abs_file == 1 && abs_rank == 3) || (abs_file == 3 && abs_rank == 1);
+    let giraffe_leap = (abs_file == 2 && abs_rank == 3) || (abs_file == 3 && abs_rank == 2);
+
+    match piece.kind {
+        PieceKind::Pawn => abs_file == 1 && rank_delta == i16::from(piece.color.pawn_direction()),
+        PieceKind::Knight => knight_leap,
+        PieceKind::Bishop => diagonal && line_is_clear(board, from, target),
+        PieceKind::Rook => orthogonal && line_is_clear(board, from, target),
+        PieceKind::Queen => (orthogonal || diagonal) && line_is_clear(board, from, target),
+        PieceKind::King => king_step,
+        PieceKind::Archbishop => knight_leap || (diagonal && line_is_clear(board, from, target)),
+        PieceKind::Chancellor => knight_leap || (orthogonal && line_is_clear(board, from, target)),
+        PieceKind::Cannon => orthogonal && screen_count_between(board, from, target) == Some(1),
+        PieceKind::Elephant => diagonal && abs_file <= 2,
+        PieceKind::Camel => camel_leap,
+        PieceKind::Giraffe => giraffe_leap,
+        PieceKind::Archer => diagonal && screen_count_between(board, from, target) == Some(1),
+        PieceKind::Machine => orthogonal && abs_file.max(abs_rank) <= 2,
+        PieceKind::Amazon => {
+            knight_leap || ((orthogonal || diagonal) && line_is_clear(board, from, target))
+        }
+        PieceKind::Lion => {
+            king_step
+                || knight_leap
+                || (orthogonal && abs_file.max(abs_rank) == 2)
+                || (diagonal && abs_file == 2)
+        }
+        PieceKind::Buffalo => knight_leap || camel_leap || giraffe_leap,
+        PieceKind::Centaur => king_step || knight_leap,
+        PieceKind::Admiral => {
+            (orthogonal && line_is_clear(board, from, target)) || (diagonal && abs_file == 1)
+        }
+        PieceKind::Missionary => {
+            (diagonal && line_is_clear(board, from, target))
+                || (orthogonal && abs_file.max(abs_rank) == 1)
+        }
+        PieceKind::Eagle => bent_slider_attacks(board, from, target, true),
+        PieceKind::Rhinoceros => bent_slider_attacks(board, from, target, false),
+        PieceKind::Prince => king_step,
+        PieceKind::Sorceress => {
+            (orthogonal || diagonal) && screen_count_between(board, from, target) == Some(1)
+        }
+        PieceKind::Duchess => (orthogonal || diagonal) && abs_file.max(abs_rank) <= 3,
+        PieceKind::Troll => {
+            ((orthogonal || diagonal) && abs_file.max(abs_rank) == 3)
+                || (abs_file == 1 && rank_delta == i16::from(piece.color.pawn_direction()))
         }
     }
+}
 
-    for (file_delta, rank_delta) in KNIGHT_OFFSETS {
-        if target
+fn line_is_clear(board: &Board, from: Square, target: Square) -> bool {
+    screen_count_between(board, from, target) == Some(0)
+}
+
+fn screen_count_between(board: &Board, from: Square, target: Square) -> Option<usize> {
+    let file_delta = i16::from(target.file()) - i16::from(from.file());
+    let rank_delta = i16::from(target.rank()) - i16::from(from.rank());
+    if file_delta != 0 && rank_delta != 0 && file_delta.unsigned_abs() != rank_delta.unsigned_abs()
+    {
+        return None;
+    }
+    let file_step = file_delta.signum() as i8;
+    let rank_step = rank_delta.signum() as i8;
+    let mut current = from;
+    let mut screens = 0;
+    while let Some(square) = current.offset(file_step, rank_step) {
+        if square == target {
+            return Some(screens);
+        }
+        if board.piece_at(square).is_some() {
+            screens += 1;
+        }
+        current = square;
+    }
+    None
+}
+
+fn bent_slider_attacks(board: &Board, from: Square, target: Square, eagle: bool) -> bool {
+    let first_directions: &[(i8, i8)] = if eagle {
+        &DIAGONAL_DIRECTIONS
+    } else {
+        &ORTHOGONAL_DIRECTIONS
+    };
+    for &(file_delta, rank_delta) in first_directions {
+        let Some(first) = from
             .offset(file_delta, rank_delta)
             .filter(|square| board.size().contains(*square))
-            .and_then(|square| board.piece_at(square))
-            .is_some_and(|piece| {
-                piece.color == by
-                    && matches!(
-                        piece.kind,
-                        PieceKind::Knight | PieceKind::Archbishop | PieceKind::Chancellor
-                    )
-            })
-        {
+        else {
+            continue;
+        };
+        if first == target {
             return true;
         }
-    }
-
-    for (file_delta, rank_delta) in ELEPHANT_OFFSETS {
-        if target
-            .offset(file_delta, rank_delta)
-            .filter(|square| board.size().contains(*square))
-            .is_some_and(|square| {
-                board.piece_at(square) == Some(Piece::new(by, PieceKind::Elephant))
-            })
-        {
-            return true;
+        if board.piece_at(first).is_some() {
+            continue;
         }
-    }
-
-    for (offsets, kind) in [
-        (&CAMEL_OFFSETS[..], PieceKind::Camel),
-        (&GIRAFFE_OFFSETS[..], PieceKind::Giraffe),
-        (&MACHINE_OFFSETS[..], PieceKind::Machine),
-    ] {
-        if offsets.iter().any(|&(file_delta, rank_delta)| {
-            target
-                .offset(file_delta, rank_delta)
+        let continuations = if eagle {
+            [(file_delta, 0), (0, rank_delta)]
+        } else if file_delta == 0 {
+            [(1, rank_delta), (-1, rank_delta)]
+        } else {
+            [(file_delta, 1), (file_delta, -1)]
+        };
+        for (file_step, rank_step) in continuations {
+            let mut current = first;
+            while let Some(square) = current
+                .offset(file_step, rank_step)
                 .filter(|square| board.size().contains(*square))
-                .and_then(|square| board.piece_at(square))
-                .is_some_and(|piece| piece == Piece::new(by, kind))
-        }) {
-            return true;
-        }
-    }
-
-    if attacked_along(
-        board,
-        target,
-        by,
-        &ORTHOGONAL_DIRECTIONS,
-        &[PieceKind::Rook, PieceKind::Queen, PieceKind::Chancellor],
-    ) || attacked_along(
-        board,
-        target,
-        by,
-        &DIAGONAL_DIRECTIONS,
-        &[PieceKind::Bishop, PieceKind::Queen, PieceKind::Archbishop],
-    ) {
-        return true;
-    }
-
-    if attacked_by_cannon(board, target, by) {
-        return true;
-    }
-    if attacked_by_screen_slider(board, target, by, &DIAGONAL_DIRECTIONS, PieceKind::Archer) {
-        return true;
-    }
-
-    for file_delta in -1..=1 {
-        for rank_delta in -1..=1 {
-            if file_delta == 0 && rank_delta == 0 {
-                continue;
-            }
-            if target
-                .offset(file_delta, rank_delta)
-                .filter(|square| board.size().contains(*square))
-                .is_some_and(|square| {
-                    board.piece_at(square) == Some(Piece::new(by, PieceKind::King))
-                })
             {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn attacked_by_cannon(board: &Board, target: Square, by: Color) -> bool {
-    attacked_by_screen_slider(board, target, by, &ORTHOGONAL_DIRECTIONS, PieceKind::Cannon)
-}
-
-fn attacked_by_screen_slider(
-    board: &Board,
-    target: Square,
-    by: Color,
-    directions: &[(i8, i8)],
-    attacker: PieceKind,
-) -> bool {
-    for &(file_delta, rank_delta) in directions {
-        let mut current = target;
-        let mut occupied = 0;
-        while let Some(square) = current
-            .offset(file_delta, rank_delta)
-            .filter(|square| board.size().contains(*square))
-        {
-            if let Some(piece) = board.piece_at(square) {
-                occupied += 1;
-                if occupied == 2 {
-                    if piece == Piece::new(by, attacker) {
-                        return true;
-                    }
-                    break;
-                }
-            }
-            current = square;
-        }
-    }
-    false
-}
-
-fn attacked_along(
-    board: &Board,
-    target: Square,
-    by: Color,
-    directions: &[(i8, i8)],
-    attackers: &[PieceKind],
-) -> bool {
-    for &(file_delta, rank_delta) in directions {
-        let mut current = target;
-        while let Some(square) = current
-            .offset(file_delta, rank_delta)
-            .filter(|square| board.size().contains(*square))
-        {
-            if let Some(piece) = board.piece_at(square) {
-                if piece.color == by && attackers.contains(&piece.kind) {
+                if square == target {
                     return true;
                 }
-                break;
+                if board.piece_at(square).is_some() {
+                    break;
+                }
+                current = square;
             }
-            current = square;
         }
     }
     false

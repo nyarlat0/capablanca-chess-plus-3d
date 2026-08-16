@@ -13,6 +13,68 @@ fn uci_moves(position: &Position) -> Vec<String> {
     moves
 }
 
+fn terachess_position(
+    pieces: &[(char, &str)],
+    side: Color,
+    rights: &str,
+    en_passant: &str,
+) -> Position {
+    let mut squares = [[None; 16]; 16];
+    let has_white_king = pieces.iter().any(|(piece, _)| *piece == 'K');
+    let has_black_king = pieces.iter().any(|(piece, _)| *piece == 'k');
+    let defaults = [('K', "a1"), ('k', "p16")];
+    for &(piece, coordinate) in defaults
+        .iter()
+        .filter(|(piece, _)| {
+            (*piece == 'K' && !has_white_king) || (*piece == 'k' && !has_black_king)
+        })
+        .chain(pieces.iter())
+    {
+        let square: Square = coordinate.parse().unwrap();
+        assert!(squares[usize::from(square.rank())][usize::from(square.file())].is_none());
+        squares[usize::from(square.rank())][usize::from(square.file())] = Some(piece);
+    }
+
+    let mut ranks = Vec::with_capacity(16);
+    for rank in (0..16).rev() {
+        let mut encoded = String::new();
+        let mut empty = 0;
+        for square in &squares[rank] {
+            if let Some(piece) = square {
+                if empty != 0 {
+                    encoded.push_str(&empty.to_string());
+                    empty = 0;
+                }
+                encoded.push(*piece);
+            } else {
+                empty += 1;
+            }
+        }
+        if empty != 0 {
+            encoded.push_str(&empty.to_string());
+        }
+        ranks.push(encoded);
+    }
+    let side = match side {
+        Color::White => 'w',
+        Color::Black => 'b',
+    };
+    Position::from_fen(
+        Variant::TerachessII.rules(),
+        &format!("{} {side} {rights} {en_passant} 0 1", ranks.join("/")),
+    )
+    .unwrap()
+}
+
+fn moves_from(position: &Position, from: &str) -> Vec<String> {
+    let mut moves: Vec<_> = uci_moves(position)
+        .into_iter()
+        .filter(|chess_move| chess_move.starts_with(from))
+        .collect();
+    moves.sort();
+    moves
+}
+
 #[test]
 fn built_in_starting_arrays_and_fen_are_stable() {
     let expected = [
@@ -52,6 +114,10 @@ fn built_in_starting_arrays_and_fen_are_stable() {
             Variant::Pemba,
             "cmvzwwzvmc/ernbqkbnre/pppppppppp/10/10/10/10/PPPPPPPPPP/ERNBQKBNRE/CMVZWWZVMC w KQkq - 0 1",
         ),
+        (
+            Variant::TerachessII,
+            "sjyhxfdoodfxhyjs/cmztuvlkalvutzmc/ernbwigqqgiwbnre/pppppppppppppppp/16/16/16/16/16/16/16/16/PPPPPPPPPPPPPPPP/ERNBWIGQQGIWBNRE/CMZTUVLKALVUTZMC/SJYHXFDOODFXHYJS w Jj - 0 1",
+        ),
     ];
 
     for (variant, fen) in expected {
@@ -77,6 +143,7 @@ fn opening_move_counts_cover_compound_pieces_and_grand_layout() {
         (Variant::Grand, 65),
         (Variant::Shako, 58),
         (Variant::Pemba, 34),
+        (Variant::TerachessII, 54),
     ];
 
     for (variant, count) in expected {
@@ -95,6 +162,452 @@ fn opening_move_counts_cover_compound_pieces_and_grand_layout() {
     // Independently cross-checked against Fairy-Stockfish 14 using the Pemba
     // Betza definition bundled with the frontend.
     assert_eq!(Variant::Pemba.starting_position().perft(3), 42_444);
+    assert_eq!(Variant::TerachessII.starting_position().perft(2), 2_916);
+    assert_eq!(Variant::TerachessII.starting_position().perft(3), 175_508);
+}
+
+#[test]
+fn terachess_starting_material_has_sixty_four_pieces_and_all_twenty_six_types() {
+    let position = Variant::TerachessII.starting_position();
+    let paired = [
+        PieceKind::Knight,
+        PieceKind::Bishop,
+        PieceKind::Rook,
+        PieceKind::Queen,
+        PieceKind::Archbishop,
+        PieceKind::Chancellor,
+        PieceKind::Cannon,
+        PieceKind::Elephant,
+        PieceKind::Camel,
+        PieceKind::Giraffe,
+        PieceKind::Archer,
+        PieceKind::Machine,
+        PieceKind::Lion,
+        PieceKind::Buffalo,
+        PieceKind::Centaur,
+        PieceKind::Admiral,
+        PieceKind::Missionary,
+        PieceKind::Eagle,
+        PieceKind::Rhinoceros,
+        PieceKind::Prince,
+        PieceKind::Sorceress,
+        PieceKind::Duchess,
+        PieceKind::Troll,
+    ];
+    for color in Color::ALL {
+        assert_eq!(
+            position
+                .board()
+                .pieces()
+                .filter(|(_, p)| p.color == color)
+                .count(),
+            64
+        );
+        assert_eq!(position.board().count(color, PieceKind::Pawn), 16);
+        assert_eq!(position.board().count(color, PieceKind::King), 1);
+        assert_eq!(position.board().count(color, PieceKind::Amazon), 1);
+        for kind in paired {
+            assert_eq!(position.board().count(color, kind), 2, "{color:?} {kind:?}");
+        }
+    }
+    assert!(!position.rules().castling().any());
+    assert!(
+        position
+            .legal_moves()
+            .iter()
+            .all(|chess_move| !matches!(chess_move.kind, MoveKind::Castle(_)))
+    );
+}
+
+#[test]
+fn terachess_compound_and_multi_leaper_moves_match_the_rules() {
+    let cases = [
+        ('L', PieceKind::Lion, 24),
+        ('F', PieceKind::Buffalo, 24),
+        ('J', PieceKind::Centaur, 16),
+    ];
+    for (letter, kind, expected_count) in cases {
+        let position = terachess_position(&[(letter, "h8")], Color::White, "-", "-");
+        let moves = moves_from(&position, "h8");
+        assert_eq!(moves.len(), expected_count, "{kind:?}: {moves:?}");
+    }
+
+    let amazon = terachess_position(&[('A', "h8")], Color::White, "-", "-");
+    let moves = moves_from(&amazon, "h8");
+    assert!(moves.contains(&"h8h15".to_owned()));
+    assert!(moves.contains(&"h8i10".to_owned()));
+    assert!(!moves.contains(&"h8j11".to_owned()));
+
+    let admiral = terachess_position(&[('S', "h8")], Color::White, "-", "-");
+    let moves = moves_from(&admiral, "h8");
+    assert!(moves.contains(&"h8h15".to_owned()));
+    assert!(moves.contains(&"h8i9".to_owned()));
+    assert!(!moves.contains(&"h8j10".to_owned()));
+
+    let missionary = terachess_position(&[('Y', "h8")], Color::White, "-", "-");
+    let moves = moves_from(&missionary, "h8");
+    assert!(moves.contains(&"h8o15".to_owned()));
+    assert!(moves.contains(&"h8h9".to_owned()));
+    assert!(!moves.contains(&"h8h10".to_owned()));
+}
+
+#[test]
+fn terachess_duchess_jumps_up_to_three_squares_but_not_four() {
+    let position = terachess_position(
+        &[('D', "h8"), ('P', "h9"), ('r', "h11")],
+        Color::White,
+        "-",
+        "-",
+    );
+    let moves = moves_from(&position, "h8");
+    assert!(!moves.contains(&"h8h9".to_owned()));
+    assert!(moves.contains(&"h8h10".to_owned()));
+    assert!(moves.contains(&"h8h11".to_owned()));
+    assert!(!moves.contains(&"h8h12".to_owned()));
+}
+
+#[test]
+fn terachess_eagle_and_rhinoceros_follow_their_bent_unobstructed_paths() {
+    let eagle = terachess_position(&[('G', "h8")], Color::White, "-", "-");
+    let moves = moves_from(&eagle, "h8");
+    for expected in ["h8i9", "h8j9", "h8p9", "h8i10", "h8i16"] {
+        assert!(
+            moves.contains(&expected.to_owned()),
+            "missing {expected}: {moves:?}"
+        );
+    }
+    assert!(!moves.contains(&"h8j10".to_owned()));
+
+    let blocked_eagle = terachess_position(&[('G', "h8"), ('P', "i9")], Color::White, "-", "-");
+    let moves = moves_from(&blocked_eagle, "h8");
+    assert!(!moves.contains(&"h8i9".to_owned()));
+    assert!(!moves.contains(&"h8j9".to_owned()));
+    assert!(!moves.contains(&"h8i10".to_owned()));
+
+    let rhinoceros = terachess_position(&[('U', "h8")], Color::White, "-", "-");
+    let moves = moves_from(&rhinoceros, "h8");
+    for expected in ["h8i8", "h8j9", "h8k10", "h8j7", "h8k6"] {
+        assert!(
+            moves.contains(&expected.to_owned()),
+            "missing {expected}: {moves:?}"
+        );
+    }
+    assert!(!moves.contains(&"h8i9".to_owned()));
+
+    let eagle_check = terachess_position(&[('K', "f8"), ('g', "e6")], Color::White, "-", "-");
+    assert!(eagle_check.is_in_check(Color::White));
+    let blocked_eagle_check = terachess_position(
+        &[('K', "f8"), ('g', "e6"), ('P', "f7")],
+        Color::White,
+        "-",
+        "-",
+    );
+    assert!(!blocked_eagle_check.is_in_check(Color::White));
+
+    let rhinoceros_check = terachess_position(&[('K', "h8"), ('u', "e6")], Color::White, "-", "-");
+    assert!(rhinoceros_check.is_in_check(Color::White));
+    let blocked_rhinoceros_check = terachess_position(
+        &[('K', "h8"), ('u', "e6"), ('P', "f6")],
+        Color::White,
+        "-",
+        "-",
+    );
+    assert!(!blocked_rhinoceros_check.is_in_check(Color::White));
+}
+
+#[test]
+fn terachess_sorceress_moves_quietly_like_a_queen_but_captures_over_one_screen() {
+    let position = terachess_position(
+        &[
+            ('O', "d4"),
+            ('P', "d6"),
+            ('r', "d9"),
+            ('P', "f6"),
+            ('b', "h8"),
+        ],
+        Color::White,
+        "-",
+        "-",
+    );
+    let moves = moves_from(&position, "d4");
+    assert!(moves.contains(&"d4d5".to_owned()));
+    assert!(!moves.contains(&"d4d6".to_owned()));
+    assert!(!moves.contains(&"d4d7".to_owned()));
+    assert!(moves.contains(&"d4d9".to_owned()));
+    assert!(moves.contains(&"d4h8".to_owned()));
+
+    let one_screen = terachess_position(
+        &[('K', "d4"), ('o', "d9"), ('P', "d6")],
+        Color::White,
+        "-",
+        "-",
+    );
+    assert!(one_screen.is_in_check(Color::White));
+    let two_screens = terachess_position(
+        &[('K', "d4"), ('o', "d9"), ('P', "d6"), ('P', "d7")],
+        Color::White,
+        "-",
+        "-",
+    );
+    assert!(!two_screens.is_in_check(Color::White));
+}
+
+#[test]
+fn terachess_troll_combines_three_square_jumps_with_pawn_moves() {
+    let position = terachess_position(
+        &[
+            ('T', "h8"),
+            ('P', "h9"),
+            ('P', "h10"),
+            ('r', "h11"),
+            ('b', "g9"),
+            ('P', "i9"),
+        ],
+        Color::White,
+        "-",
+        "-",
+    );
+    let moves = moves_from(&position, "h8");
+    assert!(moves.contains(&"h8h11".to_owned()));
+    assert!(!moves.contains(&"h8h9".to_owned()));
+    assert!(moves.contains(&"h8g9".to_owned()));
+    assert!(!moves.contains(&"h8i9".to_owned()));
+    assert!(moves.contains(&"h8e5".to_owned()));
+    assert!(!moves.contains(&"h8f6".to_owned()));
+}
+
+#[test]
+fn terachess_initial_king_jump_obeys_every_safety_condition_and_is_spent_once() {
+    let position = terachess_position(&[('K', "h2"), ('k', "p16")], Color::White, "J", "-");
+    let moves = moves_from(&position, "h2");
+    let jumps: Vec<_> = moves
+        .iter()
+        .filter(|chess_move| {
+            let to: Square = chess_move[2..].parse().unwrap();
+            "h2".parse::<Square>()
+                .unwrap()
+                .file()
+                .abs_diff(to.file())
+                .max("h2".parse::<Square>().unwrap().rank().abs_diff(to.rank()))
+                == 2
+        })
+        .cloned()
+        .collect();
+    assert_eq!(
+        jumps,
+        [
+            "h2f1", "h2f2", "h2f3", "h2f4", "h2g4", "h2h4", "h2i4", "h2j1", "h2j2", "h2j3", "h2j4",
+        ]
+        .map(str::to_owned)
+    );
+
+    let occupied_destination = terachess_position(
+        &[('K', "h2"), ('k', "p16"), ('r', "h4")],
+        Color::White,
+        "J",
+        "-",
+    );
+    assert!(!moves_from(&occupied_destination, "h2").contains(&"h2h4".to_owned()));
+
+    let occupied_intermediate = terachess_position(
+        &[('K', "h2"), ('k', "p16"), ('P', "h3")],
+        Color::White,
+        "J",
+        "-",
+    );
+    assert!(moves_from(&occupied_intermediate, "h2").contains(&"h2h4".to_owned()));
+
+    let straight_intermediate_attacked = terachess_position(
+        &[('K', "h2"), ('k', "p16"), ('r', "a3")],
+        Color::White,
+        "J",
+        "-",
+    );
+    let moves = moves_from(&straight_intermediate_attacked, "h2");
+    assert!(!moves.contains(&"h2h4".to_owned()));
+    assert!(!moves.contains(&"h2j4".to_owned()));
+
+    let one_knight_intermediate_safe = terachess_position(
+        &[('K', "h2"), ('k', "p16"), ('n', "g3")],
+        Color::White,
+        "J",
+        "-",
+    );
+    assert!(moves_from(&one_knight_intermediate_safe, "h2").contains(&"h2j3".to_owned()));
+    let both_knight_intermediates_attacked = terachess_position(
+        &[('K', "h2"), ('k', "p16"), ('n', "g3"), ('n', "g2")],
+        Color::White,
+        "J",
+        "-",
+    );
+    assert!(!moves_from(&both_knight_intermediates_attacked, "h2").contains(&"h2j3".to_owned()));
+
+    let destination_attacked = terachess_position(
+        &[('K', "h2"), ('k', "p16"), ('r', "j16")],
+        Color::White,
+        "J",
+        "-",
+    );
+    assert!(!moves_from(&destination_attacked, "h2").contains(&"h2j3".to_owned()));
+
+    let in_check = terachess_position(
+        &[('K', "h2"), ('k', "p16"), ('r', "h16")],
+        Color::White,
+        "J",
+        "-",
+    );
+    assert!(in_check.is_in_check(Color::White));
+    assert!(moves_from(&in_check, "h2").iter().all(|chess_move| {
+        let to: Square = chess_move[2..].parse().unwrap();
+        "h2".parse::<Square>()
+            .unwrap()
+            .file()
+            .abs_diff(to.file())
+            .max("h2".parse::<Square>().unwrap().rank().abs_diff(to.rank()))
+            < 2
+    }));
+
+    let mut spent = position;
+    spent.play_uci("h2h3").unwrap();
+    assert!(!spent.king_jump_available(Color::White));
+    assert!(!spent.king_jump_available(Color::Black));
+    assert!(spent.to_fen().contains(" b - "));
+    spent.play_uci("p16p15").unwrap();
+    assert!(!moves_from(&spent, "h3").contains(&"h3h5".to_owned()));
+
+    assert!(
+        Position::from_fen(
+            Variant::TerachessII.rules(),
+            "15k/16/16/16/16/16/16/16/16/16/16/16/16/7K8/16/16 w J - 0 1",
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn terachess_rapid_pawns_and_princes_double_anywhere_with_exact_en_passant_rules() {
+    let position = terachess_position(&[('P', "d8"), ('I', "f8")], Color::White, "-", "-");
+    assert!(moves_from(&position, "d8").contains(&"d8d10".to_owned()));
+    assert!(moves_from(&position, "f8").contains(&"f8f10".to_owned()));
+
+    let mut prince_double =
+        terachess_position(&[('I', "d8"), ('p', "e10")], Color::White, "-", "-");
+    prince_double.play_uci("d8d10").unwrap();
+    assert_eq!(prince_double.en_passant(), Some("d9".parse().unwrap()));
+    let capture = prince_double.parse_uci_move("e10d9").unwrap();
+    assert_eq!(capture.kind, MoveKind::EnPassant);
+    prince_double.play(capture).unwrap();
+    assert_eq!(prince_double.board().piece_at("d10".parse().unwrap()), None);
+
+    let mut pawn_double = terachess_position(&[('P', "d8"), ('i', "e10")], Color::White, "-", "-");
+    pawn_double.play_uci("d8d10").unwrap();
+    let prince_move = pawn_double.parse_uci_move("e10d9").unwrap();
+    assert_eq!(prince_move.kind, MoveKind::Normal);
+    pawn_double.play(prince_move).unwrap();
+    assert_eq!(
+        pawn_double.board().piece_at("d10".parse().unwrap()),
+        Some(Piece::new(Color::White, PieceKind::Pawn))
+    );
+
+    for (mover, double_move, promoted_kind) in [
+        ('P', "d14d16q", PieceKind::Queen),
+        ('I', "d14d16a", PieceKind::Amazon),
+    ] {
+        let mut promotes_while_double_stepping =
+            terachess_position(&[(mover, "d14"), ('p', "e16")], Color::White, "-", "-");
+        promotes_while_double_stepping
+            .play_uci(double_move)
+            .unwrap();
+        assert_eq!(
+            promotes_while_double_stepping
+                .board()
+                .piece_at("d16".parse().unwrap()),
+            Some(Piece::new(Color::White, promoted_kind))
+        );
+        assert_eq!(
+            promotes_while_double_stepping.en_passant(),
+            Some("d15".parse().unwrap())
+        );
+        let capture = promotes_while_double_stepping
+            .parse_uci_move("e16d15")
+            .unwrap();
+        assert_eq!(capture.kind, MoveKind::EnPassant);
+        promotes_while_double_stepping.play(capture).unwrap();
+        assert_eq!(
+            promotes_while_double_stepping
+                .board()
+                .piece_at("d16".parse().unwrap()),
+            None
+        );
+    }
+}
+
+#[test]
+fn terachess_promotions_are_immediate_compulsory_and_piece_specific() {
+    let cases = [
+        ('P', "a15", "a15a16q", PieceKind::Queen),
+        ('I', "b15", "b15b16a", PieceKind::Amazon),
+        ('N', "c14", "c14d16f", PieceKind::Buffalo),
+        ('M', "d13", "d13e16f", PieceKind::Buffalo),
+        ('Z', "e13", "e13g16f", PieceKind::Buffalo),
+        ('E', "f15", "f15g16l", PieceKind::Lion),
+        ('W', "g15", "g15g16l", PieceKind::Lion),
+        ('J', "h15", "h15h16l", PieceKind::Lion),
+        ('T', "i15", "i15i16q", PieceKind::Queen),
+    ];
+    for (letter, from, expected_move, promoted_kind) in cases {
+        let mut position = terachess_position(&[(letter, from)], Color::White, "-", "-");
+        let bare_move = expected_move
+            .strip_suffix(promoted_kind.fen_char())
+            .unwrap();
+        assert!(!moves_from(&position, from).contains(&bare_move.to_owned()));
+        position.play_uci(expected_move).unwrap();
+        let to: Square = bare_move[from.len()..].parse().unwrap();
+        assert_eq!(
+            position.board().piece_at(to),
+            Some(Piece::new(Color::White, promoted_kind))
+        );
+    }
+
+    let mut jumping_troll = terachess_position(&[('T', "j13")], Color::White, "-", "-");
+    assert!(moves_from(&jumping_troll, "j13").contains(&"j13j16".to_owned()));
+    assert!(!moves_from(&jumping_troll, "j13").contains(&"j13j16q".to_owned()));
+    jumping_troll.play_uci("j13j16").unwrap();
+    assert_eq!(
+        jumping_troll.board().piece_at("j16".parse().unwrap()),
+        Some(Piece::new(Color::White, PieceKind::Troll))
+    );
+
+    let black = terachess_position(
+        &[('K', "p1"), ('k', "p16"), ('p', "a2")],
+        Color::Black,
+        "-",
+        "-",
+    );
+    assert!(moves_from(&black, "a2").contains(&"a2a1q".to_owned()));
+    assert!(!moves_from(&black, "a2").contains(&"a2a1".to_owned()));
+}
+
+#[test]
+fn every_new_terachess_piece_participates_in_check_detection() {
+    let checks = [
+        ('a', "f7", "h8"),
+        ('l', "f7", "h8"),
+        ('f', "e7", "h8"),
+        ('j', "f7", "h8"),
+        ('s', "h3", "h8"),
+        ('y', "c3", "h8"),
+        ('i', "g7", "h8"),
+        ('d', "e5", "h8"),
+        ('t', "e5", "h8"),
+    ];
+    for (attacker, from, king) in checks {
+        let position = terachess_position(&[('K', king), (attacker, from)], Color::White, "-", "-");
+        assert!(
+            position.is_in_check(Color::White),
+            "{attacker} on {from} should attack {king}"
+        );
+    }
 }
 
 #[test]

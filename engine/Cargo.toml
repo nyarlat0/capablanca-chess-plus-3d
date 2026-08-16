@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 license.workspace = true
-description = "Rules engine for Capablanca-family variants, Grand Chess, Shako Chess, and Pemba"
+description = "Rules engine for Capablanca-family variants, Grand Chess, Shako, Pemba, and Terachess II"
 keywords = ["chess", "capablanca", "gothic", "shako", "engine"]
 categories = ["game-development"]
 

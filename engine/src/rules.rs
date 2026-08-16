@@ -152,6 +152,8 @@ pub enum PromotionRule {
     /// Grand Chess: optional in the last three ranks, mandatory on the last,
     /// and restricted to captured original pieces.
     Grand,
+    /// Terachess II's compulsory, piece-specific last-rank promotions.
+    TerachessII,
 }
 
 /// Immutable rules and initial material for a chess variant.
@@ -163,6 +165,8 @@ pub struct VariantRules {
     pawn_start_ranks: [u8; 2],
     castling: CastlingRules,
     promotion: PromotionRule,
+    rapid_pawns: bool,
+    king_initial_jump: bool,
     initial_material: [[u8; PieceKind::COUNT]; 2],
 }
 
@@ -241,6 +245,8 @@ impl VariantRules {
             PromotionRule::LastRank {
                 choices: PieceKind::PROMOTION_PIECES.to_vec(),
             },
+            false,
+            false,
         )
     }
 
@@ -289,6 +295,8 @@ impl VariantRules {
             [2, 7],
             CastlingRules::none(),
             PromotionRule::Grand,
+            false,
+            false,
         )
         .expect("built-in Grand Chess rules must be valid")
     }
@@ -344,6 +352,8 @@ impl VariantRules {
             PromotionRule::LastRank {
                 choices: PieceKind::SHAKO_PROMOTION_PIECES.to_vec(),
             },
+            false,
+            false,
         )
         .expect("built-in Shako Chess rules must be valid")
     }
@@ -404,8 +414,55 @@ impl VariantRules {
             PromotionRule::LastRank {
                 choices: PieceKind::PEMBA_PROMOTION_PIECES.to_vec(),
             },
+            false,
+            false,
         )
         .expect("built-in Pemba rules must be valid")
+    }
+
+    fn terachess_ii() -> Self {
+        use PieceKind::{Admiral as S, Amazon as A, Archbishop as X, Archer as V};
+        use PieceKind::{Bishop as B, Buffalo as F, Camel as M, Cannon as C};
+        use PieceKind::{Centaur as J, Chancellor as H, Duchess as D, Eagle as G};
+        use PieceKind::{Elephant as E, Giraffe as Z, King as K, Knight as N};
+        use PieceKind::{Lion as L, Machine as W, Missionary as Y, Pawn as P};
+        use PieceKind::{Prince as I, Queen as Q, Rhinoceros as U, Rook as R};
+        use PieceKind::{Sorceress as O, Troll as T};
+
+        let rows = [
+            [S, J, Y, H, X, F, D, O, O, D, F, X, H, Y, J, S],
+            [C, M, Z, T, U, V, L, K, A, L, V, U, T, Z, M, C],
+            [E, R, N, B, W, I, G, Q, Q, G, I, W, B, N, R, E],
+        ];
+        let mut board = Board::empty(BoardSize::TERACHESS);
+        for color in Color::ALL {
+            let (piece_ranks, pawn_rank) = match color {
+                Color::White => ([0, 1, 2], 3),
+                Color::Black => ([15, 14, 13], 12),
+            };
+            for (row, rank) in rows.iter().zip(piece_ranks) {
+                for (file, kind) in row.iter().copied().enumerate() {
+                    board.set_piece_unchecked(
+                        Square::new(file as u8, rank),
+                        Some(Piece::new(color, kind)),
+                    );
+                }
+            }
+            for file in 0..16 {
+                board.set_piece_unchecked(Square::new(file, pawn_rank), Some(Piece::new(color, P)));
+            }
+        }
+
+        Self::from_parts(
+            "Terachess II".to_owned(),
+            board,
+            [3, 12],
+            CastlingRules::none(),
+            PromotionRule::TerachessII,
+            true,
+            true,
+        )
+        .expect("built-in Terachess II rules must be valid")
     }
 
     /// Builds fully custom rules. This is intended for applications that need
@@ -423,6 +480,8 @@ impl VariantRules {
             pawn_start_ranks,
             castling,
             promotion,
+            false,
+            false,
         )
     }
 
@@ -432,6 +491,8 @@ impl VariantRules {
         pawn_start_ranks: [u8; 2],
         castling: CastlingRules,
         promotion: PromotionRule,
+        rapid_pawns: bool,
+        king_initial_jump: bool,
     ) -> Result<Self, RuleError> {
         if name.trim().is_empty() {
             return Err(RuleError::EmptyName);
@@ -474,6 +535,8 @@ impl VariantRules {
             pawn_start_ranks,
             castling,
             promotion,
+            rapid_pawns,
+            king_initial_jump,
             initial_material,
         })
     }
@@ -491,6 +554,26 @@ impl VariantRules {
     #[must_use]
     pub const fn pawn_start_rank(&self, color: Color) -> u8 {
         self.pawn_start_ranks[color.index()]
+    }
+
+    #[must_use]
+    pub(crate) const fn pawn_can_double_from(&self, color: Color, rank: u8) -> bool {
+        self.rapid_pawns || rank == self.pawn_start_rank(color)
+    }
+
+    #[must_use]
+    pub(crate) const fn rapid_pawns(&self) -> bool {
+        self.rapid_pawns
+    }
+
+    #[must_use]
+    pub(crate) const fn king_initial_jump(&self) -> bool {
+        self.king_initial_jump
+    }
+
+    #[must_use]
+    pub(crate) fn initial_king_square(&self, color: Color) -> Option<Square> {
+        self.starting_board.king_square(color)
     }
 
     #[must_use]
@@ -516,20 +599,41 @@ impl VariantRules {
         } else {
             Color::Black
         };
-        if value.eq_ignore_ascii_case(&'c') && self.uses_piece(PieceKind::Cannon) {
+        if matches!(self.promotion, PromotionRule::TerachessII) {
+            let kind = match value.to_ascii_lowercase() {
+                'a' => Some(PieceKind::Amazon),
+                'x' => Some(PieceKind::Archbishop),
+                'h' => Some(PieceKind::Chancellor),
+                'c' => Some(PieceKind::Cannon),
+                'm' => Some(PieceKind::Camel),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                return Some((kind, color));
+            }
+        } else if value.eq_ignore_ascii_case(&'c') && self.uses_piece(PieceKind::Cannon) {
             return Some((PieceKind::Cannon, color));
-        }
-        if value.eq_ignore_ascii_case(&'m') && self.uses_piece(PieceKind::Camel) {
+        } else if value.eq_ignore_ascii_case(&'m') && self.uses_piece(PieceKind::Camel) {
             return Some((PieceKind::Camel, color));
         }
         PieceKind::from_fen_char(value)
     }
 
     pub(crate) fn piece_fen_char(&self, piece: Piece) -> char {
-        let kind = if piece.kind == PieceKind::Chancellor && self.uses_piece(PieceKind::Cannon) {
-            'm'
+        let kind = if matches!(self.promotion, PromotionRule::TerachessII) {
+            match piece.kind {
+                PieceKind::Amazon => 'a',
+                PieceKind::Archbishop => 'x',
+                PieceKind::Chancellor => 'h',
+                PieceKind::Cannon => 'c',
+                PieceKind::Camel => 'm',
+                kind => kind.fen_char(),
+            }
         } else {
-            piece.kind.fen_char()
+            match piece.kind {
+                PieceKind::Chancellor if self.uses_piece(PieceKind::Cannon) => 'm',
+                kind => kind.fen_char(),
+            }
         };
         match piece.color {
             Color::White => kind.to_ascii_uppercase(),
@@ -544,6 +648,7 @@ impl VariantRules {
             || match &self.promotion {
                 PromotionRule::LastRank { choices } => choices.contains(&kind),
                 PromotionRule::Grand => PieceKind::PROMOTION_PIECES.contains(&kind),
+                PromotionRule::TerachessII => terachess_promotion_target(kind).is_some(),
             }
     }
 
@@ -613,6 +718,28 @@ pub(crate) const fn piece_index(kind: PieceKind) -> usize {
         PieceKind::Giraffe => 11,
         PieceKind::Archer => 12,
         PieceKind::Machine => 13,
+        PieceKind::Amazon => 14,
+        PieceKind::Lion => 15,
+        PieceKind::Buffalo => 16,
+        PieceKind::Centaur => 17,
+        PieceKind::Admiral => 18,
+        PieceKind::Missionary => 19,
+        PieceKind::Eagle => 20,
+        PieceKind::Rhinoceros => 21,
+        PieceKind::Prince => 22,
+        PieceKind::Sorceress => 23,
+        PieceKind::Duchess => 24,
+        PieceKind::Troll => 25,
+    }
+}
+
+pub(crate) const fn terachess_promotion_target(kind: PieceKind) -> Option<PieceKind> {
+    match kind {
+        PieceKind::Pawn | PieceKind::Troll => Some(PieceKind::Queen),
+        PieceKind::Prince => Some(PieceKind::Amazon),
+        PieceKind::Knight | PieceKind::Camel | PieceKind::Giraffe => Some(PieceKind::Buffalo),
+        PieceKind::Elephant | PieceKind::Machine | PieceKind::Centaur => Some(PieceKind::Lion),
+        _ => None,
     }
 }
 
@@ -629,10 +756,11 @@ pub enum Variant {
     Grand,
     Shako,
     Pemba,
+    TerachessII,
 }
 
 impl Variant {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Capablanca,
         Self::Gothic,
         Self::Embassy,
@@ -642,6 +770,7 @@ impl Variant {
         Self::Grand,
         Self::Shako,
         Self::Pemba,
+        Self::TerachessII,
     ];
 
     #[must_use]
@@ -683,6 +812,7 @@ impl Variant {
             Self::Grand => return VariantRules::grand(),
             Self::Shako => return VariantRules::shako(),
             Self::Pemba => return VariantRules::pemba(),
+            Self::TerachessII => return VariantRules::terachess_ii(),
         }
         .expect("built-in variant rules must be valid")
     }

@@ -1,6 +1,6 @@
 # Capablanca Chess Plus
 
-A dependency-free Rust rules library for chess on 10-file boards.
+A dependency-free Rust rules library for chess on boards up to 16x16.
 It supports legal move generation, checks and mates, en passant, promotion,
 variant-specific castling, extended FEN, and repetition tracking.
 
@@ -17,6 +17,7 @@ variant-specific castling, extended FEN, and repetition tracking.
 | Grand | 10x10 | Grand Chess array | None |
 | Shako | 10x10 | `C/ERNBQKBNRE/pawns` on three ranks | Orthodox two-square castling from `f2`/`f9` |
 | Pemba | 10x10 | `CMVZWWZVMC/ERNBQKBNRE/pawns` on three ranks | Orthodox two-square castling from `f2`/`f9` |
+| Terachess II | 16x16 | 64 pieces per side on four ranks | None; one-time initial King jump instead |
 
 `A` is the archbishop/cardinal (bishop + knight). `C` is the
 chancellor/marshal (rook + knight). Grand Chess promotion is optional on a
@@ -32,6 +33,13 @@ or cannon.
 Pemba adds `M` camel `(3,1)`, `Z` giraffe `(3,2)`, `V` archer (a diagonal
 cannon), and `W` machine (one- or two-square orthogonal leaper). Its pawns may
 promote to any of its ten non-royal piece types.
+
+Terachess II includes all 26 piece types from its reference rules. Its pawns
+and Princes can double-step from any rank; only pawns capture en passant. The
+variant also implements the bent paths of the Eagle and Rhinoceros, screened
+captures of the Sorceress, compulsory piece-specific promotions, the Troll's
+promotion exception, and the King's one-time two-square jump with intermediate
+threat checks.
 
 ## Library Use
 
@@ -80,7 +88,10 @@ the supplied rules as a Capablanca chancellor or a cannon. Pemba uses `M`, `Z`,
 `V`, and `W` for camel, giraffe, archer, and machine; outside Pemba, `M` remains
 accepted as a marshal/chancellor alias. Coordinate moves support rank 10, for
 example `a9a10q`, the cannon promotion `a9a10c`, or Pemba machine promotion
-`a9a10w`.
+`a9a10w`. Terachess II follows the reference diagram's letters (`X` cardinal,
+`H` marshal, `A` amazon, and the remaining unique letters) and uses `J`/`j` in
+the FEN rights field while White's/Black's initial King jump is still available.
+Coordinates extend through `p16`.
 
 ## Rule References
 
@@ -89,6 +100,7 @@ example `a9a10q`, the cannon promotion `a9a10c`, or Pemba machine promotion
 - [Grand Chess rules licensed from MindSports](https://www.yucata.de/en/Rules/GrandChess)
 - [Shako Chess rules](https://musketeerchess.net/p/games/shako/rules/rules.php)
 - [Pemba rules](https://www.chessvariants.com/rules/pemba)
+- [Terachess II rules](https://www.chessvariants.com/rules/terachess-ii)
 - [Capablanca-family arrays and historical notes](https://mats-winther.github.io/bg/capablanca.htm)
 
 ## License
