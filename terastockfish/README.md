@@ -20,6 +20,8 @@ playing strength; the name describes the intended role and architecture.
 - 21-bit signed TT scores, leaving a safe range for Terachess material and
   distance-to-mate values;
 - repetition, fifty-move, mate, and stalemate terminal handling;
+- reversible make/unmake with incremental position keys and evaluation state;
+- cached king locations in the rules board;
 - depth, node, fixed move-time, clock, infinite, and external stop limits;
 - a deterministic hand-written Terachess evaluation using the published
   relative material scale plus centrality, development, pawn structure,
@@ -89,7 +91,7 @@ The benchmark prints elapsed time, searched nodes, and nodes per second for the
 full Terachess II starting array. It is intentionally dependency-free so the
 same binary can be profiled on the eventual deployment machine.
 
-Future strength work can add incremental make/unmake and Zobrist updates,
-variant-specific piece-square tables, null-move and stronger pruning verified
-for this ruleset, persistent opening data, and an NNUE-style evaluator without
-changing the public position/depth API or the 18x18 TT move format.
+Future strength work can add variant-specific piece-square tables, null-move
+and stronger pruning verified for this ruleset, persistent opening data, and
+an NNUE-style evaluator without changing the public position/depth API or the
+18x18 TT move format.

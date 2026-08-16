@@ -73,6 +73,86 @@ pub struct Position {
     fullmove_number: u32,
 }
 
+const MAX_CHANGED_MOVE_SQUARES: usize = 4;
+
+#[derive(Clone, Copy, Debug)]
+struct SquareSnapshot {
+    square: Square,
+    piece: Option<Piece>,
+}
+
+/// Compact state needed to restore a position after one generated move.
+///
+/// Search engines should keep this value on their recursion stack and pass it
+/// back to [`Position::unmake_move`] after examining the child position.
+#[derive(Clone, Copy, Debug)]
+pub struct PositionUndo {
+    squares: [Option<SquareSnapshot>; MAX_CHANGED_MOVE_SQUARES],
+    castling_rights: CastlingRights,
+    king_jump_rights: [bool; 2],
+    en_passant: Option<Square>,
+    halfmove_clock: u32,
+    fullmove_number: u32,
+    side_to_move: Color,
+}
+
+impl PositionUndo {
+    fn new(position: &Position) -> Self {
+        Self {
+            squares: [None; MAX_CHANGED_MOVE_SQUARES],
+            castling_rights: position.castling_rights,
+            king_jump_rights: position.king_jump_rights,
+            en_passant: position.en_passant,
+            halfmove_clock: position.halfmove_clock,
+            fullmove_number: position.fullmove_number,
+            side_to_move: position.side_to_move,
+        }
+    }
+
+    fn record_square(&mut self, board: &Board, square: Square) {
+        if self
+            .squares
+            .iter()
+            .flatten()
+            .any(|snapshot| snapshot.square == square)
+        {
+            return;
+        }
+        let slot = self
+            .squares
+            .iter_mut()
+            .find(|snapshot| snapshot.is_none())
+            .expect("a move changes at most four board squares");
+        *slot = Some(SquareSnapshot {
+            square,
+            piece: board.piece_at(square),
+        });
+    }
+
+    /// Squares changed by the move, paired with their contents before it.
+    pub fn changed_squares(&self) -> impl Iterator<Item = (Square, Option<Piece>)> + '_ {
+        self.squares
+            .iter()
+            .flatten()
+            .map(|snapshot| (snapshot.square, snapshot.piece))
+    }
+
+    #[must_use]
+    pub const fn previous_castling_rights(&self) -> CastlingRights {
+        self.castling_rights
+    }
+
+    #[must_use]
+    pub const fn previous_king_jump_available(&self, color: Color) -> bool {
+        self.king_jump_rights[color.index()]
+    }
+
+    #[must_use]
+    pub const fn previous_en_passant(&self) -> Option<Square> {
+        self.en_passant
+    }
+}
+
 impl Position {
     pub(crate) fn from_starting_board(rules: Arc<VariantRules>, board: Board) -> Self {
         Self {
@@ -264,7 +344,19 @@ impl Position {
     /// Generates every legal move for the side to move.
     #[must_use]
     pub fn legal_moves(&self) -> Vec<Move> {
+        let mut position = self.clone();
+        position.legal_moves_mut()
+    }
+
+    /// Generates every legal move while reusing this position as temporary
+    /// make/unmake storage. The position is restored before returning.
+    #[must_use]
+    pub fn legal_moves_mut(&mut self) -> Vec<Move> {
         let moving_color = self.side_to_move;
+        let king_square = self
+            .board
+            .king_square(moving_color)
+            .expect("a valid position must contain its moving side's king");
         let mut pseudo = Vec::with_capacity(96);
         for (from, piece) in self.board.pieces() {
             if piece.color == moving_color {
@@ -272,27 +364,32 @@ impl Position {
             }
         }
 
-        pseudo
-            .into_iter()
-            .filter(|chess_move| {
-                let mut next = self.clone();
-                next.apply_unchecked(*chess_move);
-                !next.is_in_check(moving_color)
-            })
-            .collect()
+        let mut legal = Vec::with_capacity(pseudo.len());
+        for chess_move in pseudo {
+            let moving_piece = self
+                .board
+                .piece_at(chess_move.from)
+                .expect("generated move must have a moving piece");
+            let undo = self.make_move_unchecked(chess_move);
+            let king_after = if moving_piece.kind == PieceKind::King {
+                chess_move.to
+            } else {
+                king_square
+            };
+            if !is_square_attacked_on(&self.board, king_after, moving_color.opposite()) {
+                legal.push(chess_move);
+            }
+            self.unmake_move(undo);
+        }
+        legal
     }
 
     /// Counts leaf positions to a fixed depth. This is primarily useful for
     /// validating integrations and move-generation changes.
     #[must_use]
     pub fn perft(&self, depth: u8) -> u64 {
-        if depth == 0 {
-            return 1;
-        }
-        self.legal_moves()
-            .into_iter()
-            .map(|chess_move| self.after_move_unchecked(chess_move).perft(depth - 1))
-            .fold(0, u64::saturating_add)
+        let mut position = self.clone();
+        position.perft_mut(depth)
     }
 
     #[must_use]
@@ -342,10 +439,46 @@ impl Position {
         self.after_move_unchecked(chess_move)
     }
 
+    /// Applies a move previously obtained from [`Self::legal_moves`] and
+    /// returns the compact delta required to restore the exact parent state.
+    /// This avoids cloning a large-board position at every search node.
+    #[must_use]
+    pub fn make_move(&mut self, chess_move: Move) -> PositionUndo {
+        self.make_move_unchecked(chess_move)
+    }
+
+    /// Restores the exact position from before the corresponding
+    /// [`Self::make_move`] call.
+    pub fn unmake_move(&mut self, undo: PositionUndo) {
+        for (square, piece) in undo.changed_squares() {
+            self.board.set_piece_unchecked(square, piece);
+        }
+        self.castling_rights = undo.castling_rights;
+        self.king_jump_rights = undo.king_jump_rights;
+        self.en_passant = undo.en_passant;
+        self.halfmove_clock = undo.halfmove_clock;
+        self.fullmove_number = undo.fullmove_number;
+        self.side_to_move = undo.side_to_move;
+    }
+
     pub(crate) fn after_move_unchecked(&self, chess_move: Move) -> Self {
         let mut next = self.clone();
         next.apply_unchecked(chess_move);
         next
+    }
+
+    fn perft_mut(&mut self, depth: u8) -> u64 {
+        if depth == 0 {
+            return 1;
+        }
+        let moves = self.legal_moves_mut();
+        let mut nodes = 0_u64;
+        for chess_move in moves {
+            let undo = self.make_move_unchecked(chess_move);
+            nodes = nodes.saturating_add(self.perft_mut(depth - 1));
+            self.unmake_move(undo);
+        }
+        nodes
     }
 
     fn generate_piece_moves(&self, from: Square, piece: Piece, moves: &mut Vec<Move>) {
@@ -932,6 +1065,45 @@ impl Position {
             }
             current = current.offset(step, 0).unwrap();
         }
+    }
+
+    fn make_move_unchecked(&mut self, chess_move: Move) -> PositionUndo {
+        let moving_piece = self
+            .board
+            .piece_at(chess_move.from)
+            .expect("unchecked move must have a moving piece");
+        let mut undo = PositionUndo::new(self);
+        match chess_move.kind {
+            MoveKind::Castle(side) => {
+                let route = self
+                    .rules
+                    .castling()
+                    .route(moving_piece.color, side)
+                    .expect("unchecked castling move must have a route");
+                for square in [
+                    route.king_from,
+                    route.rook_from,
+                    route.king_to,
+                    route.rook_to,
+                ] {
+                    undo.record_square(&self.board, square);
+                }
+            }
+            MoveKind::Normal => {
+                undo.record_square(&self.board, chess_move.from);
+                undo.record_square(&self.board, chess_move.to);
+            }
+            MoveKind::EnPassant => {
+                undo.record_square(&self.board, chess_move.from);
+                undo.record_square(&self.board, chess_move.to);
+                undo.record_square(
+                    &self.board,
+                    Square::new(chess_move.to.file(), chess_move.from.rank()),
+                );
+            }
+        }
+        self.apply_unchecked(chess_move);
+        undo
     }
 
     fn apply_unchecked(&mut self, chess_move: Move) {

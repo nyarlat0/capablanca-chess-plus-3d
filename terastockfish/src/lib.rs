@@ -11,6 +11,7 @@ mod capacity;
 mod evaluate;
 mod key;
 mod search;
+mod state;
 mod tt;
 pub mod uci;
 

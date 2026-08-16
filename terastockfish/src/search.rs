@@ -1,6 +1,7 @@
 use crate::capacity::{MAX_BOARD_SQUARES, square_index};
-use crate::evaluate::{evaluate, piece_value};
-use crate::key::{position_key, position_keys, repetition_key};
+use crate::evaluate::piece_value;
+use crate::key::position_key;
+use crate::state::SearchPosition;
 use crate::tt::{Bound, TranspositionTable};
 use capablanca_chess_plus::{Color, Move, MoveKind, Piece, Position, Square};
 use std::cmp::Reverse;
@@ -173,6 +174,7 @@ impl Searcher {
         let start = Instant::now();
         let budget = TimeBudget::new(start, limits);
         let generation = self.table.next_generation();
+        let mut root = SearchPosition::new(position);
         let mut context = SearchContext {
             table: Arc::clone(&self.table),
             control: self.control.clone(),
@@ -183,12 +185,12 @@ impl Searcher {
             threads: self.options.threads,
             history: &mut self.history,
             killers: [[None; 2]; MAX_PLY],
-            repetition: vec![repetition_key(position)],
+            repetition: vec![root.keys().repetition],
         };
 
-        let root_moves = position.legal_moves();
+        let root_moves = root.legal_moves();
         if root_moves.is_empty() {
-            let score = if position.is_in_check(position.side_to_move()) {
+            let score = if root.position().is_in_check(root.position().side_to_move()) {
                 -MATE_SCORE
             } else {
                 0
@@ -206,7 +208,7 @@ impl Searcher {
 
         let max_depth = limits.max_depth.clamp(1, (MAX_PLY - 1) as u8);
         let mut best_move = root_moves.first().copied();
-        let mut best_score = evaluate(position);
+        let mut best_score = root.evaluate();
         let mut completed_depth = 0;
         let mut principal_variation = best_move.into_iter().collect::<Vec<_>>();
         let mut stopped = false;
@@ -234,7 +236,7 @@ impl Searcher {
             };
 
             let iteration = loop {
-                match context.search_root(position, &root_moves, depth, alpha, beta, best_move) {
+                match context.search_root(&mut root, &root_moves, depth, alpha, beta, best_move) {
                     Ok(result) if result.score <= alpha && alpha > -INFINITY => {
                         window = (window * 2).min(INFINITY);
                         alpha = if window == INFINITY {
@@ -313,7 +315,7 @@ struct SearchContext<'a> {
 impl SearchContext<'_> {
     fn search_root(
         &mut self,
-        position: &Position,
+        position: &mut SearchPosition,
         root_moves: &[Move],
         depth: u8,
         mut alpha: i32,
@@ -331,26 +333,34 @@ impl SearchContext<'_> {
             );
         }
         let original_alpha = alpha;
-        let key = position_key(position);
+        let key = position.keys().analysis;
         let tt_move = self.table.probe(key).and_then(|entry| entry.best_move);
         let mut moves = root_moves.to_vec();
-        self.order_moves(position, &mut moves, tt_move.or(previous_best), 0);
+        self.order_moves(
+            position.position(),
+            &mut moves,
+            tt_move.or(previous_best),
+            0,
+        );
         let mut best_move = moves[0];
         let mut best_score = -INFINITY;
 
         for (move_index, chess_move) in moves.into_iter().enumerate() {
             self.check_stop()?;
-            let next = position.after_legal_move(chess_move);
-            let score = if move_index == 0 {
-                -self.negamax(&next, i32::from(depth) - 1, 1, -beta, -alpha)?
-            } else {
-                let mut score =
-                    -self.negamax(&next, i32::from(depth) - 1, 1, -alpha - 1, -alpha)?;
-                if score > alpha && score < beta {
-                    score = -self.negamax(&next, i32::from(depth) - 1, 1, -beta, -alpha)?;
+            let undo = position.make_move(chess_move);
+            let score = (|| {
+                if move_index == 0 {
+                    return Ok(-self.negamax(position, i32::from(depth) - 1, 1, -beta, -alpha)?);
                 }
-                score
-            };
+                let mut score =
+                    -self.negamax(position, i32::from(depth) - 1, 1, -alpha - 1, -alpha)?;
+                if score > alpha && score < beta {
+                    score = -self.negamax(position, i32::from(depth) - 1, 1, -beta, -alpha)?;
+                }
+                Ok::<_, SearchAborted>(score)
+            })();
+            position.unmake_move(undo);
+            let score = score?;
 
             if score > best_score {
                 best_score = score;
@@ -385,7 +395,7 @@ impl SearchContext<'_> {
 
     fn search_root_parallel(
         &mut self,
-        position: &Position,
+        position: &SearchPosition,
         root_moves: &[Move],
         depth: u8,
         alpha: i32,
@@ -393,10 +403,15 @@ impl SearchContext<'_> {
         previous_best: Option<Move>,
     ) -> Result<RootResult, SearchAborted> {
         let original_alpha = alpha;
-        let key = position_key(position);
+        let key = position.keys().analysis;
         let tt_move = self.table.probe(key).and_then(|entry| entry.best_move);
         let mut moves = root_moves.to_vec();
-        self.order_moves(position, &mut moves, tt_move.or(previous_best), 0);
+        self.order_moves(
+            position.position(),
+            &mut moves,
+            tt_move.or(previous_best),
+            0,
+        );
         let worker_count = self.threads.min(moves.len());
         let base_history = self.history.to_vec();
         let base_killers = self.killers;
@@ -417,7 +432,7 @@ impl SearchContext<'_> {
                     .skip(worker_id)
                     .step_by(worker_count)
                     .collect::<Vec<_>>();
-                let position = position.clone();
+                let mut position = position.clone();
                 let table = Arc::clone(&table);
                 let control = control.clone();
                 let nodes = Arc::clone(&nodes);
@@ -439,9 +454,12 @@ impl SearchContext<'_> {
                     let mut scores = Vec::with_capacity(assigned.len());
                     for chess_move in assigned {
                         worker.check_stop()?;
-                        let next = position.after_legal_move(chess_move);
-                        let score =
-                            -worker.negamax(&next, i32::from(depth) - 1, 1, -beta, -alpha)?;
+                        let undo = position.make_move(chess_move);
+                        let score = worker
+                            .negamax(&mut position, i32::from(depth) - 1, 1, -beta, -alpha)
+                            .map(|score| -score);
+                        position.unmake_move(undo);
+                        let score = score?;
                         scores.push((chess_move, score));
                     }
                     Ok::<_, SearchAborted>((scores, worker.killers))
@@ -488,19 +506,19 @@ impl SearchContext<'_> {
 
     fn negamax(
         &mut self,
-        position: &Position,
+        position: &mut SearchPosition,
         mut depth: i32,
         ply: usize,
         mut alpha: i32,
         beta: i32,
     ) -> Result<i32, SearchAborted> {
         self.visit_node()?;
-        let keys = position_keys(position);
-        if position.halfmove_clock() >= 100 || self.is_repetition_key(keys.repetition) {
+        let keys = position.keys();
+        if position.position().halfmove_clock() >= 100 || self.is_repetition_key(keys.repetition) {
             return Ok(0);
         }
         if ply >= MAX_PLY - 1 {
-            return Ok(evaluate(position));
+            return Ok(position.evaluate());
         }
 
         self.repetition.push(keys.repetition);
@@ -512,14 +530,16 @@ impl SearchContext<'_> {
 
     fn negamax_current(
         &mut self,
-        position: &Position,
+        position: &mut SearchPosition,
         key: u64,
         depth: &mut i32,
         ply: usize,
         alpha: &mut i32,
         beta: i32,
     ) -> Result<i32, SearchAborted> {
-        let in_check = position.is_in_check(position.side_to_move());
+        let in_check = position
+            .position()
+            .is_in_check(position.position().side_to_move());
         if in_check && *depth > 0 {
             *depth += 1;
         }
@@ -549,13 +569,13 @@ impl SearchContext<'_> {
             });
         }
 
-        let static_evaluation = evaluate(position);
+        let static_evaluation = position.evaluate();
         if !in_check && *depth == 1 && static_evaluation + 180 <= *alpha {
             return self.quiescence_current(position, ply, *alpha, beta);
         }
 
         self.order_moves(
-            position,
+            position.position(),
             &mut moves,
             tt_entry.and_then(|entry| entry.best_move),
             ply,
@@ -563,27 +583,38 @@ impl SearchContext<'_> {
         let original_alpha = *alpha;
         let mut best_score = -INFINITY;
         let mut best_move = None;
+        let moving_color = position.position().side_to_move();
 
         for (move_index, chess_move) in moves.into_iter().enumerate() {
-            let capture = captured_piece(position, chess_move).is_some();
+            let capture = captured_piece(position.position(), chess_move).is_some();
             let quiet = !capture && chess_move.promotion.is_none();
-            let next = position.after_legal_move(chess_move);
-            let gives_check = next.is_in_check(next.side_to_move());
-            let mut score;
+            let undo = position.make_move(chess_move);
+            let gives_check = position
+                .position()
+                .is_in_check(position.position().side_to_move());
 
-            if move_index == 0 {
-                score = -self.negamax(&next, *depth - 1, ply + 1, -beta, -*alpha)?;
-            } else {
+            let score = (|| {
+                if move_index == 0 {
+                    return Ok(-self.negamax(position, *depth - 1, ply + 1, -beta, -*alpha)?);
+                }
                 let reduction = reduction(*depth, move_index, quiet, in_check, gives_check);
-                score =
-                    -self.negamax(&next, *depth - 1 - reduction, ply + 1, -*alpha - 1, -*alpha)?;
+                let mut score = -self.negamax(
+                    position,
+                    *depth - 1 - reduction,
+                    ply + 1,
+                    -*alpha - 1,
+                    -*alpha,
+                )?;
                 if reduction > 0 && score > *alpha {
-                    score = -self.negamax(&next, *depth - 1, ply + 1, -*alpha - 1, -*alpha)?;
+                    score = -self.negamax(position, *depth - 1, ply + 1, -*alpha - 1, -*alpha)?;
                 }
                 if score > *alpha && score < beta {
-                    score = -self.negamax(&next, *depth - 1, ply + 1, -beta, -*alpha)?;
+                    score = -self.negamax(position, *depth - 1, ply + 1, -beta, -*alpha)?;
                 }
-            }
+                Ok::<_, SearchAborted>(score)
+            })();
+            position.unmake_move(undo);
+            let score = score?;
 
             if score > best_score {
                 best_score = score;
@@ -592,13 +623,13 @@ impl SearchContext<'_> {
             if score > *alpha {
                 *alpha = score;
                 if quiet {
-                    self.reward_history(position.side_to_move(), chess_move, *depth);
+                    self.reward_history(moving_color, chess_move, *depth);
                 }
             }
             if *alpha >= beta {
                 if quiet {
                     self.record_killer(ply, chess_move);
-                    self.reward_history(position.side_to_move(), chess_move, *depth + 2);
+                    self.reward_history(moving_color, chess_move, *depth + 2);
                 }
                 break;
             }
@@ -624,13 +655,15 @@ impl SearchContext<'_> {
 
     fn quiescence_current(
         &mut self,
-        position: &Position,
+        position: &mut SearchPosition,
         ply: usize,
         mut alpha: i32,
         beta: i32,
     ) -> Result<i32, SearchAborted> {
-        let in_check = position.is_in_check(position.side_to_move());
-        let stand_pat = evaluate(position);
+        let in_check = position
+            .position()
+            .is_in_check(position.position().side_to_move());
+        let stand_pat = position.evaluate();
         if !in_check {
             if stand_pat >= beta {
                 return Ok(stand_pat);
@@ -648,21 +681,24 @@ impl SearchContext<'_> {
         }
         if !in_check {
             moves.retain(|chess_move| {
-                captured_piece(position, *chess_move).is_some() || chess_move.promotion.is_some()
+                captured_piece(position.position(), *chess_move).is_some()
+                    || chess_move.promotion.is_some()
             });
         }
-        self.order_moves(position, &mut moves, None, ply);
+        self.order_moves(position.position(), &mut moves, None, ply);
 
         for chess_move in moves {
             if !in_check
-                && let Some(victim) = captured_piece(position, chess_move)
+                && let Some(victim) = captured_piece(position.position(), chess_move)
                 && stand_pat + piece_value(victim.kind) + 180 < alpha
                 && chess_move.promotion.is_none()
             {
                 continue;
             }
-            let next = position.after_legal_move(chess_move);
-            let score = -self.quiescence(&next, ply + 1, -beta, -alpha)?;
+            let undo = position.make_move(chess_move);
+            let child_score = self.quiescence(position, ply + 1, -beta, -alpha);
+            position.unmake_move(undo);
+            let score = -child_score?;
             if score >= beta {
                 return Ok(score);
             }
@@ -673,18 +709,18 @@ impl SearchContext<'_> {
 
     fn quiescence(
         &mut self,
-        position: &Position,
+        position: &mut SearchPosition,
         ply: usize,
         alpha: i32,
         beta: i32,
     ) -> Result<i32, SearchAborted> {
         self.visit_node()?;
-        let repetition = repetition_key(position);
-        if position.halfmove_clock() >= 100 || self.is_repetition_key(repetition) {
+        let repetition = position.keys().repetition;
+        if position.position().halfmove_clock() >= 100 || self.is_repetition_key(repetition) {
             return Ok(0);
         }
         if ply >= MAX_PLY - 1 {
-            return Ok(evaluate(position));
+            return Ok(position.evaluate());
         }
         self.repetition.push(repetition);
         let result = self.quiescence_current(position, ply, alpha, beta);

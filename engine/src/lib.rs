@@ -17,7 +17,7 @@ pub mod types;
 pub use board::{Board, BoardSize};
 pub use game::{DrawReason, Game, GameOutcome};
 pub use mv::{CastleSide, Move, MoveKind};
-pub use position::{FenError, MoveError, Position};
+pub use position::{FenError, MoveError, Position, PositionUndo};
 pub use rules::{
     CastleRoute, CastlingRights, CastlingRules, PromotionRule, RuleError, Variant, VariantRules,
 };

@@ -1,4 +1,4 @@
-use capablanca_chess_plus::{Color, PieceKind, Position, Square};
+use capablanca_chess_plus::{BoardSize, Color, Piece, PieceKind, Position, PositionUndo, Square};
 
 /// Material values are scaled so a Terachess II pawn is 100. Their relative
 /// order follows the values published with the variant, then positional terms
@@ -35,38 +35,89 @@ pub const fn piece_value(kind: PieceKind) -> i32 {
 /// Returns a static score from the side-to-move's point of view.
 #[must_use]
 pub fn evaluate(position: &Position) -> i32 {
-    let size = position.board().size();
-    let mut score = [0_i32; 2];
-    let mut pawn_files = [[0_u8; 18]; 2];
-    let mut bishops = [0_u8; 2];
+    EvalState::from_position(position).score(position)
+}
 
-    for (square, piece) in position.board().pieces() {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct EvalState {
+    piece_score: [i32; 2],
+    pawn_files: [[u8; 18]; 2],
+    bishops: [u8; 2],
+}
+
+impl EvalState {
+    #[must_use]
+    pub fn from_position(position: &Position) -> Self {
+        let mut state = Self {
+            piece_score: [0; 2],
+            pawn_files: [[0; 18]; 2],
+            bishops: [0; 2],
+        };
+        let size = position.board().size();
+        for (square, piece) in position.board().pieces() {
+            state.add_piece(square, piece, size);
+        }
+        state
+    }
+
+    pub fn apply_move(&mut self, position: &Position, undo: &PositionUndo) {
+        let size = position.board().size();
+        for (square, old_piece) in undo.changed_squares() {
+            if let Some(piece) = old_piece {
+                self.remove_piece(square, piece, size);
+            }
+            if let Some(piece) = position.board().piece_at(square) {
+                self.add_piece(square, piece, size);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn score(&self, position: &Position) -> i32 {
+        let size = position.board().size();
+        let mut score = self.piece_score;
+        for color in Color::ALL {
+            let side = color.index();
+            score[side] += pawn_structure(&self.pawn_files[side], usize::from(size.files()));
+            if self.bishops[side] >= 2 {
+                score[side] += 28;
+            }
+            score[side] += king_shelter(position, color);
+        }
+
+        let white_score = score[Color::White.index()] - score[Color::Black.index()];
+        let relative = match position.side_to_move() {
+            Color::White => white_score,
+            Color::Black => -white_score,
+        };
+        relative + 12
+    }
+
+    fn add_piece(&mut self, square: Square, piece: Piece, size: BoardSize) {
         let side = piece.color.index();
-        score[side] += piece_value(piece.kind);
-        score[side] += centrality_bonus(square, size.files(), size.ranks(), piece.kind);
-        score[side] += advancement_bonus(square, size.ranks(), piece.color, piece.kind);
+        self.piece_score[side] += positional_piece_value(square, piece, size);
         if piece.kind == PieceKind::Pawn {
-            pawn_files[side][usize::from(square.file())] += 1;
+            self.pawn_files[side][usize::from(square.file())] += 1;
         } else if piece.kind == PieceKind::Bishop {
-            bishops[side] += 1;
+            self.bishops[side] += 1;
         }
     }
 
-    for color in Color::ALL {
-        let side = color.index();
-        score[side] += pawn_structure(&pawn_files[side], usize::from(size.files()));
-        if bishops[side] >= 2 {
-            score[side] += 28;
+    fn remove_piece(&mut self, square: Square, piece: Piece, size: BoardSize) {
+        let side = piece.color.index();
+        self.piece_score[side] -= positional_piece_value(square, piece, size);
+        if piece.kind == PieceKind::Pawn {
+            self.pawn_files[side][usize::from(square.file())] -= 1;
+        } else if piece.kind == PieceKind::Bishop {
+            self.bishops[side] -= 1;
         }
-        score[side] += king_shelter(position, color);
     }
+}
 
-    let white_score = score[Color::White.index()] - score[Color::Black.index()];
-    let relative = match position.side_to_move() {
-        Color::White => white_score,
-        Color::Black => -white_score,
-    };
-    relative + 12
+fn positional_piece_value(square: Square, piece: Piece, size: BoardSize) -> i32 {
+    piece_value(piece.kind)
+        + centrality_bonus(square, size.files(), size.ranks(), piece.kind)
+        + advancement_bonus(square, size.ranks(), piece.color, piece.kind)
 }
 
 fn centrality_bonus(square: Square, files: u8, ranks: u8, kind: PieceKind) -> i32 {

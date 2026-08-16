@@ -53,6 +53,7 @@ impl BoardSize {
 pub struct Board {
     size: BoardSize,
     squares: [Option<Piece>; STORAGE_SQUARES],
+    king_squares: [Option<Square>; 2],
 }
 
 impl Board {
@@ -61,6 +62,7 @@ impl Board {
         Self {
             size,
             squares: [None; STORAGE_SQUARES],
+            king_squares: [None; 2],
         }
     }
 
@@ -85,28 +87,25 @@ impl Board {
         if !self.size.contains(square) {
             return Err(BoardError::SquareOutsideBoard(square));
         }
-        let old = std::mem::replace(&mut self.squares[square.storage_index()], piece);
-        Ok(old)
+        Ok(self.replace_piece(square, piece))
     }
 
     pub(crate) fn set_piece_unchecked(&mut self, square: Square, piece: Option<Piece>) {
-        self.squares[square.storage_index()] = piece;
+        self.replace_piece(square, piece);
     }
 
     pub fn pieces(&self) -> impl Iterator<Item = (Square, Piece)> + '_ {
         (0..self.size.ranks()).flat_map(move |rank| {
             (0..self.size.files()).filter_map(move |file| {
                 let square = Square::new(file, rank);
-                self.piece_at(square).map(|piece| (square, piece))
+                self.squares[square.storage_index()].map(|piece| (square, piece))
             })
         })
     }
 
     #[must_use]
     pub fn king_square(&self, color: Color) -> Option<Square> {
-        self.pieces()
-            .find(|(_, piece)| piece.color == color && piece.kind == PieceKind::King)
-            .map(|(square, _)| square)
+        self.king_squares[color.index()]
     }
 
     #[must_use]
@@ -114,6 +113,23 @@ impl Board {
         self.pieces()
             .filter(|(_, piece)| piece.color == color && piece.kind == kind)
             .count()
+    }
+
+    fn replace_piece(&mut self, square: Square, piece: Option<Piece>) -> Option<Piece> {
+        let index = square.storage_index();
+        let old = std::mem::replace(&mut self.squares[index], piece);
+        if let Some(old) = old
+            && old.kind == PieceKind::King
+            && self.king_squares[old.color.index()] == Some(square)
+        {
+            self.king_squares[old.color.index()] = None;
+        }
+        if let Some(piece) = piece
+            && piece.kind == PieceKind::King
+        {
+            self.king_squares[piece.color.index()] = Some(square);
+        }
+        old
     }
 }
 

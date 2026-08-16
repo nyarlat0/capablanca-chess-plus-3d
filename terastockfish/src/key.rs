@@ -1,5 +1,5 @@
 use crate::capacity::square_index;
-use capablanca_chess_plus::{CastleSide, Color, Position};
+use capablanca_chess_plus::{CastleSide, Color, Piece, Position, PositionUndo, Square};
 
 const KEY_SEED: u64 = 0x5445_5241_5354_4f43;
 
@@ -8,11 +8,6 @@ const KEY_SEED: u64 = 0x5445_5241_5354_4f43;
 #[must_use]
 pub fn position_key(position: &Position) -> u64 {
     position_keys(position).analysis
-}
-
-#[must_use]
-pub(crate) fn repetition_key(position: &Position) -> u64 {
-    position_keys(position).repetition
 }
 
 #[derive(Clone, Copy)]
@@ -28,8 +23,46 @@ pub(crate) fn position_keys(position: &Position) -> PositionKeys {
     let repetition = state_key(position);
     PositionKeys {
         repetition,
-        analysis: repetition
-            ^ mix64(KEY_SEED ^ 0x5000_0000 ^ u64::from(position.halfmove_clock().min(100))),
+        analysis: repetition ^ halfmove_component(position.halfmove_clock()),
+    }
+}
+
+#[must_use]
+pub(crate) fn position_keys_after_move(
+    position: &Position,
+    previous: PositionKeys,
+    undo: &PositionUndo,
+) -> PositionKeys {
+    let mut repetition = previous.repetition ^ side_component();
+    for (square, old_piece) in undo.changed_squares() {
+        if let Some(piece) = old_piece {
+            repetition ^= piece_component(square, piece);
+        }
+        if let Some(piece) = position.board().piece_at(square) {
+            repetition ^= piece_component(square, piece);
+        }
+    }
+    for color in Color::ALL {
+        for side in CastleSide::ALL {
+            if undo.previous_castling_rights().has(color, side)
+                != position.castling_rights().has(color, side)
+            {
+                repetition ^= castling_component(color, side);
+            }
+        }
+        if undo.previous_king_jump_available(color) != position.king_jump_available(color) {
+            repetition ^= king_jump_component(color);
+        }
+    }
+    if let Some(square) = undo.previous_en_passant() {
+        repetition ^= en_passant_component(square);
+    }
+    if let Some(square) = position.en_passant() {
+        repetition ^= en_passant_component(square);
+    }
+    PositionKeys {
+        repetition,
+        analysis: repetition ^ halfmove_component(position.halfmove_clock()),
     }
 }
 
@@ -39,30 +72,54 @@ fn state_key(position: &Position) -> u64 {
             ^ u64::from(position.board().size().files())
             ^ (u64::from(position.board().size().ranks()) << 8),
     );
+    for byte in position.rules().name().bytes() {
+        key = mix64(key ^ u64::from(byte));
+    }
     for (square, piece) in position.board().pieces() {
-        let piece_id = piece.kind.index() as u64 | ((piece.color.index() as u64) << 6);
-        key ^= mix64(KEY_SEED ^ square_index(square) as u64 ^ (piece_id << 16));
+        key ^= piece_component(square, piece);
     }
     if position.side_to_move() == Color::Black {
-        key ^= mix64(KEY_SEED ^ 0x1000_0000);
+        key ^= side_component();
     }
     for color in Color::ALL {
         for side in CastleSide::ALL {
             if position.castling_rights().has(color, side) {
-                key ^= mix64(KEY_SEED ^ 0x2000_0000 ^ ((color.index() * 2 + side.index()) as u64));
+                key ^= castling_component(color, side);
             }
         }
         if position.king_jump_available(color) {
-            key ^= mix64(KEY_SEED ^ 0x3000_0000 ^ color.index() as u64);
+            key ^= king_jump_component(color);
         }
     }
     if let Some(square) = position.en_passant() {
-        key ^= mix64(KEY_SEED ^ 0x4000_0000 ^ square_index(square) as u64);
-    }
-    for byte in position.rules().name().bytes() {
-        key = mix64(key ^ u64::from(byte));
+        key ^= en_passant_component(square);
     }
     key
+}
+
+fn piece_component(square: Square, piece: Piece) -> u64 {
+    let piece_id = piece.kind.index() as u64 | ((piece.color.index() as u64) << 6);
+    mix64(KEY_SEED ^ square_index(square) as u64 ^ (piece_id << 16))
+}
+
+fn side_component() -> u64 {
+    mix64(KEY_SEED ^ 0x1000_0000)
+}
+
+fn castling_component(color: Color, side: CastleSide) -> u64 {
+    mix64(KEY_SEED ^ 0x2000_0000 ^ ((color.index() * 2 + side.index()) as u64))
+}
+
+fn king_jump_component(color: Color) -> u64 {
+    mix64(KEY_SEED ^ 0x3000_0000 ^ color.index() as u64)
+}
+
+fn en_passant_component(square: Square) -> u64 {
+    mix64(KEY_SEED ^ 0x4000_0000 ^ square_index(square) as u64)
+}
+
+fn halfmove_component(halfmove_clock: u32) -> u64 {
+    mix64(KEY_SEED ^ 0x5000_0000 ^ u64::from(halfmove_clock.min(100)))
 }
 
 #[must_use]
