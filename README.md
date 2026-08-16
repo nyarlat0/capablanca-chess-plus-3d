@@ -3,6 +3,8 @@
 A 3D chess application for Gothic, Embassy, Grand, Shako Chess, and Pemba, written in
 Rust with Bevy 0.19. It runs as a native desktop application or as a WebAssembly
 frontend in the browser, with Local, Fairy-Stockfish, and online multiplayer modes.
+The rules workspace additionally contains engine-only Terachess II support and a
+dedicated native analyser for its 16x16 board.
 
 The project is under active development. The rules engine and multiplayer server
 validate moves independently from the presentation layer; the Bevy frontend is
@@ -45,6 +47,7 @@ archers, and orthogonal one-or-two-square machines.
 | Path | Purpose |
 | --- | --- |
 | [`engine`](engine/) | Dependency-free rules, game state, move generation, and FEN. |
+| [`terastockfish`](terastockfish/) | Native UCI/Rust analysis engine for Terachess II, with 18x18-capable search storage. |
 | [`bevy-front`](bevy-front/) | Bevy desktop/WASM client, rendering, UI, animation, audio, Fairy-Stockfish integration, and multiplayer client. |
 | [`multiplayer-protocol`](multiplayer-protocol/) | Shared versioned WebSocket message types. |
 | [`backend`](backend/) | Actix WebSocket server with authoritative validation and PostgreSQL persistence. |

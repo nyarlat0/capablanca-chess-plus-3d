@@ -5875,6 +5875,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "terastockfish"
+version = "0.1.0"
+dependencies = [
+ "capablanca-engine",
+]
+
+[[package]]
 name = "termcolor"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,7 +1,7 @@
 use crate::{Color, Piece, PieceKind, Square};
 use std::fmt;
 
-const STORAGE_FILES: usize = 16;
+const STORAGE_FILES: usize = 18;
 const STORAGE_SQUARES: usize = STORAGE_FILES * STORAGE_FILES;
 
 /// Rectangular board dimensions supported by the engine.
@@ -26,7 +26,7 @@ impl BoardSize {
     };
 
     pub fn new(files: u8, ranks: u8) -> Result<Self, BoardError> {
-        if files == 0 || ranks == 0 || files > 16 || ranks > 16 {
+        if files == 0 || ranks == 0 || files > 18 || ranks > 18 {
             return Err(BoardError::InvalidSize { files, ranks });
         }
         Ok(Self { files, ranks })
@@ -135,3 +135,19 @@ impl fmt::Display for BoardError {
 }
 
 impl std::error::Error for BoardError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_supports_the_full_future_eighteen_by_eighteen_capacity() {
+        let size = BoardSize::new(18, 18).unwrap();
+        let mut board = Board::empty(size);
+        let corner: Square = "r18".parse().unwrap();
+        let piece = Piece::new(Color::White, PieceKind::Amazon);
+        assert_eq!(board.set_piece(corner, Some(piece)).unwrap(), None);
+        assert_eq!(board.piece_at(corner), Some(piece));
+        assert_eq!(board.pieces().count(), 1);
+    }
+}

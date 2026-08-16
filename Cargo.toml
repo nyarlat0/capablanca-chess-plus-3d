@@ -5,6 +5,7 @@ members = [
     "bevy-front",
     "engine",
     "multiplayer-protocol",
+    "terastockfish",
 ]
 
 [workspace.dependencies]

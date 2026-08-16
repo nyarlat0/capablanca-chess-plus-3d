@@ -89,7 +89,76 @@ pub enum PieceKind {
 }
 
 impl PieceKind {
-    pub(crate) const COUNT: usize = 26;
+    pub const COUNT: usize = 26;
+    pub const ALL: [Self; Self::COUNT] = [
+        Self::Pawn,
+        Self::Knight,
+        Self::Bishop,
+        Self::Rook,
+        Self::Queen,
+        Self::King,
+        Self::Archbishop,
+        Self::Chancellor,
+        Self::Cannon,
+        Self::Elephant,
+        Self::Camel,
+        Self::Giraffe,
+        Self::Archer,
+        Self::Machine,
+        Self::Amazon,
+        Self::Lion,
+        Self::Buffalo,
+        Self::Centaur,
+        Self::Admiral,
+        Self::Missionary,
+        Self::Eagle,
+        Self::Rhinoceros,
+        Self::Prince,
+        Self::Sorceress,
+        Self::Duchess,
+        Self::Troll,
+    ];
+
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Pawn => 0,
+            Self::Knight => 1,
+            Self::Bishop => 2,
+            Self::Rook => 3,
+            Self::Queen => 4,
+            Self::King => 5,
+            Self::Archbishop => 6,
+            Self::Chancellor => 7,
+            Self::Cannon => 8,
+            Self::Elephant => 9,
+            Self::Camel => 10,
+            Self::Giraffe => 11,
+            Self::Archer => 12,
+            Self::Machine => 13,
+            Self::Amazon => 14,
+            Self::Lion => 15,
+            Self::Buffalo => 16,
+            Self::Centaur => 17,
+            Self::Admiral => 18,
+            Self::Missionary => 19,
+            Self::Eagle => 20,
+            Self::Rhinoceros => 21,
+            Self::Prince => 22,
+            Self::Sorceress => 23,
+            Self::Duchess => 24,
+            Self::Troll => 25,
+        }
+    }
+
+    #[must_use]
+    pub const fn from_index(index: usize) -> Option<Self> {
+        if index < Self::COUNT {
+            Some(Self::ALL[index])
+        } else {
+            None
+        }
+    }
 
     pub const PROMOTION_PIECES: [Self; 6] = [
         Self::Queen,
@@ -244,7 +313,7 @@ impl Square {
 
     #[must_use]
     pub(crate) const fn storage_index(self) -> usize {
-        self.rank as usize * 16 + self.file as usize
+        self.rank as usize * 18 + self.file as usize
     }
 
     #[must_use]
@@ -276,13 +345,13 @@ impl FromStr for Square {
         }
 
         let file = bytes[0].to_ascii_lowercase();
-        if !(b'a'..=b'p').contains(&file) {
+        if !(b'a'..=b'r').contains(&file) {
             return Err(ParseSquareError(value.to_owned()));
         }
         let rank = value[1..]
             .parse::<u8>()
             .ok()
-            .filter(|rank| (1..=16).contains(rank))
+            .filter(|rank| (1..=18).contains(rank))
             .ok_or_else(|| ParseSquareError(value.to_owned()))?;
 
         Ok(Self::new(file - b'a', rank - 1))
@@ -305,8 +374,8 @@ mod tests {
     use super::Square;
 
     #[test]
-    fn square_round_trip_supports_sixteen_by_sixteen_boards() {
-        for value in ["a1", "j8", "e10", "p16"] {
+    fn square_round_trip_supports_eighteen_by_eighteen_boards() {
+        for value in ["a1", "j8", "e10", "p16", "r18"] {
             let square: Square = value.parse().unwrap();
             assert_eq!(square.to_string(), value);
         }

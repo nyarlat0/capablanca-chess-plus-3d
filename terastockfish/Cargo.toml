@@ -1,0 +1,25 @@
+[package]
+name = "terastockfish"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license.workspace = true
+description = "UCI analysis engine for Terachess II and future large-board chess variants"
+keywords = ["chess", "terachess", "engine", "uci", "analysis"]
+categories = ["game-development", "command-line-utilities"]
+
+[dependencies]
+capablanca-engine = { path = "../engine" }
+
+[lib]
+name = "terastockfish"
+path = "src/lib.rs"
+
+[[bin]]
+name = "terastockfish"
+path = "src/main.rs"
+
+[[bench]]
+name = "search"
+harness = false
+

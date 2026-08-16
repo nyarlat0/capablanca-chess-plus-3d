@@ -334,6 +334,14 @@ impl Position {
         Ok(next)
     }
 
+    /// Applies a move previously obtained from [`Self::legal_moves`] without
+    /// regenerating that list. Search engines can use this to avoid validating
+    /// the same move twice. Passing any other move is a logic error.
+    #[must_use]
+    pub fn after_legal_move(&self, chess_move: Move) -> Self {
+        self.after_move_unchecked(chess_move)
+    }
+
     pub(crate) fn after_move_unchecked(&self, chess_move: Move) -> Self {
         let mut next = self.clone();
         next.apply_unchecked(chess_move);

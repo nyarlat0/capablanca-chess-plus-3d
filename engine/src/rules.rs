@@ -703,34 +703,7 @@ fn exactly_one_file(back_rank: &[PieceKind; 10], kind: PieceKind) -> Result<u8, 
 }
 
 pub(crate) const fn piece_index(kind: PieceKind) -> usize {
-    match kind {
-        PieceKind::Pawn => 0,
-        PieceKind::Knight => 1,
-        PieceKind::Bishop => 2,
-        PieceKind::Rook => 3,
-        PieceKind::Queen => 4,
-        PieceKind::King => 5,
-        PieceKind::Archbishop => 6,
-        PieceKind::Chancellor => 7,
-        PieceKind::Cannon => 8,
-        PieceKind::Elephant => 9,
-        PieceKind::Camel => 10,
-        PieceKind::Giraffe => 11,
-        PieceKind::Archer => 12,
-        PieceKind::Machine => 13,
-        PieceKind::Amazon => 14,
-        PieceKind::Lion => 15,
-        PieceKind::Buffalo => 16,
-        PieceKind::Centaur => 17,
-        PieceKind::Admiral => 18,
-        PieceKind::Missionary => 19,
-        PieceKind::Eagle => 20,
-        PieceKind::Rhinoceros => 21,
-        PieceKind::Prince => 22,
-        PieceKind::Sorceress => 23,
-        PieceKind::Duchess => 24,
-        PieceKind::Troll => 25,
-    }
+    kind.index()
 }
 
 pub(crate) const fn terachess_promotion_target(kind: PieceKind) -> Option<PieceKind> {
