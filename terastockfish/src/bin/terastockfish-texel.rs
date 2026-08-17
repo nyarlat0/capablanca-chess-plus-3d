@@ -1,11 +1,13 @@
 use capablanca_chess_plus::{
     Color, Game, GameOutcome, Move, MoveKind, PieceKind, Position, Variant,
 };
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
+use terastockfish::profile::{MaterialProfile, parse_piece_kind, piece_name};
 use terastockfish::texel::{
     MaterialFit, MaterialIntervals, MaterialSample, TUNED_PIECES, TexelOptions, bootstrap_material,
     fit_material,
@@ -47,8 +49,17 @@ struct Options {
     validation_nodes: u64,
     validation_maximum_plies: u16,
     seed: u64,
+    validation_seed: Option<u64>,
     dataset_path: PathBuf,
     checkpoint_path: PathBuf,
+    input_dataset_paths: Vec<PathBuf>,
+    profile_output_path: Option<PathBuf>,
+    profile_name: String,
+    diagnostics_output_path: Option<PathBuf>,
+    fit_only: bool,
+    fit_restarts: u16,
+    cross_validation_splits: u16,
+    regularization_sweep: Vec<f64>,
     resume: bool,
     texel: TexelOptions,
 }
@@ -75,8 +86,17 @@ impl Options {
             validation_nodes: 50_000,
             validation_maximum_plies: 300,
             seed: 0x4f56_4552_4e49_4748,
+            validation_seed: None,
             dataset_path: PathBuf::from("target/terastockfish-texel.csv"),
             checkpoint_path: PathBuf::from("target/terastockfish-texel.chk"),
+            input_dataset_paths: Vec::new(),
+            profile_output_path: None,
+            profile_name: "texel-candidate".to_owned(),
+            diagnostics_output_path: None,
+            fit_only: false,
+            fit_restarts: 1,
+            cross_validation_splits: 0,
+            regularization_sweep: Vec::new(),
             resume: false,
             texel: TexelOptions::default(),
         };
@@ -220,6 +240,38 @@ impl Dataset {
             return Err("dataset header is incomplete".to_owned());
         }
         Ok(dataset)
+    }
+
+    fn merge(datasets: &[Self]) -> Result<Self, String> {
+        if datasets.is_empty() {
+            return Err("at least one input dataset is required".to_owned());
+        }
+        let mut merged = Self::new();
+        let mut next_game_id = 0_u64;
+        for dataset in datasets {
+            merged.completed_pairs = merged
+                .completed_pairs
+                .checked_add(dataset.completed_pairs)
+                .ok_or_else(|| "merged pair count overflow".to_owned())?;
+            merged.collection_seconds += dataset.collection_seconds;
+            let mut remapped = BTreeMap::<u64, u64>::new();
+            for sample in &dataset.samples {
+                let game_id = if let Some(game_id) = remapped.get(&sample.game_id) {
+                    *game_id
+                } else {
+                    let game_id = next_game_id;
+                    next_game_id = next_game_id
+                        .checked_add(1)
+                        .ok_or_else(|| "merged game id overflow".to_owned())?;
+                    remapped.insert(sample.game_id, game_id);
+                    game_id
+                };
+                let mut sample = sample.clone();
+                sample.game_id = game_id;
+                merged.samples.push(sample);
+            }
+        }
+        Ok(merged)
     }
 }
 
@@ -388,6 +440,15 @@ struct TrainingGame {
     samples: Vec<MaterialSample>,
 }
 
+struct DiagnosticFit {
+    kind: &'static str,
+    index: usize,
+    split_seed: u64,
+    optimizer_seed: u64,
+    regularization: f64,
+    fit: MaterialFit,
+}
+
 fn run() -> Result<(), String> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     if arguments
@@ -407,13 +468,36 @@ fn run() -> Result<(), String> {
         let state = RunState::decode(&read_file(&options.checkpoint_path, "checkpoint")?)?;
         (dataset, state)
     } else {
-        if options.dataset_path.exists() || options.checkpoint_path.exists() {
+        if options.dataset_path.exists()
+            || options.checkpoint_path.exists()
+            || options
+                .profile_output_path
+                .as_ref()
+                .is_some_and(|path| path.exists())
+            || options
+                .diagnostics_output_path
+                .as_ref()
+                .is_some_and(|path| path.exists())
+        {
             return Err(
-                "dataset or checkpoint already exists; use --resume or another path".to_owned(),
+                "dataset, checkpoint, profile, or diagnostics output already exists; use --resume or another path"
+                    .to_owned(),
             );
         }
-        let dataset = Dataset::new();
-        let state = RunState::new(options.seed);
+        let dataset = if options.input_dataset_paths.is_empty() {
+            Dataset::new()
+        } else {
+            let inputs = options
+                .input_dataset_paths
+                .iter()
+                .map(|path| Dataset::decode(&read_file(path, "input dataset")?))
+                .collect::<Result<Vec<_>, _>>()?;
+            Dataset::merge(&inputs)?
+        };
+        let mut state = RunState::new(options.seed);
+        if !options.input_dataset_paths.is_empty() {
+            state.stage = Stage::Fit;
+        }
         write_atomic(&options.dataset_path, &dataset.encode())?;
         write_atomic(&options.checkpoint_path, &state.encode())?;
         (dataset, state)
@@ -422,13 +506,18 @@ fn run() -> Result<(), String> {
 
     println!("# method=Texel+paired-self-play anchor=pawn:100 king:0");
     println!(
-        "# stage={} training_pairs={}/{} samples={} jobs={} training_nodes={} total_budget_hours={:.2}",
+        "# stage={} dataset_pairs={} training_pair_target={} input_datasets={} samples={} jobs={} training_nodes={} fit_only={} split_seed={} optimizer_seed={} bootstrap_seed={} total_budget_hours={:.2}",
         state.stage.name(),
         dataset.completed_pairs,
         options.training_pairs,
+        options.input_dataset_paths.len(),
         dataset.samples.len(),
         options.jobs,
         options.training_nodes,
+        options.fit_only,
+        options.texel.split_seed,
+        options.texel.optimizer_seed,
+        options.texel.bootstrap_seed,
         options.total_budget.as_secs_f64() / 3600.0
     );
 
@@ -442,6 +531,13 @@ fn run() -> Result<(), String> {
         validate_fit(&options, &mut state)?;
     }
     print_report(&options, &dataset, &state);
+    if let Some(path) = &options.profile_output_path {
+        write_atomic(
+            path,
+            &MaterialProfile::new(options.profile_name.clone(), state.fitted).encode(),
+        )?;
+        println!("profile_output={}", path.display());
+    }
     Ok(())
 }
 
@@ -674,11 +770,186 @@ fn fit_dataset(options: &Options, dataset: &Dataset, state: &mut RunState) -> Re
     let started = Instant::now();
     eprintln!("fitting {} positions...", dataset.samples.len());
     let fit = fit_material(&dataset.samples, options.texel);
+    let diagnostics = fit_diagnostics(options, &dataset.samples, &fit);
+    if let Some(path) = &options.diagnostics_output_path {
+        write_atomic(path, &encode_diagnostics(options, &diagnostics))?;
+        eprintln!("fit diagnostics written to {}", path.display());
+    }
     let intervals = bootstrap_material(&dataset.samples, &fit, options.texel);
     store_fit(state, &fit, &intervals);
     state.total_seconds += started.elapsed().as_secs_f64();
-    state.stage = Stage::Validate;
+    state.stage = if options.fit_only {
+        Stage::Complete
+    } else {
+        Stage::Validate
+    };
     write_atomic(&options.checkpoint_path, &state.encode())
+}
+
+fn fit_diagnostics(
+    options: &Options,
+    samples: &[MaterialSample],
+    primary: &MaterialFit,
+) -> Vec<DiagnosticFit> {
+    let mut diagnostics = vec![DiagnosticFit {
+        kind: "restart",
+        index: 0,
+        split_seed: options.texel.split_seed,
+        optimizer_seed: options.texel.optimizer_seed,
+        regularization: options.texel.regularization,
+        fit: primary.clone(),
+    }];
+    for index in 1..usize::from(options.fit_restarts) {
+        let optimizer_seed =
+            options.texel.optimizer_seed ^ (index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        let fit = fit_material(
+            samples,
+            TexelOptions {
+                optimizer_seed,
+                ..options.texel
+            },
+        );
+        diagnostics.push(DiagnosticFit {
+            kind: "restart",
+            index,
+            split_seed: options.texel.split_seed,
+            optimizer_seed,
+            regularization: options.texel.regularization,
+            fit,
+        });
+    }
+    for (index, &regularization) in options.regularization_sweep.iter().enumerate() {
+        let fit = if regularization == options.texel.regularization {
+            primary.clone()
+        } else {
+            fit_material(
+                samples,
+                TexelOptions {
+                    regularization,
+                    ..options.texel
+                },
+            )
+        };
+        diagnostics.push(DiagnosticFit {
+            kind: "regularization",
+            index,
+            split_seed: options.texel.split_seed,
+            optimizer_seed: options.texel.optimizer_seed,
+            regularization,
+            fit,
+        });
+    }
+    for split_index in 0..usize::from(options.cross_validation_splits) {
+        let split_seed =
+            options.texel.split_seed ^ (split_index as u64 + 1).wrapping_mul(0xd1b5_4a32_d192_ed03);
+        for (regularization_index, &regularization) in
+            options.regularization_sweep.iter().enumerate()
+        {
+            let fit = fit_material(
+                samples,
+                TexelOptions {
+                    split_seed,
+                    regularization,
+                    ..options.texel
+                },
+            );
+            diagnostics.push(DiagnosticFit {
+                kind: "cross_validation",
+                index: split_index * options.regularization_sweep.len() + regularization_index,
+                split_seed,
+                optimizer_seed: options.texel.optimizer_seed,
+                regularization,
+                fit,
+            });
+        }
+    }
+    diagnostics
+}
+
+fn encode_diagnostics(options: &Options, diagnostics: &[DiagnosticFit]) -> String {
+    let mut output = format!(
+        "# TERASTOCKFISH_TEXEL_DIAGNOSTICS_V1\n# split_seed={} bootstrap_seed={} fit_epochs={} bootstrap_epochs={} bootstrap_replicates={}\n",
+        options.texel.split_seed,
+        options.texel.bootstrap_seed,
+        options.texel.epochs,
+        options.texel.bootstrap_epochs,
+        options.texel.bootstrap_replicates
+    );
+    output.push_str(
+        "kind,index,split_seed,optimizer_seed,regularization,train_loss,holdout_loss,logistic_scale",
+    );
+    for kind in TUNED_PIECES {
+        output.push(',');
+        output.push_str(piece_name(kind));
+    }
+    output.push('\n');
+    for diagnostic in diagnostics {
+        output.push_str(&format!(
+            "{},{},{},{},{:.8},{:.12},{:.12},{:.12}",
+            diagnostic.kind,
+            diagnostic.index,
+            diagnostic.split_seed,
+            diagnostic.optimizer_seed,
+            diagnostic.regularization,
+            diagnostic.fit.fitted_train_loss,
+            diagnostic.fit.fitted_holdout_loss,
+            diagnostic.fit.logistic_scale
+        ));
+        for kind in TUNED_PIECES {
+            output.push_str(&format!(
+                ",{}",
+                diagnostic.fit.parameters.material_value(kind)
+            ));
+        }
+        output.push('\n');
+    }
+    output
+        .push_str("regularization,cv_splits,mean_holdout_loss,min_holdout_loss,max_holdout_loss\n");
+    for &regularization in &options.regularization_sweep {
+        let losses = diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.kind == "cross_validation" && diagnostic.regularization == regularization
+            })
+            .map(|diagnostic| diagnostic.fit.fitted_holdout_loss)
+            .collect::<Vec<_>>();
+        if !losses.is_empty() {
+            let mean = losses.iter().sum::<f64>() / losses.len() as f64;
+            let minimum = losses.iter().copied().fold(f64::INFINITY, f64::min);
+            let maximum = losses.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            output.push_str(&format!(
+                "{regularization:.8},{},{mean:.12},{minimum:.12},{maximum:.12}\n",
+                losses.len()
+            ));
+        }
+    }
+    output.push_str("piece,restart_min,restart_max,restart_span,sweep_min,sweep_max,sweep_span\n");
+    for piece in TUNED_PIECES {
+        let range = |kind: &str| {
+            diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.kind == kind)
+                .map(|diagnostic| diagnostic.fit.parameters.material_value(piece))
+                .fold(None, |range, value| match range {
+                    None => Some((value, value)),
+                    Some((minimum, maximum)) => Some((minimum.min(value), maximum.max(value))),
+                })
+        };
+        let (restart_minimum, restart_maximum) = range("restart").unwrap_or((0, 0));
+        let (sweep_minimum, sweep_maximum) =
+            range("regularization").unwrap_or((restart_minimum, restart_maximum));
+        output.push_str(&format!(
+            "{},{},{},{},{},{},{}\n",
+            piece_name(piece),
+            restart_minimum,
+            restart_maximum,
+            restart_maximum - restart_minimum,
+            sweep_minimum,
+            sweep_maximum,
+            sweep_maximum - sweep_minimum
+        ));
+    }
+    output
 }
 
 fn store_fit(state: &mut RunState, fit: &MaterialFit, intervals: &MaterialIntervals) {
@@ -717,7 +988,10 @@ fn validate_fit(options: &Options, state: &mut RunState) -> Result<(), String> {
                 jobs: options.jobs,
                 adjudication_score: options.adjudication_score,
                 adjudication_plies: options.adjudication_plies,
-                seed: options.seed ^ u64::from(completed + 1).wrapping_mul(0xe703_7ed1_a0b4_28db),
+                seed: options
+                    .validation_seed
+                    .unwrap_or(options.seed ^ 0x5641_4c49_4441_5445)
+                    ^ u64::from(completed + 1).wrapping_mul(0xe703_7ed1_a0b4_28db),
             },
         )
         .map_err(|error| error.to_string())?;
@@ -912,8 +1186,12 @@ fn parse_options(arguments: &[String], options: &mut Options) -> Result<(), Stri
     let mut cursor = 0;
     while cursor < arguments.len() {
         let argument = arguments[cursor].as_str();
-        if argument == "--resume" {
-            options.resume = true;
+        if matches!(argument, "--resume" | "--fit-only") {
+            if argument == "--resume" {
+                options.resume = true;
+            } else {
+                options.fit_only = true;
+            }
             cursor += 1;
             continue;
         }
@@ -930,11 +1208,34 @@ fn parse_options(arguments: &[String], options: &mut Options) -> Result<(), Stri
             "--validation-min-pairs" => options.validation_minimum_pairs = parse(value, argument)?,
             "--validation-max-pairs" => options.validation_maximum_pairs = parse(value, argument)?,
             "--validation-nodes" => options.validation_nodes = parse(value, argument)?,
+            "--validation-seed" => options.validation_seed = Some(parse_seed(value)?),
             "--collection-hours" => options.collection_budget = parse_hours(value, argument)?,
             "--total-hours" => options.total_budget = parse_hours(value, argument)?,
             "--seed" => options.seed = parse_seed(value)?,
             "--dataset" => options.dataset_path = PathBuf::from(value),
             "--checkpoint" => options.checkpoint_path = PathBuf::from(value),
+            "--input-dataset" => options.input_dataset_paths.push(PathBuf::from(value)),
+            "--profile-output" => options.profile_output_path = Some(PathBuf::from(value)),
+            "--profile-name" => options.profile_name = value.clone(),
+            "--diagnostics-output" => {
+                options.diagnostics_output_path = Some(PathBuf::from(value));
+            }
+            "--fit-restarts" => options.fit_restarts = parse(value, argument)?,
+            "--cross-validation-splits" => {
+                options.cross_validation_splits = parse(value, argument)?;
+            }
+            "--fit-epochs" => options.texel.epochs = parse(value, argument)?,
+            "--bootstrap-epochs" => options.texel.bootstrap_epochs = parse(value, argument)?,
+            "--bootstrap-replicates" => {
+                options.texel.bootstrap_replicates = parse(value, argument)?;
+            }
+            "--split-seed" => options.texel.split_seed = parse_seed(value)?,
+            "--optimizer-seed" => options.texel.optimizer_seed = parse_seed(value)?,
+            "--bootstrap-seed" => options.texel.bootstrap_seed = parse_seed(value)?,
+            "--regularization" => options.texel.regularization = parse(value, argument)?,
+            "--regularization-sweep" => {
+                options.regularization_sweep = parse_f64_list(value, argument)?;
+            }
             _ => return Err(format!("unknown argument `{argument}`; use --help")),
         }
         cursor += 2;
@@ -953,6 +1254,19 @@ fn validate_options(options: &Options) -> Result<(), String> {
         || options.validation_minimum_pairs == 0
         || options.validation_maximum_pairs < options.validation_minimum_pairs
         || options.validation_nodes == 0
+        || options.texel.bootstrap_replicates == 0
+        || options.texel.epochs == 0
+        || options.texel.bootstrap_epochs == 0
+        || options.fit_restarts == 0
+        || (options.cross_validation_splits > 0 && options.regularization_sweep.is_empty())
+        || !options.texel.regularization.is_finite()
+        || options.texel.regularization < 0.0
+        || options
+            .regularization_sweep
+            .iter()
+            .any(|value| !value.is_finite() || *value < 0.0)
+        || options.profile_name.is_empty()
+        || options.profile_name.contains(['\n', '\r'])
     {
         return Err("invalid zero or inconsistent overnight limits".to_owned());
     }
@@ -975,50 +1289,19 @@ fn parse_seed(value: &str) -> Result<u64, String> {
         .map_err(|_| format!("invalid seed `{value}`"))
 }
 
+fn parse_f64_list(value: &str, name: &str) -> Result<Vec<f64>, String> {
+    if value.is_empty() {
+        return Err(format!("{name} requires a comma-separated list"));
+    }
+    value.split(',').map(|value| parse(value, name)).collect()
+}
+
 fn parse_hours(value: &str, name: &str) -> Result<Duration, String> {
     let hours = parse::<f64>(value, name)?;
     if !hours.is_finite() || hours <= 0.0 || hours > 24.0 * 365.0 {
         return Err(format!("invalid hour budget `{value}` for {name}"));
     }
     Ok(Duration::from_secs_f64(hours * 3600.0))
-}
-
-const fn piece_name(kind: PieceKind) -> &'static str {
-    match kind {
-        PieceKind::Pawn => "pawn",
-        PieceKind::Knight => "knight",
-        PieceKind::Bishop => "bishop",
-        PieceKind::Rook => "rook",
-        PieceKind::Queen => "queen",
-        PieceKind::King => "king",
-        PieceKind::Archbishop => "archbishop",
-        PieceKind::Chancellor => "chancellor",
-        PieceKind::Cannon => "cannon",
-        PieceKind::Elephant => "elephant",
-        PieceKind::Camel => "camel",
-        PieceKind::Giraffe => "giraffe",
-        PieceKind::Archer => "archer",
-        PieceKind::Machine => "machine",
-        PieceKind::Amazon => "amazon",
-        PieceKind::Lion => "lion",
-        PieceKind::Buffalo => "buffalo",
-        PieceKind::Centaur => "centaur",
-        PieceKind::Admiral => "admiral",
-        PieceKind::Missionary => "missionary",
-        PieceKind::Eagle => "eagle",
-        PieceKind::Rhinoceros => "rhinoceros",
-        PieceKind::Prince => "prince",
-        PieceKind::Sorceress => "sorceress",
-        PieceKind::Duchess => "duchess",
-        PieceKind::Troll => "troll",
-    }
-}
-
-fn parse_piece_kind(name: &str) -> Result<PieceKind, String> {
-    PieceKind::ALL
-        .into_iter()
-        .find(|kind| piece_name(*kind) == name)
-        .ok_or_else(|| format!("unknown piece kind `{name}`"))
 }
 
 struct SplitMix64(u64);
@@ -1057,11 +1340,27 @@ fn print_help() {
            --validation-min-pairs N   Earliest validation stop (default: 24)\n\
            --validation-max-pairs N   Validation pair cap (default: 96)\n\
            --validation-nodes N       Nodes per validation move (default: 50000)\n\
+           --validation-seed N|0xHEX  Independent validation opening seed\n\
            --collection-hours H       Dataset time budget (default: 8)\n\
            --total-hours H            Total cumulative budget (default: 12)\n\
            --seed N|0xHEX             Reproducible seed\n\
            --dataset PATH             Dataset CSV path\n\
            --checkpoint PATH          Run checkpoint path\n\
+           --input-dataset PATH       Merge an existing dataset; repeatable\n\
+           --fit-only                 Fit/bootstrap without self-play validation\n\
+           --fit-restarts N           Optimizer shuffles on one fixed split\n\
+           --cross-validation-splits N  Game-level splits per regularization\n\
+           --fit-epochs N             Primary/restart epoch cap (default: 48)\n\
+           --split-seed N|0xHEX       Game-level train/holdout split seed\n\
+           --optimizer-seed N|0xHEX   Primary optimizer shuffle seed\n\
+           --bootstrap-seed N|0xHEX   Game resampling seed\n\
+           --bootstrap-epochs N       Epochs per bootstrap fit (default: 12)\n\
+           --bootstrap-replicates N   Game-level bootstrap fits (default: 32)\n\
+           --regularization X         Published-value regularization (default: 0.01)\n\
+           --regularization-sweep CSV Diagnostic regularization values\n\
+           --diagnostics-output PATH  Write restart/sensitivity CSV\n\
+           --profile-output PATH      Write the fitted material profile\n\
+           --profile-name NAME        Name stored in that profile\n\
            --resume                   Resume dataset, fit, or validation"
     );
 }
@@ -1094,6 +1393,39 @@ mod tests {
     }
 
     #[test]
+    fn merging_datasets_remaps_colliding_game_ids_without_splitting_games() {
+        let sample = |game_id, difference| {
+            let mut piece_differences = [0; PieceKind::COUNT];
+            piece_differences[PieceKind::Queen.index()] = difference;
+            MaterialSample {
+                game_id,
+                outcome: 0.5,
+                fixed_score: 0,
+                piece_differences,
+            }
+        };
+        let first = Dataset {
+            completed_pairs: 1,
+            collection_seconds: 2.0,
+            samples: vec![sample(0, 1), sample(0, 2)],
+        };
+        let second = Dataset {
+            completed_pairs: 2,
+            collection_seconds: 3.0,
+            samples: vec![sample(0, 3), sample(1, 4)],
+        };
+        let merged = Dataset::merge(&[first, second]).unwrap();
+        let ids = merged
+            .samples
+            .iter()
+            .map(|sample| sample.game_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![0, 0, 1, 2]);
+        assert_eq!(merged.completed_pairs, 3);
+        assert_eq!(merged.collection_seconds, 5.0);
+    }
+
+    #[test]
     fn checkpoint_round_trips_fit_and_validation_progress() {
         let mut state = RunState::new(42);
         state.stage = Stage::Validate;
@@ -1123,5 +1455,15 @@ mod tests {
             );
         }
         assert_eq!(samples.len(), 7);
+    }
+
+    #[test]
+    fn comma_separated_regularization_values_are_parsed() {
+        assert_eq!(
+            parse_f64_list("0.005,0.01,0.02", "test").unwrap(),
+            vec![0.005, 0.01, 0.02]
+        );
+        assert!(parse_f64_list("", "test").is_err());
+        assert!(parse_f64_list("0.01,nope", "test").is_err());
     }
 }

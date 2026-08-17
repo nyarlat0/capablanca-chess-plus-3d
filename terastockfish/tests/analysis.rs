@@ -133,9 +133,9 @@ fn parallel_root_workers_share_a_correct_result() {
 }
 
 #[test]
-fn published_evaluation_profile_is_the_stable_default() {
+fn production_evaluation_profile_is_the_stable_default() {
     let position = Variant::TerachessII.starting_position();
-    let parameters = EvaluationParameters::published();
+    let parameters = EvaluationParameters::production();
     assert_eq!(evaluate(&position), evaluate_with(&position, &parameters));
 
     let options = SearchOptions {
@@ -148,6 +148,26 @@ fn published_evaluation_profile_is_the_stable_default() {
     assert_eq!(default_result.best_move, explicit_result.best_move);
     assert_eq!(default_result.score, explicit_result.score);
     assert_eq!(default_result.nodes, explicit_result.nodes);
+}
+
+#[test]
+fn production_and_published_profiles_remain_explicitly_available() {
+    assert_ne!(
+        EvaluationParameters::production(),
+        EvaluationParameters::published()
+    );
+    assert_eq!(
+        EvaluationParameters::production(),
+        EvaluationParameters::empirical_v1()
+    );
+    assert_eq!(
+        EvaluationParameters::production().material_value(capablanca_chess_plus::PieceKind::Eagle),
+        1_462
+    );
+    assert_eq!(
+        EvaluationParameters::published().material_value(capablanca_chess_plus::PieceKind::Eagle),
+        1_680
+    );
 }
 
 #[test]

@@ -18,6 +18,10 @@ only for Archer, Eagle, and Rhinoceros. A fresh-seed confirmation run should
 precede treating these numbers as a stable final scale.
 
 No production default was changed as part of documenting this experiment.
+The original executable has subsequently been copied to
+`target/research/2026-08-17/terastockfish-texel-first-run`; its hash matches the
+one recorded below, so a second-seed run can use identical search code even
+after development builds replace `target/release`.
 
 ## Reproduction record
 
@@ -216,3 +220,8 @@ The primary confirmation criterion is again a paired 95% lower bound above
 directions and whether the remaining intervals narrow. Only after replication
 should the project decide whether to replace `EvaluationParameters::published()`
 or introduce this result as a separately named empirical profile.
+
+That replication is now complete; see the
+[second-seed report](2026-08-17-texel-material-values-seed2.md). It confirms
+the strength of a tuned profile but contradicts the first Archer estimate, so
+the exact first-run table was not promoted.

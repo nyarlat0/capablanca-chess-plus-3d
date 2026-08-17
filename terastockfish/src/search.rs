@@ -128,7 +128,7 @@ impl Searcher {
         Self {
             table: Arc::new(TranspositionTable::new(options.hash_megabytes)),
             options,
-            evaluation: EvaluationParameters::published(),
+            evaluation: EvaluationParameters::production(),
             control: SearchControl::default(),
             history: vec![0; 2 * MAX_BOARD_SQUARES * MAX_BOARD_SQUARES],
         }

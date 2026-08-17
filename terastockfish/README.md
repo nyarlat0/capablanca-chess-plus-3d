@@ -80,11 +80,12 @@ the searcher's `SearchControl` before starting analysis when another thread
 must stop it. Reuse one `Searcher` across positions to preserve its hash table
 and move-ordering history; call `clear_hash` for a completely fresh analysis.
 
-The default evaluator uses `EvaluationParameters::published()`: the material
-scale published with Terachess II and the original conservative positional
-weights. Experiments can use `Searcher::with_evaluation` or
-`set_evaluation_parameters`; replacing a profile clears score-dependent hash
-and history state automatically.
+The default evaluator uses `EvaluationParameters::production()`, which now
+equals the independently validated `EvaluationParameters::empirical_v1()`.
+The historical Terachess II scale remains available through
+`EvaluationParameters::published()`. Experiments can use
+`Searcher::with_evaluation` or `set_evaluation_parameters`; replacing a
+profile clears score-dependent hash and history state automatically.
 
 ## Evaluation validation
 
@@ -105,6 +106,10 @@ weights are `doubled_pawn`, `isolated_pawn`, `bishop_pair`, `king_shelter`,
 per-game CSV records plus W/D/L, score, and a 95% confidence interval. A
 candidate should replace the published default only when the interval's lower
 bound exceeds 50%.
+
+`--baseline published|production` selects the opponent explicitly.
+`--profile PATH` loads a complete material profile emitted by the Texel tool;
+additional `--set` options are applied after loading it.
 
 ### Automatic material tuning
 
@@ -130,6 +135,72 @@ coverage and bootstrap 95% intervals for every piece, final W/D/L, ready-to-use
 `material.<piece>=<value>` lines, and `recommended=true|false|inconclusive`.
 The complete methodology, result tables, limitations, and decision record for
 that run are in the [Terachess II research log](docs/research/README.md).
+
+### Independent confirmation and pooled fit
+
+Preserve the binary used for the first dataset before rebuilding it. The first
+recorded binary is archived locally at
+`target/research/2026-08-17/terastockfish-texel-first-run` with SHA-256
+`d6575deced3ed09c17ebe5861439c83afe2612b34835241eaab91417417ce0d4`.
+Use that exact executable for the fixed-size second run:
+
+```sh
+./target/research/2026-08-17/terastockfish-texel-first-run \
+  --preset overnight --jobs 24 --hash 32 \
+  --seed 0x5345434f4e445255 \
+  --validation-min-pairs 192 --validation-max-pairs 192 \
+  --dataset target/terastockfish-texel-seed2.csv \
+  --checkpoint target/terastockfish-texel-seed2.chk
+```
+
+The independent second run is documented in the
+[research log](docs/research/2026-08-17-texel-material-values-seed2.md). It
+replicated the playing-strength gain but exposed unstable individual
+coefficients, particularly Archer. The subsequent
+[pooled convergence study](docs/research/2026-08-17-pooled-material-convergence.md)
+resolved that instability with eight restarts, 256×48 game bootstraps and
+eight-split regularization cross-validation. It froze regularization 0.08 and
+the `empirical-v1-candidate` profile. Its final fixed validation was run with:
+
+```sh
+cargo build --release -p terastockfish --bins
+./target/release/terastockfish-texel \
+  --preset overnight --jobs 24 --hash 32 \
+  --input-dataset target/terastockfish-texel.csv \
+  --input-dataset target/terastockfish-texel-seed2.csv \
+  --dataset target/terastockfish-final-validation.csv \
+  --checkpoint target/terastockfish-final-validation.chk \
+  --profile-output target/terastockfish-final-validation.profile \
+  --profile-name empirical-v1-candidate \
+  --fit-epochs 96 --bootstrap-epochs 48 --bootstrap-replicates 256 \
+  --split-seed 0x504f4f4c5f53504c \
+  --optimizer-seed 0x4f5054494d495a45 \
+  --bootstrap-seed 0x424f4f5453545250 \
+  --regularization 0.08 \
+  --seed 0x454d504952494341 \
+  --validation-seed 0x56414c4944415445 \
+  --validation-min-pairs 200 --validation-max-pairs 200 \
+  --validation-nodes 100000 --total-hours 24
+```
+
+Setting minimum and maximum validation pairs to the same value made this a
+fixed-sample experiment, avoiding uncorrected early significance stopping.
+The frozen candidate scored 55.25% with paired 95% CI 50.89–59.61%; its lower
+bound exceeded the preregistered 50% promotion threshold. The exact profile was
+therefore promoted as `EvaluationParameters::empirical_v1()` and is now the
+production default. Full results and limitations are in the
+[final validation report](docs/research/2026-08-17-final-material-validation.md).
+
+The frozen profile can also be rechecked independently without retyping all
+material values:
+
+```sh
+./target/release/terastockfish-eval \
+  --baseline published \
+  --profile target/terastockfish-material-candidate-v1.profile \
+  --min-pairs 200 --max-pairs 200 --nodes 100000 \
+  --jobs 24 --hash 32 --seed 0x46494e414c434845
+```
 
 Check the complete pipeline in seconds before an overnight run:
 

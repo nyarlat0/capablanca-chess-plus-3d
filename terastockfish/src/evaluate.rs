@@ -40,6 +40,24 @@ impl EvaluationParameters {
         }
     }
 
+    /// The empirically fitted material profile validated against [`Self::published`]
+    /// in a fixed 200-pair, 100,000-node self-play match.
+    #[must_use]
+    pub const fn empirical_v1() -> Self {
+        let mut parameters = Self::published();
+        parameters.material = [
+            100, 392, 712, 997, 1_609, 0, 1_066, 1_405, 1_022, 392, 360, 347, 647, 439, 2_014,
+            1_163, 1_154, 826, 1_147, 852, 1_462, 1_295, 466, 1_609, 1_178, 510,
+        ];
+        parameters
+    }
+
+    /// The profile used by default search and static evaluation.
+    #[must_use]
+    pub const fn production() -> Self {
+        Self::empirical_v1()
+    }
+
     #[must_use]
     pub const fn material_value(&self, kind: PieceKind) -> i32 {
         self.material[kind.index()]
@@ -124,21 +142,21 @@ impl EvaluationParameters {
 
 impl Default for EvaluationParameters {
     fn default() -> Self {
-        Self::published()
+        Self::production()
     }
 }
 
-/// Returns the published Terachess II material value for a piece kind.
+/// Returns the production Terachess II material value for a piece kind.
 #[must_use]
 pub const fn piece_value(kind: PieceKind) -> i32 {
-    EvaluationParameters::published().material_value(kind)
+    EvaluationParameters::production().material_value(kind)
 }
 
-/// Returns a static score using the published profile, from the side-to-move's
+/// Returns a static score using the production profile, from the side-to-move's
 /// point of view.
 #[must_use]
 pub fn evaluate(position: &Position) -> i32 {
-    evaluate_with(position, &EvaluationParameters::published())
+    evaluate_with(position, &EvaluationParameters::production())
 }
 
 /// Returns a static score using explicit evaluation parameters, from the
@@ -391,6 +409,18 @@ mod tests {
             1_200, 1_080, 820, 1_200, 880, 1_680, 1_220, 460, 1_640, 1_160, 480,
         ];
         let parameters = EvaluationParameters::published();
+        for (kind, expected) in PieceKind::ALL.into_iter().zip(expected) {
+            assert_eq!(parameters.material_value(kind), expected, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn production_material_table_covers_every_piece_kind() {
+        let expected = [
+            100, 392, 712, 997, 1_609, 0, 1_066, 1_405, 1_022, 392, 360, 347, 647, 439, 2_014,
+            1_163, 1_154, 826, 1_147, 852, 1_462, 1_295, 466, 1_609, 1_178, 510,
+        ];
+        let parameters = EvaluationParameters::empirical_v1();
         for (kind, expected) in PieceKind::ALL.into_iter().zip(expected) {
             assert_eq!(parameters.material_value(kind), expected, "{kind:?}");
             assert_eq!(piece_value(kind), expected, "{kind:?}");

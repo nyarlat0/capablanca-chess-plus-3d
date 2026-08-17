@@ -1,10 +1,11 @@
 use capablanca_chess_plus::PieceKind;
 use std::env;
+use std::fs;
 use std::process::ExitCode;
-use terastockfish::EvaluationParameters;
 use terastockfish::validation::{
-    CandidateResult, GameTermination, SelfPlayConfig, compare_with_published,
+    CandidateResult, GameTermination, SelfPlayConfig, compare_profiles,
 };
+use terastockfish::{EvaluationParameters, MaterialProfile};
 
 fn main() -> ExitCode {
     match run() {
@@ -18,7 +19,8 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let mut config = SelfPlayConfig::default();
-    let mut candidate = EvaluationParameters::published();
+    let mut baseline_name = "published".to_owned();
+    let mut profile_path = None;
     let mut changes = Vec::new();
     let mut arguments = env::args().skip(1);
     while let Some(argument) = arguments.next() {
@@ -49,18 +51,51 @@ fn run() -> Result<(), String> {
                     .ok_or_else(|| "--seed requires a value".to_owned())?;
                 config.seed = parse_seed(&value)?;
             }
+            "--baseline" => {
+                baseline_name = arguments
+                    .next()
+                    .ok_or_else(|| "--baseline requires a value".to_owned())?;
+            }
+            "--profile" => {
+                if profile_path.is_some() {
+                    return Err("--profile may be supplied only once".to_owned());
+                }
+                profile_path = Some(
+                    arguments
+                        .next()
+                        .ok_or_else(|| "--profile requires a path".to_owned())?,
+                );
+            }
             "--set" => {
                 let assignment = arguments
                     .next()
                     .ok_or_else(|| "--set requires NAME=VALUE".to_owned())?;
-                apply_assignment(&mut candidate, &assignment)?;
                 changes.push(assignment);
             }
             _ => return Err(format!("unknown argument `{argument}`; use --help")),
         }
     }
 
-    println!("# baseline=published");
+    let baseline = match baseline_name.as_str() {
+        "published" => EvaluationParameters::published(),
+        "production" => EvaluationParameters::production(),
+        _ => return Err(format!("unknown baseline `{baseline_name}`")),
+    };
+    let (mut candidate, candidate_profile) = if let Some(path) = profile_path {
+        let profile = MaterialProfile::decode(
+            &fs::read_to_string(&path)
+                .map_err(|error| format!("cannot read profile {path}: {error}"))?,
+        )?;
+        (profile.parameters, profile.name)
+    } else {
+        (baseline, "baseline-with-overrides".to_owned())
+    };
+    for assignment in &changes {
+        apply_assignment(&mut candidate, assignment)?;
+    }
+
+    println!("# baseline={baseline_name}");
+    println!("# candidate_profile={candidate_profile}");
     println!("# candidate_changes={}", changes.join(";"));
     println!(
         "# min_pairs={} max_pairs={} nodes_per_move={} max_plies={} opening_plies={} hash_mb={} jobs={} adjudication_score={} adjudication_plies={} seed={}",
@@ -75,7 +110,8 @@ fn run() -> Result<(), String> {
         config.adjudication_plies,
         config.seed
     );
-    let summary = compare_with_published(candidate, config).map_err(|error| error.to_string())?;
+    let summary =
+        compare_profiles(baseline, candidate, config).map_err(|error| error.to_string())?;
     println!("pair,candidate_color,result,termination,plies,nodes,elapsed_ms,opening_fen");
     for game in &summary.games {
         println!(
@@ -227,6 +263,8 @@ fn print_help() {
            --adjudication-score N  Sustained winning score; 0 disables\n\
            --adjudication-plies N  Required consecutive half-moves\n\
            --seed N|0xHEX          Opening generator seed\n\
+           --baseline NAME         published|production (default: published)\n\
+           --profile PATH          Candidate material profile file\n\
            --set NAME=VALUE        Candidate weight; may be repeated\n\
          \n\
          Weight examples:\n\

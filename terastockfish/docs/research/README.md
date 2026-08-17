@@ -11,6 +11,10 @@ concluded from it.
 | Date | Experiment | Result | Engine action |
 |---|---|---|---|
 | 2026-08-17 | [Texel material fit with paired self-play](2026-08-17-texel-material-values.md) | Candidate scored 57.03%, paired 95% CI 50.76–63.30%; tool recommendation: `true` | Retain as a validated candidate; do not silently replace the published profile |
+| 2026-08-17 | [Independent Texel material replication](2026-08-17-texel-material-values-seed2.md) | Candidate scored 55.99%, paired 95% CI 51.57–60.41%; joint strength replicated, individual coefficients unstable | Keep `production=published`; diagnose pooled coefficient stability before final validation |
+| 2026-08-17 | [Material feature identifiability diagnostic](2026-08-17-material-feature-identifiability.md) | Both designs are full-rank; pooled standardized condition number 4.46; no severe Archer collinearity | Investigate optimizer/bootstrap convergence and model sensitivity before more self-play |
+| 2026-08-17 | [Pooled material convergence and profile freeze](2026-08-17-pooled-material-convergence.md) | Eight restarts, 256×48 bootstrap and eight-split CV stabilize a regularization-0.08 candidate | Freeze candidate; proceed to fixed 200-pair/100k-node validation |
+| 2026-08-17 | [Final material-profile validation](2026-08-17-final-material-validation.md) | Frozen candidate scored 55.25%, paired 95% CI 50.89–59.61% over 200 color-swapped pairs | Promote unchanged as `empirical_v1()` and make it the production default |
 
 ## Required record for future research
 

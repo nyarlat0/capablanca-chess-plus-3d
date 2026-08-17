@@ -79,7 +79,13 @@ pub struct TexelOptions {
     pub regularization: f64,
     pub patience: u16,
     pub bootstrap_replicates: u16,
-    pub seed: u64,
+    /// Assigns whole games to train or holdout. Keep this fixed when testing
+    /// optimizer convergence.
+    pub split_seed: u64,
+    /// Controls training-order shuffles without changing the data split.
+    pub optimizer_seed: u64,
+    /// Controls game-level bootstrap resampling.
+    pub bootstrap_seed: u64,
 }
 
 impl Default for TexelOptions {
@@ -93,7 +99,9 @@ impl Default for TexelOptions {
             regularization: 0.01,
             patience: 8,
             bootstrap_replicates: 32,
-            seed: 0x5445_5845_4c54_4552,
+            split_seed: 0x5445_5845_4c54_4552,
+            optimizer_seed: 0x5445_5845_4c54_4552,
+            bootstrap_seed: 0x5445_5845_4c54_4552,
         }
     }
 }
@@ -130,7 +138,7 @@ pub fn fit_material(samples: &[MaterialSample], options: TexelOptions) -> Materi
                 coverage[kind.index()] += 1;
             }
         }
-        if is_holdout_game(sample.game_id, options.seed) {
+        if is_holdout_game(sample.game_id, options.split_seed) {
             holdout.push(index);
         } else {
             train.push(index);
@@ -191,7 +199,7 @@ pub fn bootstrap_material(
     let initial_log_scale = fit.logistic_scale.ln();
     for replicate in 0..replicates {
         let mut random = SplitMix64::new(
-            options.seed ^ u64::from(replicate + 1).wrapping_mul(0xd1b5_4a32_d192_ed03),
+            options.bootstrap_seed ^ u64::from(replicate + 1).wrapping_mul(0xd1b5_4a32_d192_ed03),
         );
         let mut selected = Vec::new();
         if groups.is_empty() {
@@ -209,7 +217,7 @@ pub fn bootstrap_material(
             initial_values,
             initial_log_scale,
             TexelOptions {
-                seed: options.seed ^ u64::from(replicate),
+                optimizer_seed: options.optimizer_seed ^ u64::from(replicate),
                 ..options
             },
             options.bootstrap_epochs,
@@ -263,7 +271,7 @@ fn optimize(
     };
     let mut stale_epochs = 0;
     let mut order = train.to_vec();
-    let mut random = SplitMix64::new(options.seed);
+    let mut random = SplitMix64::new(options.optimizer_seed);
 
     for _ in 0..epochs.max(1) {
         shuffle(&mut order, &mut random);
@@ -614,5 +622,35 @@ mod tests {
         );
         assert_eq!(fit.parameters.material_value(PieceKind::Pawn), 100);
         assert_eq!(fit.parameters.material_value(PieceKind::King), 0);
+    }
+
+    #[test]
+    fn optimizer_seed_does_not_change_the_game_level_split() {
+        let samples = (0..100_u64)
+            .map(|game_id| MaterialSample {
+                game_id,
+                outcome: 0.5,
+                fixed_score: 0,
+                piece_differences: [0; PieceKind::COUNT],
+            })
+            .collect::<Vec<_>>();
+        let first = fit_material(
+            &samples,
+            TexelOptions {
+                epochs: 1,
+                optimizer_seed: 1,
+                ..TexelOptions::default()
+            },
+        );
+        let second = fit_material(
+            &samples,
+            TexelOptions {
+                epochs: 1,
+                optimizer_seed: 2,
+                ..TexelOptions::default()
+            },
+        );
+        assert_eq!(first.train_samples, second.train_samples);
+        assert_eq!(first.holdout_samples, second.holdout_samples);
     }
 }
