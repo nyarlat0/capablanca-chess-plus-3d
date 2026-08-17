@@ -1,5 +1,8 @@
 use capablanca_chess_plus::{Color, Position, Square, Variant};
-use terastockfish::{SearchLimits, SearchOptions, Searcher, position_key};
+use terastockfish::{
+    EvaluationParameters, SearchLimits, SearchOptions, Searcher, evaluate, evaluate_with,
+    position_key,
+};
 
 fn position(pieces: &[(char, &str)], side: Color) -> Position {
     let mut squares = [[None; 16]; 16];
@@ -73,6 +76,29 @@ fn search_finds_an_unprotected_high_value_capture() {
 }
 
 #[test]
+fn search_rejects_a_losing_material_exchange() {
+    let position = position(
+        &[
+            ('K', "a1"),
+            ('Q', "h8"),
+            ('p', "h9"),
+            ('r', "h16"),
+            ('k', "p16"),
+        ],
+        Color::White,
+    );
+    let result = test_searcher().analyze(&position, SearchLimits::depth(2));
+    assert_ne!(result.best_move.unwrap().to_uci(), "h8h9");
+}
+
+#[test]
+fn search_values_compulsory_terachess_promotion() {
+    let position = position(&[('K', "a1"), ('P', "a15"), ('k', "p16")], Color::White);
+    let result = test_searcher().analyze(&position, SearchLimits::depth(1));
+    assert_eq!(result.best_move.unwrap().to_uci(), "a15a16q");
+}
+
+#[test]
 fn search_recognizes_a_large_board_mate_in_one() {
     let position = position(&[('K', "n14"), ('Q', "o13"), ('k', "p16")], Color::White);
     let result = test_searcher().analyze(&position, SearchLimits::depth(2));
@@ -104,4 +130,38 @@ fn parallel_root_workers_share_a_correct_result() {
     });
     let result = searcher.analyze(&position, SearchLimits::depth(3));
     assert_eq!(result.best_move.unwrap().to_uci(), "h8h9");
+}
+
+#[test]
+fn published_evaluation_profile_is_the_stable_default() {
+    let position = Variant::TerachessII.starting_position();
+    let parameters = EvaluationParameters::published();
+    assert_eq!(evaluate(&position), evaluate_with(&position, &parameters));
+
+    let options = SearchOptions {
+        hash_megabytes: 2,
+        threads: 1,
+    };
+    let default_result = Searcher::new(options).analyze(&position, SearchLimits::depth(2));
+    let explicit_result =
+        Searcher::with_evaluation(options, parameters).analyze(&position, SearchLimits::depth(2));
+    assert_eq!(default_result.best_move, explicit_result.best_move);
+    assert_eq!(default_result.score, explicit_result.score);
+    assert_eq!(default_result.nodes, explicit_result.nodes);
+}
+
+#[test]
+fn replacing_evaluation_parameters_changes_material_scoring() {
+    let position = position(
+        &[('K', "a1"), ('Q', "h8"), ('k', "p16"), ('r', "i9")],
+        Color::White,
+    );
+    let mut parameters = EvaluationParameters::published();
+    let published = evaluate_with(&position, &parameters);
+    parameters.set_material_value(capablanca_chess_plus::PieceKind::Queen, 1_200);
+    assert_eq!(evaluate_with(&position, &parameters), published - 460);
+
+    let mut searcher = test_searcher();
+    searcher.set_evaluation_parameters(parameters);
+    assert_eq!(searcher.evaluation_parameters(), parameters);
 }

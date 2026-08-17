@@ -1,5 +1,5 @@
 use crate::capacity::{MAX_BOARD_SQUARES, square_index};
-use crate::evaluate::piece_value;
+use crate::evaluate::EvaluationParameters;
 use crate::key::position_key;
 use crate::state::SearchPosition;
 use crate::tt::{Bound, TranspositionTable};
@@ -108,6 +108,7 @@ impl SearchControl {
 
 pub struct Searcher {
     options: SearchOptions,
+    evaluation: EvaluationParameters,
     table: Arc<TranspositionTable>,
     control: SearchControl,
     history: Vec<i32>,
@@ -127,14 +128,38 @@ impl Searcher {
         Self {
             table: Arc::new(TranspositionTable::new(options.hash_megabytes)),
             options,
+            evaluation: EvaluationParameters::published(),
             control: SearchControl::default(),
             history: vec![0; 2 * MAX_BOARD_SQUARES * MAX_BOARD_SQUARES],
         }
     }
 
     #[must_use]
+    pub fn with_evaluation(options: SearchOptions, evaluation: EvaluationParameters) -> Self {
+        let mut searcher = Self::new(options);
+        searcher.evaluation = evaluation;
+        searcher
+    }
+
+    #[must_use]
     pub const fn options(&self) -> SearchOptions {
         self.options
+    }
+
+    #[must_use]
+    pub const fn evaluation_parameters(&self) -> EvaluationParameters {
+        self.evaluation
+    }
+
+    /// Replaces evaluation weights and invalidates score-dependent search
+    /// state left by the previous profile.
+    pub fn set_evaluation_parameters(&mut self, evaluation: EvaluationParameters) {
+        if self.evaluation == evaluation {
+            return;
+        }
+        self.evaluation = evaluation;
+        self.table.clear();
+        self.history.fill(0);
     }
 
     #[must_use]
@@ -174,7 +199,7 @@ impl Searcher {
         let start = Instant::now();
         let budget = TimeBudget::new(start, limits);
         let generation = self.table.next_generation();
-        let mut root = SearchPosition::new(position);
+        let mut root = SearchPosition::new(position, &self.evaluation);
         let mut context = SearchContext {
             table: Arc::clone(&self.table),
             control: self.control.clone(),
@@ -183,6 +208,7 @@ impl Searcher {
             generation,
             nodes: Arc::new(AtomicU64::new(0)),
             threads: self.options.threads,
+            evaluation: self.evaluation,
             history: &mut self.history,
             killers: [[None; 2]; MAX_PLY],
             repetition: vec![root.keys().repetition],
@@ -208,7 +234,7 @@ impl Searcher {
 
         let max_depth = limits.max_depth.clamp(1, (MAX_PLY - 1) as u8);
         let mut best_move = root_moves.first().copied();
-        let mut best_score = root.evaluate();
+        let mut best_score = root.evaluate(&self.evaluation);
         let mut completed_depth = 0;
         let mut principal_variation = best_move.into_iter().collect::<Vec<_>>();
         let mut stopped = false;
@@ -307,6 +333,7 @@ struct SearchContext<'a> {
     generation: u8,
     nodes: Arc<AtomicU64>,
     threads: usize,
+    evaluation: EvaluationParameters,
     history: &'a mut [i32],
     killers: [[Option<Move>; 2]; MAX_PLY],
     repetition: Vec<u64>,
@@ -347,7 +374,7 @@ impl SearchContext<'_> {
 
         for (move_index, chess_move) in moves.into_iter().enumerate() {
             self.check_stop()?;
-            let undo = position.make_move(chess_move);
+            let undo = position.make_move(chess_move, &self.evaluation);
             let score = (|| {
                 if move_index == 0 {
                     return Ok(-self.negamax(position, i32::from(depth) - 1, 1, -beta, -alpha)?);
@@ -420,6 +447,7 @@ impl SearchContext<'_> {
         let limits = self.limits;
         let budget = self.budget;
         let generation = self.generation;
+        let evaluation = self.evaluation;
         let nodes = Arc::clone(&self.nodes);
         let repetition = self.repetition.clone();
 
@@ -447,6 +475,7 @@ impl SearchContext<'_> {
                         generation,
                         nodes,
                         threads: 1,
+                        evaluation,
                         history: &mut history,
                         killers: base_killers,
                         repetition,
@@ -454,7 +483,7 @@ impl SearchContext<'_> {
                     let mut scores = Vec::with_capacity(assigned.len());
                     for chess_move in assigned {
                         worker.check_stop()?;
-                        let undo = position.make_move(chess_move);
+                        let undo = position.make_move(chess_move, &worker.evaluation);
                         let score = worker
                             .negamax(&mut position, i32::from(depth) - 1, 1, -beta, -alpha)
                             .map(|score| -score);
@@ -518,7 +547,7 @@ impl SearchContext<'_> {
             return Ok(0);
         }
         if ply >= MAX_PLY - 1 {
-            return Ok(position.evaluate());
+            return Ok(position.evaluate(&self.evaluation));
         }
 
         self.repetition.push(keys.repetition);
@@ -569,7 +598,7 @@ impl SearchContext<'_> {
             });
         }
 
-        let static_evaluation = position.evaluate();
+        let static_evaluation = position.evaluate(&self.evaluation);
         if !in_check && *depth == 1 && static_evaluation + 180 <= *alpha {
             return self.quiescence_current(position, ply, *alpha, beta);
         }
@@ -588,7 +617,7 @@ impl SearchContext<'_> {
         for (move_index, chess_move) in moves.into_iter().enumerate() {
             let capture = captured_piece(position.position(), chess_move).is_some();
             let quiet = !capture && chess_move.promotion.is_none();
-            let undo = position.make_move(chess_move);
+            let undo = position.make_move(chess_move, &self.evaluation);
             let gives_check = position
                 .position()
                 .is_in_check(position.position().side_to_move());
@@ -663,7 +692,7 @@ impl SearchContext<'_> {
         let in_check = position
             .position()
             .is_in_check(position.position().side_to_move());
-        let stand_pat = position.evaluate();
+        let stand_pat = position.evaluate(&self.evaluation);
         if !in_check {
             if stand_pat >= beta {
                 return Ok(stand_pat);
@@ -690,12 +719,12 @@ impl SearchContext<'_> {
         for chess_move in moves {
             if !in_check
                 && let Some(victim) = captured_piece(position.position(), chess_move)
-                && stand_pat + piece_value(victim.kind) + 180 < alpha
+                && stand_pat + self.evaluation.material_value(victim.kind) + 180 < alpha
                 && chess_move.promotion.is_none()
             {
                 continue;
             }
-            let undo = position.make_move(chess_move);
+            let undo = position.make_move(chess_move, &self.evaluation);
             let child_score = self.quiescence(position, ply + 1, -beta, -alpha);
             position.unmake_move(undo);
             let score = -child_score?;
@@ -720,7 +749,7 @@ impl SearchContext<'_> {
             return Ok(0);
         }
         if ply >= MAX_PLY - 1 {
-            return Ok(position.evaluate());
+            return Ok(position.evaluate(&self.evaluation));
         }
         self.repetition.push(repetition);
         let result = self.quiescence_current(position, ply, alpha, beta);
@@ -755,10 +784,11 @@ impl SearchContext<'_> {
                 .board()
                 .piece_at(chess_move.from)
                 .expect("generated move has an attacker");
-            return 1_000_000 + piece_value(victim.kind) * 16 - piece_value(attacker.kind);
+            return 1_000_000 + self.evaluation.material_value(victim.kind) * 16
+                - self.evaluation.material_value(attacker.kind);
         }
         if let Some(promotion) = chess_move.promotion {
-            return 900_000 + piece_value(promotion);
+            return 900_000 + self.evaluation.material_value(promotion);
         }
         if ply < MAX_PLY {
             if self.killers[ply][0] == Some(chess_move) {

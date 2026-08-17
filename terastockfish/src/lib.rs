@@ -12,11 +12,13 @@ mod evaluate;
 mod key;
 mod search;
 mod state;
+pub mod texel;
 mod tt;
 pub mod uci;
+pub mod validation;
 
 pub use capacity::{MAX_BOARD_FILES, MAX_BOARD_RANKS, MAX_BOARD_SQUARES};
-pub use evaluate::{evaluate, piece_value};
+pub use evaluate::{EvaluationParameters, evaluate, evaluate_with, piece_value};
 pub use key::position_key;
 pub use search::{
     AnalysisInfo, AnalysisResult, SearchControl, SearchLimits, SearchOptions, Searcher,

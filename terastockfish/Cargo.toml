@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.88"
 license.workspace = true
 description = "UCI analysis engine for Terachess II and future large-board chess variants"
+default-run = "terastockfish"
 keywords = ["chess", "terachess", "engine", "uci", "analysis"]
 categories = ["game-development", "command-line-utilities"]
 
@@ -22,4 +23,3 @@ path = "src/main.rs"
 [[bench]]
 name = "search"
 harness = false
-
