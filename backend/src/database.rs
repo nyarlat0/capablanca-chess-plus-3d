@@ -411,6 +411,7 @@ fn variant_name(variant: Variant) -> &'static str {
         Variant::Grand => "grand",
         Variant::Shako => "shako",
         Variant::Pemba => "pemba",
+        Variant::TerachessII => "terachess_ii",
     }
 }
 
@@ -425,6 +426,7 @@ fn parse_variant(value: &str, game_id: &str) -> Result<Variant, RepositoryError>
         "grand" => Ok(Variant::Grand),
         "shako" => Ok(Variant::Shako),
         "pemba" => Ok(Variant::Pemba),
+        "terachess_ii" => Ok(Variant::TerachessII),
         _ => Err(RepositoryError::Corrupt {
             game_id: game_id.to_owned(),
             detail: format!("unknown variant {value:?}"),
@@ -443,6 +445,7 @@ fn engine_variant(variant: Variant) -> EngineVariant {
         Variant::Grand => EngineVariant::Grand,
         Variant::Shako => EngineVariant::Shako,
         Variant::Pemba => EngineVariant::Pemba,
+        Variant::TerachessII => EngineVariant::TerachessII,
     }
 }
 
@@ -528,5 +531,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(game.position().side_to_move(), EngineSide::White);
+    }
+
+    #[test]
+    fn terachess_rooms_use_the_shared_terachess_rules() {
+        assert_eq!(variant_name(Variant::TerachessII), "terachess_ii");
+        assert_eq!(
+            parse_variant("terachess_ii", "TESTROOM").unwrap(),
+            Variant::TerachessII
+        );
+
+        let game = replay_game(
+            Variant::TerachessII,
+            &["a4a6".to_owned(), "a13a11".to_owned()],
+            "TESTROOM",
+        )
+        .unwrap();
+        assert_eq!(game.position().side_to_move(), EngineSide::White);
+        assert_eq!(game.position().board().size().files(), 16);
+        assert_eq!(game.position().board().size().ranks(), 16);
     }
 }

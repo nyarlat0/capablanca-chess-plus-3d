@@ -43,43 +43,14 @@ impl Plugin for PiecesPlugin {
 
 #[derive(Resource)]
 pub(crate) struct PieceAssets {
-    pawn: Handle<WorldAsset>,
-    knight: Handle<WorldAsset>,
-    bishop: Handle<WorldAsset>,
-    rook: Handle<WorldAsset>,
-    queen: Handle<WorldAsset>,
-    king: Handle<WorldAsset>,
-    archbishop: Handle<WorldAsset>,
-    chancellor: Handle<WorldAsset>,
-    cannon: Handle<WorldAsset>,
-    elephant: Handle<WorldAsset>,
-    camel: Handle<WorldAsset>,
-    giraffe: Handle<WorldAsset>,
-    archer: Handle<WorldAsset>,
-    machine: Handle<WorldAsset>,
+    scenes: [Handle<WorldAsset>; PieceKind::COUNT],
     white_material: Handle<StandardMaterial>,
     black_material: Handle<StandardMaterial>,
 }
 
 impl PieceAssets {
     pub(crate) fn scene(&self, kind: PieceKind) -> Handle<WorldAsset> {
-        match kind {
-            PieceKind::Pawn => &self.pawn,
-            PieceKind::Knight => &self.knight,
-            PieceKind::Bishop => &self.bishop,
-            PieceKind::Rook => &self.rook,
-            PieceKind::Queen => &self.queen,
-            PieceKind::King => &self.king,
-            PieceKind::Archbishop => &self.archbishop,
-            PieceKind::Chancellor => &self.chancellor,
-            PieceKind::Cannon => &self.cannon,
-            PieceKind::Elephant => &self.elephant,
-            PieceKind::Camel => &self.camel,
-            PieceKind::Giraffe => &self.giraffe,
-            PieceKind::Archer => &self.archer,
-            PieceKind::Machine => &self.machine,
-        }
-        .clone()
+        self.scenes[kind.index()].clone()
     }
 
     pub(crate) fn material(&self, side: Side) -> Handle<StandardMaterial> {
@@ -186,20 +157,7 @@ fn setup_piece_assets(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.insert_resource(PieceAssets {
-        pawn: load_piece_scene(&asset_server, "models/pawn.glb"),
-        knight: load_piece_scene(&asset_server, "models/knight.glb"),
-        bishop: load_piece_scene(&asset_server, "models/bishop.glb"),
-        rook: load_piece_scene(&asset_server, "models/rook.glb"),
-        queen: load_piece_scene(&asset_server, "models/queen.glb"),
-        king: load_piece_scene(&asset_server, "models/king.glb"),
-        archbishop: load_piece_scene(&asset_server, "models/archbishop.glb"),
-        chancellor: load_piece_scene(&asset_server, "models/chancellor.glb"),
-        cannon: load_piece_scene(&asset_server, "models/cannon.glb"),
-        elephant: load_piece_scene(&asset_server, "models/elephant.glb"),
-        camel: load_piece_scene(&asset_server, "models/camel.glb"),
-        giraffe: load_piece_scene(&asset_server, "models/giraffe.glb"),
-        archer: load_piece_scene(&asset_server, "models/archer.glb"),
-        machine: load_piece_scene(&asset_server, "models/machine.glb"),
+        scenes: PieceKind::ALL.map(|kind| load_piece_scene(&asset_server, piece_model_path(kind))),
         white_material: materials.add(StandardMaterial {
             base_color: Color::srgb(0.92, 0.82, 0.66),
             perceptual_roughness: 0.36,
@@ -222,6 +180,37 @@ fn setup_piece_assets(
 
 fn load_piece_scene(asset_server: &AssetServer, path: &'static str) -> Handle<WorldAsset> {
     asset_server.load(GltfAssetLabel::Scene(0).from_asset(path))
+}
+
+const fn piece_model_path(kind: PieceKind) -> &'static str {
+    match kind {
+        PieceKind::Pawn => "models/pawn.glb",
+        PieceKind::Knight => "models/knight.glb",
+        PieceKind::Bishop => "models/bishop.glb",
+        PieceKind::Rook => "models/rook.glb",
+        PieceKind::Queen => "models/queen.glb",
+        PieceKind::King => "models/king.glb",
+        PieceKind::Archbishop => "models/archbishop.glb",
+        PieceKind::Chancellor => "models/chancellor.glb",
+        PieceKind::Cannon => "models/cannon.glb",
+        PieceKind::Elephant => "models/elephant.glb",
+        PieceKind::Camel => "models/camel.glb",
+        PieceKind::Giraffe => "models/giraffe.glb",
+        PieceKind::Archer => "models/archer.glb",
+        PieceKind::Machine => "models/machine.glb",
+        PieceKind::Amazon => "models/amazon.glb",
+        PieceKind::Lion => "models/lion.glb",
+        PieceKind::Buffalo => "models/buffalo.glb",
+        PieceKind::Centaur => "models/centaur.glb",
+        PieceKind::Admiral => "models/admiral.glb",
+        PieceKind::Missionary => "models/missionary.glb",
+        PieceKind::Eagle => "models/eagle.glb",
+        PieceKind::Rhinoceros => "models/rhinoceros.glb",
+        PieceKind::Prince => "models/prince.glb",
+        PieceKind::Sorceress => "models/sorceress.glb",
+        PieceKind::Duchess => "models/duchess.glb",
+        PieceKind::Troll => "models/troll.glb",
+    }
 }
 
 fn sync_pieces(
@@ -500,5 +489,12 @@ mod tests {
         assert_eq!(white_capture.y, BOARD_BASE_BOTTOM_Y);
         assert_eq!(black_capture.y, BOARD_BASE_BOTTOM_Y);
         assert_eq!(white_capture.z, -black_capture.z);
+    }
+
+    #[test]
+    fn every_engine_piece_has_a_model() {
+        for kind in PieceKind::ALL {
+            assert!(piece_model_path(kind).ends_with(".glb"));
+        }
     }
 }

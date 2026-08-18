@@ -855,7 +855,11 @@ mod tests {
 
     #[test]
     fn square_world_centers_both_supported_board_sizes() {
-        for size in [BoardSize::CAPABLANCA, BoardSize::GRAND] {
+        for size in [
+            BoardSize::CAPABLANCA,
+            BoardSize::GRAND,
+            BoardSize::TERACHESS,
+        ] {
             let lower = square_world(Square::new(0, 0), size);
             let upper = square_world(Square::new(size.files() - 1, size.ranks() - 1), size);
             assert_eq!(lower + upper, Vec3::ZERO);
@@ -864,7 +868,11 @@ mod tests {
 
     #[test]
     fn adjacent_squares_and_highlights_meet_exactly_at_their_edges() {
-        for size in [BoardSize::CAPABLANCA, BoardSize::GRAND] {
+        for size in [
+            BoardSize::CAPABLANCA,
+            BoardSize::GRAND,
+            BoardSize::TERACHESS,
+        ] {
             let lower = square_world(Square::new(0, 0), size);
             let right = square_world(Square::new(1, 0), size);
             let forward = square_world(Square::new(0, 1), size);

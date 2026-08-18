@@ -7,7 +7,8 @@ use capablanca_chess_plus::{Color, Move, MoveKind, Piece, PieceKind, Position, S
 use std::cmp::Reverse;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 const INFINITY: i32 = 1_100_000;
 const MATE_SCORE: i32 = 1_000_000;

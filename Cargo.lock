@@ -661,6 +661,7 @@ dependencies = [
  "fastrand",
  "multiplayer-protocol",
  "serde_json",
+ "terastockfish",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -5879,6 +5880,8 @@ name = "terastockfish"
 version = "0.1.0"
 dependencies = [
  "capablanca-engine",
+ "wasm-bindgen",
+ "web-time",
 ]
 
 [[package]]

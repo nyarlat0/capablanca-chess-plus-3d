@@ -1,10 +1,9 @@
 # Capablanca Chess Plus 3D
 
-A 3D chess application for Gothic, Embassy, Grand, Shako Chess, and Pemba, written in
-Rust with Bevy 0.19. It runs as a native desktop application or as a WebAssembly
-frontend in the browser, with Local, Fairy-Stockfish, and online multiplayer modes.
-The rules workspace additionally contains engine-only Terachess II support and a
-dedicated native analyser for its 16x16 board.
+A 3D chess application for Gothic, Embassy, Grand, Shako Chess, Pemba, and
+Terachess II, written in Rust with Bevy 0.19. It runs as a native desktop
+application or as a WebAssembly frontend in the browser, with Local, AI, and
+online multiplayer modes.
 
 The project is under active development. The rules engine and multiplayer server
 validate moves independently from the presentation layer; the Bevy frontend is
@@ -12,14 +11,15 @@ responsible for interaction, animation, sound, and rendering.
 
 ## Highlights
 
-- Five playable variants on 10x8 and 10x10 boards.
+- Six playable variants on 10x8, 10x10, and 16x16 boards.
 - Complete legal move generation, check, mate, stalemate, castling, en passant,
   promotion, repetition tracking, and extended FEN support.
 - A Bevy 0.19 frontend with animated pieces, captured-piece trays, a 3D promotion
   picker, automatic camera turns, mouse and touch controls, sound, and game-state UI.
 - Marble and wood PBR materials, image-based lighting, a nebula skybox, bloom,
   shadows, and optimized planar reflections of the pieces on the board.
-- Local pass-and-play, configurable Fairy-Stockfish AI, and server-authoritative
+- Local pass-and-play, honest node-budget AI using TeraStockfish for Terachess
+  II and Fairy-Stockfish for the other variants, plus server-authoritative
   multiplayer over WebSockets.
 - Browser reconnection through per-player tokens stored in `localStorage`; only
   token hashes and the authoritative move history are stored in PostgreSQL.
@@ -33,6 +33,7 @@ responsible for interaction, animation, sound, and rendering.
 | Grand | 10x10 | Grand Chess arrangement | None |
 | Shako | 10x10 | Cannons on rank 1/10, orthodox army and elephants on rank 2/9 | Orthodox two-square castling |
 | Pemba | 10x10 | 30 pieces per side across three ranks | Orthodox two-square castling from `f2`/`f9` |
+| Terachess II | 16x16 | 64 pieces per side using all 26 piece types | Initial safe two-square king jump |
 
 `A` is the archbishop/cardinal (bishop + knight). `C` is the
 chancellor/marshal (rook + knight). Grand Chess promotion uses captured
@@ -41,14 +42,16 @@ promotion. In Shako, the cannon moves like a rook without capture and captures
 through exactly one screen; the elephant leaps one or two squares diagonally.
 Pemba extends that army with camels `(3,1)`, giraffes `(3,2)`, diagonal-cannon
 archers, and orthogonal one-or-two-square machines.
+Terachess II adds the full large-board army, rapid pawns, piece-specific
+promotion, and the initial king jump implemented by the shared rules engine.
 
 ## Workspace layout
 
 | Path | Purpose |
 | --- | --- |
 | [`engine`](engine/) | Dependency-free rules, game state, move generation, and FEN. |
-| [`terastockfish`](terastockfish/) | Native UCI/Rust analysis engine for Terachess II, with 18x18-capable search storage. |
-| [`bevy-front`](bevy-front/) | Bevy desktop/WASM client, rendering, UI, animation, audio, Fairy-Stockfish integration, and multiplayer client. |
+| [`terastockfish`](terastockfish/) | Native UCI/Rust and browser-worker analysis engine for Terachess II, with 18x18-capable search storage. |
+| [`bevy-front`](bevy-front/) | Bevy desktop/WASM client, rendering, UI, animation, audio, engine integration, and multiplayer client. |
 | [`multiplayer-protocol`](multiplayer-protocol/) | Shared versioned WebSocket message types. |
 | [`backend`](backend/) | Actix WebSocket server with authoritative validation and PostgreSQL persistence. |
 | [`tools`](tools/) | Reproducible web packaging plus KTX2 board-texture, skybox, and IBL generation. |
@@ -62,10 +65,11 @@ archers, and orthogonal one-or-two-square machines.
 - Docker only when rebuilding generated render assets; it is not needed for an
   ordinary build.
 
-The bundled native Fairy-Stockfish executable is for x86-64 Linux. On another
-desktop architecture, set `FAIRY_STOCKFISH_PATH` to a compatible
-Fairy-Stockfish executable. Browser AI uses the bundled WebAssembly worker and
-does not depend on the server CPU architecture.
+The bundled native Fairy-Stockfish executable used by non-Terachess variants is
+for x86-64 Linux. On another desktop architecture, set `FAIRY_STOCKFISH_PATH`
+to a compatible Fairy-Stockfish executable. TeraStockfish is built from this
+workspace on every supported native architecture. Browser AI uses dedicated
+WebAssembly workers and does not depend on the server CPU architecture.
 
 ## Quick start
 
@@ -114,8 +118,9 @@ reuse it.
 
 - **Local** is pass-and-play on one device. The camera begins on White's side
   and turns after each completed move animation.
-- **AI** runs Fairy-Stockfish in a native child process or a dedicated browser
-  Web Worker. Difficulty is selected in the new-game menu.
+- **AI** uses TeraStockfish for Terachess II and Fairy-Stockfish for the other
+  variants. Both run off the render thread. The menu reports the exact
+  per-move node budget (`1k` through `1M`) rather than an estimated Elo.
 - **Multiplayer** creates or joins a room using its public game ID. Each color
   receives a separate secret player token for reconnecting without accounts.
 
@@ -156,7 +161,8 @@ cargo install --locked wasm-bindgen-cli --version 0.2.126
 ./tools/build-web.sh
 ```
 
-The result is written to `dist/web`. The script uses Cargo's normal workspace
+The result is written to `dist/web`. The script builds both the main Bevy
+module and the smaller on-demand TeraStockfish worker, uses Cargo's normal workspace
 `target` directory and the size-optimized `web-release` profile, includes only
 browser runtime assets, gives both the bundle and assets content-addressed
 paths, and generates Brotli/Gzip sidecars on the build machine. The frontend's
@@ -245,7 +251,8 @@ Fairy-Stockfish, and online play.
 The upstream project is MIT-licensed. Its required copyright and permission
 notice is preserved in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
-AI mode uses [Fairy-Stockfish](https://github.com/fairy-stockfish/Fairy-Stockfish).
+AI mode uses [Fairy-Stockfish](https://github.com/fairy-stockfish/Fairy-Stockfish)
+for non-Terachess variants. Terachess II uses this workspace's TeraStockfish.
 Exact native and browser versions, upstream sources, authors, and the GPLv3
 license are documented in
 [`bevy-front/assets/engine/THIRD_PARTY.md`](bevy-front/assets/engine/THIRD_PARTY.md).

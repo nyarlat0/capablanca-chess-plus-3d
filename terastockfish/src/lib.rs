@@ -18,6 +18,8 @@ pub mod texel;
 mod tt;
 pub mod uci;
 pub mod validation;
+#[cfg(target_arch = "wasm32")]
+mod web;
 
 pub use capacity::{MAX_BOARD_FILES, MAX_BOARD_RANKS, MAX_BOARD_SQUARES};
 pub use evaluate::{EvaluationParameters, evaluate, evaluate_with, piece_value};

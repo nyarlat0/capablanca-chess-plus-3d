@@ -60,12 +60,49 @@ find "$asset_source/textures/generated" -maxdepth 1 -type f -name '*.ktx2' ! -na
     done
 for engine_file in \
     fairy-stockfish-client.worker.js \
+    terastockfish-client.worker.js \
     stockfish.js \
     stockfish.wasm \
     stockfish.worker.js \
     variants.ini; do
     install -m 0644 "$asset_source/engine/$engine_file" "$unversioned_assets/engine/$engine_file"
 done
+
+# TeraStockfish is a separate, small WebAssembly module loaded only when an AI
+# Terachess II game starts. It runs inside a dedicated worker and therefore
+# cannot stall Bevy rendering or input while searching a 16x16 position.
+echo "Building TeraStockfish browser worker"
+(
+    cd "$repo_root"
+    "$cargo_command" build --locked --profile web-release -p terastockfish \
+        --lib --target wasm32-unknown-unknown
+)
+tera_bindgen_dir="$staging_dir/tera-bindgen"
+mkdir -p "$tera_bindgen_dir"
+"$wasm_bindgen_command" \
+    --target no-modules \
+    --no-typescript \
+    --remove-name-section \
+    --remove-producers-section \
+    --out-dir "$tera_bindgen_dir" \
+    --out-name terastockfish \
+    "$repo_root/target/wasm32-unknown-unknown/web-release/terastockfish.wasm"
+"$wasm_opt_command" \
+    "$tera_bindgen_dir/terastockfish_bg.wasm" \
+    -Os \
+    --enable-multivalue \
+    --enable-mutable-globals \
+    --enable-reference-types \
+    --enable-sign-ext \
+    --enable-nontrapping-float-to-int \
+    --enable-bulk-memory \
+    -o "$tera_bindgen_dir/terastockfish_bg.optimized.wasm"
+mv "$tera_bindgen_dir/terastockfish_bg.optimized.wasm" \
+    "$tera_bindgen_dir/terastockfish_bg.wasm"
+install -m 0644 "$tera_bindgen_dir/terastockfish.js" \
+    "$unversioned_assets/engine/terastockfish.js"
+install -m 0644 "$tera_bindgen_dir/terastockfish_bg.wasm" \
+    "$unversioned_assets/engine/terastockfish_bg.wasm"
 
 asset_hash=$(
     cd "$unversioned_assets"

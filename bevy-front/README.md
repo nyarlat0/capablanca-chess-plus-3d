@@ -1,10 +1,10 @@
 # Capablanca Chess Plus 3D frontend
 
 This crate is the Bevy 0.19 frontend for `capablanca-engine`. Its new-game menu
-offers Gothic, Embassy, Grand, Shako Chess, and Pemba on runtime 10×8 and 10×10 boards,
-with human or engine control for either side, two-player online rooms,
-legal-move highlighting, promotion choices, and asynchronous Fairy-Stockfish
-searches.
+offers Gothic, Embassy, Grand, Shako Chess, Pemba, and Terachess II on runtime
+10×8, 10×10, and 16×16 boards, with human or engine control for either side,
+two-player online rooms, legal-move highlighting, promotion choices, and
+asynchronous engine searches.
 
 ## Requirements
 
@@ -42,7 +42,7 @@ cargo run -p bevy-front
 - Right mouse drag: pan
 - Mouse wheel: zoom
 - The startup menu selects Local/AI/Multiplayer mode, variant, player color, and
-  the discrete Fairy-Stockfish strength in AI mode
+  an explicit `1k…1M` nodes-per-move search budget in AI mode
 - The `LOW / MEDIUM / ULTRA` slider remembers the browser preference but applies
   it only on Start; the initial menu always uses lightweight NightSky 4K. Low
   disables planar reflections and reduces shadows, antialiasing, and post FX.
@@ -55,9 +55,11 @@ cargo run -p bevy-front
 
 ## Browser / WASM setup
 
-The browser engine is the pinned `fairy-stockfish-nnue.wasm@1.1.11` build and
-runs in its own Web Worker. Build the deployable frontend from the workspace
-root with:
+Non-Terachess browser games use the pinned
+`fairy-stockfish-nnue.wasm@1.1.11` build. Terachess II uses the workspace's own
+TeraStockfish module. Each runs in its own Web Worker so search never blocks
+Bevy rendering or input. Build the deployable frontend from the workspace root
+with:
 
 ```sh
 ./tools/build-web.sh
@@ -65,7 +67,7 @@ root with:
 
 The script writes `dist/web`, builds with the size-optimized `web-release`
 profile and the frontend's minimal Bevy feature set, embeds a content-addressed
-asset root in both Bevy's asset loader and the Fairy-Stockfish worker URL,
+asset root in Bevy's asset loader and both engine worker URLs,
 omits native/source-only assets, and creates precompressed Brotli/Gzip files.
 Use the matching
 [`../deploy/Caddyfile`](../deploy/Caddyfile) so the generated immutable paths

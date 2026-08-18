@@ -3,6 +3,8 @@
 The backend exposes `GET /health` and one WebSocket endpoint per player at
 `GET /ws`. PostgreSQL migrations run automatically at startup, so the only
 external service required for local multiplayer development is PostgreSQL.
+Terachess II rooms use the same text variant column as existing rooms, so this
+addition requires no new database migration.
 
 Create an empty database, then either export the settings or copy
 `.env.example` to the ignored `backend/.env` and edit it:

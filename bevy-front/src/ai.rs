@@ -3,7 +3,7 @@ mod backend;
 use bevy::prelude::*;
 use capablanca_chess_plus::Variant;
 
-use self::backend::{Backend, BackendEvent};
+use self::backend::{BackendEvent, FairyBackend, TeraBackend};
 use crate::{
     app::FrontendSet,
     game::{
@@ -13,14 +13,16 @@ use crate::{
     pieces::PieceAnimationState,
 };
 
-pub(crate) const MIN_DIFFICULTY: u8 = 1;
-pub(crate) const MAX_DIFFICULTY: u8 = 10;
-pub(crate) const DEFAULT_DIFFICULTY: u8 = 5;
+pub(crate) const MIN_SEARCH_LEVEL: u8 = 1;
+pub(crate) const MAX_SEARCH_LEVEL: u8 = 10;
+pub(crate) const DEFAULT_SEARCH_LEVEL: u8 = 5;
 
-// Approximate UCI Elo targets. Fairy-Stockfish's calibration is based on
-// orthodox chess, so the displayed values are deliberately marked as estimates.
-const DIFFICULTY_ELO: [u16; 9] = [500, 750, 1000, 1250, 1500, 1750, 2000, 2250, 2550];
-const MOVE_TIME_MS: [u32; 10] = [150, 200, 300, 450, 650, 900, 1_250, 1_700, 2_300, 3_200];
+// The UI deliberately reports this real per-move search budget instead of
+// inventing an Elo mapping. Node limits also behave consistently across native
+// and browser builds, unlike wall-clock limits on heavily throttled tabs.
+const NODE_BUDGETS: [u64; 10] = [
+    1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000, 1_000_000,
+];
 
 pub(crate) struct AiPlugin;
 
@@ -35,55 +37,118 @@ impl Plugin for AiPlugin {
 
 #[derive(Resource)]
 pub(crate) struct AiSettings {
-    difficulty: u8,
+    search_level: u8,
 }
 
 impl AiSettings {
-    pub(crate) const fn difficulty(&self) -> u8 {
-        self.difficulty
+    pub(crate) const fn search_level(&self) -> u8 {
+        self.search_level
     }
 
-    pub(crate) fn set_difficulty(&mut self, difficulty: u8) {
-        self.difficulty = difficulty.clamp(MIN_DIFFICULTY, MAX_DIFFICULTY);
+    pub(crate) fn set_search_level(&mut self, level: u8) {
+        self.search_level = level.clamp(MIN_SEARCH_LEVEL, MAX_SEARCH_LEVEL);
     }
 }
 
 impl Default for AiSettings {
     fn default() -> Self {
         Self {
-            difficulty: DEFAULT_DIFFICULTY,
+            search_level: DEFAULT_SEARCH_LEVEL,
         }
     }
 }
 
-pub(crate) fn difficulty_description(difficulty: u8) -> String {
-    let profile = DifficultyProfile::new(difficulty);
-    profile.elo.map_or_else(
-        || format!("Level {} · Maximum", profile.level),
-        |elo| format!("Level {} · ~{elo} Elo", profile.level),
+pub(crate) fn search_budget_description(level: u8) -> String {
+    let profile = SearchProfile::new(level);
+    format!(
+        "Level {} · {} nodes / move",
+        profile.level,
+        format_nodes(profile.nodes)
     )
 }
 
-struct DifficultyProfile {
+struct SearchProfile {
     level: u8,
-    elo: Option<u16>,
-    move_time_ms: u32,
+    nodes: u64,
 }
 
-impl DifficultyProfile {
+impl SearchProfile {
     fn new(level: u8) -> Self {
-        let level = level.clamp(MIN_DIFFICULTY, MAX_DIFFICULTY);
-        let index = usize::from(level - MIN_DIFFICULTY);
+        let level = level.clamp(MIN_SEARCH_LEVEL, MAX_SEARCH_LEVEL);
+        let index = usize::from(level - MIN_SEARCH_LEVEL);
         Self {
             level,
-            elo: DIFFICULTY_ELO.get(index).copied(),
-            move_time_ms: MOVE_TIME_MS[index],
+            nodes: NODE_BUDGETS[index],
+        }
+    }
+}
+
+fn format_nodes(nodes: u64) -> String {
+    if nodes >= 1_000_000 && nodes.is_multiple_of(1_000_000) {
+        format!("{}M", nodes / 1_000_000)
+    } else if nodes >= 1_000 && nodes.is_multiple_of(1_000) {
+        format!("{}k", nodes / 1_000)
+    } else if nodes >= 1_000 {
+        format!("{:.1}k", nodes as f64 / 1_000.0)
+    } else {
+        nodes.to_string()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EngineKind {
+    Fairy,
+    Tera,
+}
+
+impl EngineKind {
+    const fn for_variant(variant: Variant) -> Self {
+        if matches!(variant, Variant::TerachessII) {
+            Self::Tera
+        } else {
+            Self::Fairy
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Fairy => "Fairy-Stockfish",
+            Self::Tera => "TeraStockfish",
+        }
+    }
+}
+
+enum ActiveBackend {
+    Fairy(FairyBackend),
+    Tera(TeraBackend),
+}
+
+impl ActiveBackend {
+    fn new(kind: EngineKind) -> Result<Self, String> {
+        match kind {
+            EngineKind::Fairy => FairyBackend::new().map(Self::Fairy),
+            EngineKind::Tera => TeraBackend::new().map(Self::Tera),
+        }
+    }
+
+    fn send(&self, command: &str) -> Result<(), String> {
+        match self {
+            Self::Fairy(backend) => backend.send(command),
+            Self::Tera(backend) => backend.send(command),
+        }
+    }
+
+    fn drain(&self, destination: &mut Vec<BackendEvent>) {
+        match self {
+            Self::Fairy(backend) => backend.drain(destination),
+            Self::Tera(backend) => backend.drain(destination),
         }
     }
 }
 
 pub(crate) struct AiTask {
-    backend: Option<Backend>,
+    backend: Option<ActiveBackend>,
+    engine_kind: Option<EngineKind>,
     state: EngineState,
     new_game_pending: bool,
 }
@@ -92,6 +157,7 @@ impl Default for AiTask {
     fn default() -> Self {
         Self {
             backend: None,
+            engine_kind: None,
             state: EngineState::Dormant,
             new_game_pending: true,
         }
@@ -99,13 +165,17 @@ impl Default for AiTask {
 }
 
 impl AiTask {
-    pub(crate) fn warm_up(&mut self) {
-        if !matches!(self.state, EngineState::Dormant | EngineState::Failed(_)) {
+    pub(crate) fn warm_up_for(&mut self, variant: Variant) {
+        let kind = EngineKind::for_variant(variant);
+        if self.engine_kind == Some(kind)
+            && !matches!(self.state, EngineState::Dormant | EngineState::Failed(_))
+        {
             return;
         }
         self.backend = None;
+        self.engine_kind = Some(kind);
         self.state = EngineState::Booting;
-        match Backend::new() {
+        match ActiveBackend::new(kind) {
             Ok(backend) => {
                 self.backend = Some(backend);
                 if let Err(error) = self.send("uci") {
@@ -118,6 +188,16 @@ impl AiTask {
 
     pub(crate) fn cancel(&mut self) {
         if matches!(self.state, EngineState::Searching(_)) {
+            if self.engine_kind == Some(EngineKind::Tera) {
+                // A browser worker cannot receive `stop` while executing a
+                // synchronous WebAssembly call. Termination is immediate and
+                // prevents a stale long search from consuming resources.
+                self.backend = None;
+                self.engine_kind = None;
+                self.state = EngineState::Dormant;
+                self.new_game_pending = true;
+                return;
+            }
             if let Err(error) = self.send("stop") {
                 self.fail(error);
             } else {
@@ -126,14 +206,15 @@ impl AiTask {
         }
     }
 
-    pub(crate) fn start_new_game(&mut self) {
+    pub(crate) fn start_new_game(&mut self, variant: Variant) {
         self.cancel();
         self.new_game_pending = true;
-        self.warm_up();
+        self.warm_up_for(variant);
     }
 
     pub(crate) fn shut_down(&mut self) {
         self.backend = None;
+        self.engine_kind = None;
         self.state = EngineState::Dormant;
         self.new_game_pending = true;
     }
@@ -141,12 +222,13 @@ impl AiTask {
     fn send(&self, command: &str) -> Result<(), String> {
         self.backend
             .as_ref()
-            .ok_or_else(|| "Fairy-Stockfish is unavailable".to_owned())?
+            .ok_or_else(|| "AI engine is unavailable".to_owned())?
             .send(command)
     }
 
     fn fail(&mut self, message: String) {
-        error!("Fairy-Stockfish integration failed: {message}");
+        let engine = self.engine_kind.map_or("AI engine", EngineKind::name);
+        error!("{engine} integration failed: {message}");
         self.state = EngineState::Failed(message);
     }
 
@@ -155,6 +237,10 @@ impl AiTask {
             EngineState::Failed(message) => Some(message),
             _ => None,
         }
+    }
+
+    fn engine_name(&self) -> &'static str {
+        self.engine_kind.map_or("AI engine", EngineKind::name)
     }
 }
 
@@ -193,38 +279,32 @@ fn start_ai_search(
     }
 
     if let Some(error) = task.failure() {
-        let status = format!("Fairy-Stockfish is unavailable: {error}");
+        let status = format!("{} is unavailable: {error}", task.engine_name());
         if chess_match.status != status {
             chess_match.status = status;
         }
+        return;
+    }
+    let required_engine = EngineKind::for_variant(chess_match.variant);
+    if task.engine_kind != Some(required_engine) || matches!(task.state, EngineState::Dormant) {
+        task.warm_up_for(chess_match.variant);
         return;
     }
     if !matches!(task.state, EngineState::Idle) {
         return;
     }
 
-    let profile = DifficultyProfile::new(settings.difficulty());
-    let limit_strength = profile.elo.is_some();
-    let mut commands = vec![
-        format!(
-            "setoption name UCI_Variant value {}",
-            fairy_variant(chess_match.variant)
-        ),
-        format!(
-            "setoption name UCI_LimitStrength value {}",
-            if limit_strength { "true" } else { "false" }
-        ),
-        "setoption name Skill Level value 20".to_owned(),
-    ];
-    if let Some(elo) = profile.elo {
-        commands.push(format!("setoption name UCI_Elo value {elo}"));
-    }
+    let profile = SearchProfile::new(settings.search_level());
+    let mut commands = vec![format!(
+        "setoption name UCI_Variant value {}",
+        uci_variant(chess_match.variant)
+    )];
     if task.new_game_pending {
         commands.push("ucinewgame".to_owned());
     }
     commands.extend([
         format!("position fen {}", chess_match.game.position().to_fen()),
-        format!("go movetime {}", profile.move_time_ms),
+        format!("go nodes {}", profile.nodes),
     ]);
 
     for command in commands {
@@ -235,9 +315,10 @@ fn start_ai_search(
     }
     task.new_game_pending = false;
     chess_match.status = format!(
-        "{} Fairy-Stockfish is thinking at level {}…",
+        "{} {} is searching {} nodes…",
         side_name(side),
-        profile.level
+        task.engine_name(),
+        format_nodes(profile.nodes)
     );
     task.state = EngineState::Searching(SearchInFlight {
         generation: chess_match.generation,
@@ -330,10 +411,11 @@ fn handle_engine_line(
     match chess_match.game.position().parse_uci_move(best_move) {
         Ok(chess_move) => apply_move(chess_match, chess_move, Some(&analysis)),
         Err(error) => {
+            let engine = task.engine_name();
             task.fail(format!(
-                "Fairy-Stockfish returned illegal move {best_move}: {error}"
+                "{engine} returned illegal move {best_move}: {error}"
             ));
-            chess_match.status = format!("Fairy-Stockfish error: illegal move {best_move}.");
+            chess_match.status = format!("{engine} error: illegal move {best_move}.");
         }
     }
 }
@@ -370,7 +452,7 @@ fn update_analysis(line: &str, analysis: &mut MoveAnalysis) {
     }
 }
 
-const fn fairy_variant(variant: Variant) -> &'static str {
+const fn uci_variant(variant: Variant) -> &'static str {
     match variant {
         Variant::Capablanca => "capablanca",
         Variant::Gothic => "gothic",
@@ -381,6 +463,7 @@ const fn fairy_variant(variant: Variant) -> &'static str {
         Variant::Grand => "grand",
         Variant::Shako => "shako",
         Variant::Pemba => "ccp_pemba",
+        Variant::TerachessII => "terachessii",
     }
 }
 
@@ -389,17 +472,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn difficulty_is_clamped_and_maximum_is_unlimited() {
-        assert_eq!(DifficultyProfile::new(0).level, MIN_DIFFICULTY);
-        assert_eq!(DifficultyProfile::new(5).elo, Some(1500));
-        assert_eq!(DifficultyProfile::new(99).level, MAX_DIFFICULTY);
-        assert_eq!(DifficultyProfile::new(MAX_DIFFICULTY).elo, None);
+    fn node_budget_is_honest_and_clamped() {
+        assert_eq!(SearchProfile::new(0).level, MIN_SEARCH_LEVEL);
+        assert_eq!(SearchProfile::new(5).nodes, 25_000);
+        assert_eq!(SearchProfile::new(99).level, MAX_SEARCH_LEVEL);
+        assert_eq!(SearchProfile::new(MAX_SEARCH_LEVEL).nodes, 1_000_000);
+        assert_eq!(search_budget_description(5), "Level 5 · 25k nodes / move");
     }
 
     #[test]
-    fn all_frontend_variants_have_a_fairy_stockfish_name() {
+    fn all_frontend_variants_have_a_uci_name() {
         assert_eq!(
-            Variant::ALL.map(fairy_variant),
+            Variant::ALL.map(uci_variant),
             [
                 "capablanca",
                 "gothic",
@@ -410,8 +494,14 @@ mod tests {
                 "grand",
                 "shako",
                 "ccp_pemba",
+                "terachessii",
             ]
         );
+        assert_eq!(
+            EngineKind::for_variant(Variant::TerachessII),
+            EngineKind::Tera
+        );
+        assert_eq!(EngineKind::for_variant(Variant::Gothic), EngineKind::Fairy);
     }
 
     #[test]
@@ -435,7 +525,7 @@ mod tests {
     fn bundled_fairy_stockfish_returns_a_legal_move_for_every_variant() {
         use std::{thread, time::Duration, time::Instant};
 
-        fn wait_for_line(backend: &Backend, predicate: impl Fn(&str) -> bool) -> String {
+        fn wait_for_line(backend: &FairyBackend, predicate: impl Fn(&str) -> bool) -> String {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 let mut events = Vec::new();
@@ -455,16 +545,19 @@ mod tests {
             }
         }
 
-        let backend = Backend::new().expect("bundled Fairy-Stockfish starts");
+        let backend = FairyBackend::new().expect("bundled Fairy-Stockfish starts");
         backend.send("uci").unwrap();
         wait_for_line(&backend, |line| line == "uciok");
         backend.send("setoption name Use NNUE value false").unwrap();
 
-        for variant in Variant::ALL {
+        for variant in Variant::ALL
+            .into_iter()
+            .filter(|variant| *variant != Variant::TerachessII)
+        {
             backend
                 .send(&format!(
                     "setoption name UCI_Variant value {}",
-                    fairy_variant(variant)
+                    uci_variant(variant)
                 ))
                 .unwrap();
             backend.send("isready").unwrap();

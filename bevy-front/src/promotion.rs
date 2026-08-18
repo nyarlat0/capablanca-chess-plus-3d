@@ -405,6 +405,18 @@ const fn promotion_label(promotion: Option<PieceKind>) -> &'static str {
         Some(PieceKind::Giraffe) => "Giraffe",
         Some(PieceKind::Archer) => "Archer",
         Some(PieceKind::Machine) => "Machine",
+        Some(PieceKind::Amazon) => "Amazon",
+        Some(PieceKind::Lion) => "Lion",
+        Some(PieceKind::Buffalo) => "Buffalo",
+        Some(PieceKind::Centaur) => "Centaur",
+        Some(PieceKind::Admiral) => "Admiral",
+        Some(PieceKind::Missionary) => "Missionary",
+        Some(PieceKind::Eagle) => "Eagle",
+        Some(PieceKind::Rhinoceros) => "Rhinoceros",
+        Some(PieceKind::Prince) => "Prince",
+        Some(PieceKind::Sorceress) => "Sorceress",
+        Some(PieceKind::Duchess) => "Duchess",
+        Some(PieceKind::Troll) => "Troll",
     }
 }
 

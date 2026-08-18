@@ -11,10 +11,15 @@ categories = ["game-development", "command-line-utilities"]
 
 [dependencies]
 capablanca-engine = { path = "../engine" }
+web-time = "1.1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
 
 [lib]
 name = "terastockfish"
 path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
 
 [[bin]]
 name = "terastockfish"

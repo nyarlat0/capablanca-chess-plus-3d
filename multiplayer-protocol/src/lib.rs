@@ -41,6 +41,8 @@ pub enum Variant {
     Grand,
     Shako,
     Pemba,
+    #[serde(rename = "terachess_ii")]
+    TerachessII,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -131,6 +133,14 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Variant>("\"pemba\"").unwrap(),
             Variant::Pemba
+        );
+        assert_eq!(
+            serde_json::to_string(&Variant::TerachessII).unwrap(),
+            "\"terachess_ii\""
+        );
+        assert_eq!(
+            serde_json::from_str::<Variant>("\"terachess_ii\"").unwrap(),
+            Variant::TerachessII
         );
     }
 }

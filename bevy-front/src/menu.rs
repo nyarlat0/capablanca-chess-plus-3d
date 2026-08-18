@@ -19,8 +19,8 @@ use wasm_bindgen::JsCast;
 
 use crate::{
     ai::{
-        AiSettings, AiTask, DEFAULT_DIFFICULTY, MAX_DIFFICULTY, MIN_DIFFICULTY,
-        difficulty_description,
+        AiSettings, AiTask, DEFAULT_SEARCH_LEVEL, MAX_SEARCH_LEVEL, MIN_SEARCH_LEVEL,
+        search_budget_description,
     },
     app::FrontendSet::Menu,
     game::{ChessMatch, Controller, restart_match},
@@ -592,14 +592,14 @@ fn spawn_ai_difficulty_controls(parent: &mut ChildSpawnerCommands, font: &Handle
                 .with_children(|header| {
                     header.spawn(text(
                         font,
-                        "FAIRY-STOCKFISH STRENGTH",
+                        "AI SEARCH BUDGET",
                         12.0,
                         Color::srgba(1.0, 0.48, 0.7, 0.9),
                     ));
                     header.spawn((
                         text(
                             font,
-                            &difficulty_description(DEFAULT_DIFFICULTY),
+                            &search_budget_description(DEFAULT_SEARCH_LEVEL),
                             12.0,
                             TEXT_PRIMARY,
                         ),
@@ -621,8 +621,8 @@ fn spawn_ai_difficulty_controls(parent: &mut ChildSpawnerCommands, font: &Handle
                         track_click: TrackClick::Snap,
                         ..default()
                     },
-                    SliderValue(f32::from(DEFAULT_DIFFICULTY)),
-                    SliderRange::new(f32::from(MIN_DIFFICULTY), f32::from(MAX_DIFFICULTY)),
+                    SliderValue(f32::from(DEFAULT_SEARCH_LEVEL)),
+                    SliderRange::new(f32::from(MIN_SEARCH_LEVEL), f32::from(MAX_SEARCH_LEVEL)),
                     SliderStep(1.0),
                     SliderPrecision(0),
                     AiDifficultySlider,
@@ -680,7 +680,7 @@ fn spawn_ai_difficulty_controls(parent: &mut ChildSpawnerCommands, font: &Handle
                             Pickable::IGNORE,
                         ))
                         .with_children(|ticks| {
-                            for _ in MIN_DIFFICULTY..=MAX_DIFFICULTY {
+                            for _ in MIN_SEARCH_LEVEL..=MAX_SEARCH_LEVEL {
                                 ticks.spawn((
                                     Node {
                                         width: px(3),
@@ -942,7 +942,7 @@ fn handle_menu_interactions(
             MenuAction::Mode(mode) => {
                 menu.selected_mode = mode;
                 if mode == GameMode::Ai {
-                    ai_task.warm_up();
+                    ai_task.warm_up_for(menu.selected_variant);
                 }
             }
             MenuAction::Variant(variant) => {
@@ -951,6 +951,9 @@ fn handle_menu_interactions(
                     restart_match(&mut chess_match, variant);
                     chess_match.controllers = [Controller::Human, Controller::Human];
                     ai_task.cancel();
+                    if menu.selected_mode == GameMode::Ai {
+                        ai_task.warm_up_for(variant);
+                    }
                 }
             }
             MenuAction::Side(side) => menu.selected_side = side,
@@ -981,7 +984,7 @@ fn handle_menu_interactions(
                 restart_match(&mut chess_match, variant);
                 chess_match.controllers = controllers_for(mode, side);
                 match mode {
-                    GameMode::Ai => ai_task.start_new_game(),
+                    GameMode::Ai => ai_task.start_new_game(variant),
                     GameMode::Local => ai_task.shut_down(),
                     GameMode::Multiplayer => unreachable!(),
                 }
@@ -1260,7 +1263,7 @@ fn sync_ai_difficulty(
     mut settings: ResMut<AiSettings>,
 ) {
     for value in &sliders {
-        settings.set_difficulty(value.0.round() as u8);
+        settings.set_search_level(value.0.round() as u8);
     }
 }
 
@@ -1316,7 +1319,7 @@ fn style_ai_difficulty_slider(
             }
         }
         for mut label in &mut labels {
-            **label = difficulty_description(value.0.round() as u8);
+            **label = search_budget_description(value.0.round() as u8);
         }
     }
 }
@@ -1456,15 +1459,17 @@ fn variant_label(variant: Variant) -> &'static str {
         Variant::Grand => "Grand Chess",
         Variant::Shako => "Shako Chess",
         Variant::Pemba => "Pemba",
+        Variant::TerachessII => "Terachess II",
     }
 }
 
-const MENU_VARIANTS: [Variant; 5] = [
+const MENU_VARIANTS: [Variant; 6] = [
     Variant::Gothic,
     Variant::Embassy,
     Variant::Grand,
     Variant::Shako,
     Variant::Pemba,
+    Variant::TerachessII,
 ];
 
 #[cfg(test)]
@@ -1489,6 +1494,7 @@ mod tests {
                 Variant::Grand,
                 Variant::Shako,
                 Variant::Pemba,
+                Variant::TerachessII,
             ]
         );
     }

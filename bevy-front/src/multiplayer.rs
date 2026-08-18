@@ -573,6 +573,7 @@ fn variant_to_wire(variant: EngineVariant) -> Variant {
         EngineVariant::Grand => Variant::Grand,
         EngineVariant::Shako => Variant::Shako,
         EngineVariant::Pemba => Variant::Pemba,
+        EngineVariant::TerachessII => Variant::TerachessII,
     }
 }
 
@@ -587,6 +588,7 @@ fn variant_from_wire(variant: Variant) -> EngineVariant {
         Variant::Grand => EngineVariant::Grand,
         Variant::Shako => EngineVariant::Shako,
         Variant::Pemba => EngineVariant::Pemba,
+        Variant::TerachessII => EngineVariant::TerachessII,
     }
 }
 
@@ -666,8 +668,12 @@ mod tests {
     }
 
     #[test]
-    fn decimal_variants_round_trip_through_the_wire_protocol() {
-        for variant in [EngineVariant::Shako, EngineVariant::Pemba] {
+    fn large_board_variants_round_trip_through_the_wire_protocol() {
+        for variant in [
+            EngineVariant::Shako,
+            EngineVariant::Pemba,
+            EngineVariant::TerachessII,
+        ] {
             assert_eq!(variant_from_wire(variant_to_wire(variant)), variant);
         }
     }
