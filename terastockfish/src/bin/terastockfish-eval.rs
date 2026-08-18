@@ -20,6 +20,7 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     let mut config = SelfPlayConfig::default();
     let mut baseline_name = "published".to_owned();
+    let mut candidate_name = None;
     let mut profile_path = None;
     let mut changes = Vec::new();
     let mut arguments = env::args().skip(1);
@@ -56,6 +57,13 @@ fn run() -> Result<(), String> {
                     .next()
                     .ok_or_else(|| "--baseline requires a value".to_owned())?;
             }
+            "--candidate" => {
+                candidate_name = Some(
+                    arguments
+                        .next()
+                        .ok_or_else(|| "--candidate requires a value".to_owned())?,
+                );
+            }
             "--profile" => {
                 if profile_path.is_some() {
                     return Err("--profile may be supplied only once".to_owned());
@@ -81,12 +89,23 @@ fn run() -> Result<(), String> {
         "production" => EvaluationParameters::production(),
         _ => return Err(format!("unknown baseline `{baseline_name}`")),
     };
+    if profile_path.is_some() && candidate_name.is_some() {
+        return Err("--profile and --candidate cannot be combined".to_owned());
+    }
     let (mut candidate, candidate_profile) = if let Some(path) = profile_path {
         let profile = MaterialProfile::decode(
             &fs::read_to_string(&path)
                 .map_err(|error| format!("cannot read profile {path}: {error}"))?,
         )?;
         (profile.parameters, profile.name)
+    } else if let Some(name) = candidate_name {
+        match name.as_str() {
+            "strategic-v2" => (
+                EvaluationParameters::strategic_v2_candidate(),
+                "strategic-v2".to_owned(),
+            ),
+            _ => return Err(format!("unknown candidate `{name}`")),
+        }
     } else {
         (baseline, "baseline-with-overrides".to_owned())
     };
@@ -180,6 +199,10 @@ fn apply_assignment(parameters: &mut EvaluationParameters, assignment: &str) -> 
             "king_shelter" => parameters.set_king_shelter_bonus(value),
             "king_jump" => parameters.set_king_jump_bonus(value),
             "tempo" => parameters.set_tempo_bonus(value),
+            "connected_pawn" => parameters.set_connected_pawn_bonus(value),
+            "passed_pawn" => parameters.set_passed_pawn_bonus(value),
+            "rook_semi_open_file" => parameters.set_rook_semi_open_file_bonus(value),
+            "rook_open_file" => parameters.set_rook_open_file_bonus(value),
             _ => return Err(format!("unknown evaluation parameter `{name}`")),
         }
     }
@@ -264,11 +287,14 @@ fn print_help() {
            --adjudication-plies N  Required consecutive half-moves\n\
            --seed N|0xHEX          Opening generator seed\n\
            --baseline NAME         published|production (default: published)\n\
+           --candidate NAME        Built-in candidate: strategic-v2\n\
            --profile PATH          Candidate material profile file\n\
            --set NAME=VALUE        Candidate weight; may be repeated\n\
          \n\
          Weight examples:\n\
            --set material.queen=1700 --set centrality.knight=3\n\
-           --set advancement.pawn=8 --set bishop_pair=32 --set tempo=10"
+           --set advancement.pawn=8 --set bishop_pair=32 --set tempo=10
+           --set connected_pawn=6 --set passed_pawn=5
+           --set rook_semi_open_file=6 --set rook_open_file=12"
     );
 }

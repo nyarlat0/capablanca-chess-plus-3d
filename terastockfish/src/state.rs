@@ -37,6 +37,11 @@ impl SearchPosition {
     }
 
     #[must_use]
+    pub fn legal_tactical_moves(&mut self) -> Vec<Move> {
+        self.position.legal_tactical_moves_mut()
+    }
+
+    #[must_use]
     pub const fn keys(&self) -> PositionKeys {
         self.keys
     }
@@ -54,6 +59,19 @@ impl SearchPosition {
         self.keys = position_keys_after_move(&self.position, keys, &position);
         self.evaluation
             .apply_move(&self.position, &position, parameters);
+        SearchUndo {
+            position,
+            keys,
+            evaluation,
+        }
+    }
+
+    #[must_use]
+    pub fn make_null_move(&mut self) -> SearchUndo {
+        let keys = self.keys;
+        let evaluation = self.evaluation;
+        let position = self.position.make_null_move();
+        self.keys = position_keys(&self.position);
         SearchUndo {
             position,
             keys,

@@ -15,7 +15,8 @@ use terastockfish::texel::{
 use terastockfish::validation::{SelfPlayConfig, compare_profiles};
 use terastockfish::{EvaluationParameters, SearchHistory, SearchLimits, SearchOptions, Searcher};
 
-const DATASET_VERSION: &str = "TERASTOCKFISH_TEXEL_DATA_V1";
+const DATASET_VERSION: &str = "TERASTOCKFISH_TEXEL_DATA_V2";
+const LEGACY_DATASET_VERSION: &str = "TERASTOCKFISH_TEXEL_DATA_V1";
 const CHECKPOINT_VERSION: &str = "TERASTOCKFISH_TEXEL_RUN_V1";
 
 fn main() -> ExitCode {
@@ -180,7 +181,7 @@ impl Dataset {
             "# {DATASET_VERSION}\n# completed_pairs={}\n# collection_seconds={:.6}\n",
             self.completed_pairs, self.collection_seconds
         );
-        output.push_str("game_id,outcome,fixed_score");
+        output.push_str("game_id,outcome,fixed_score,fen");
         for kind in PieceKind::ALL {
             output.push(',');
             output.push_str(piece_name(kind));
@@ -188,8 +189,8 @@ impl Dataset {
         output.push('\n');
         for sample in &self.samples {
             output.push_str(&format!(
-                "{},{:.6},{}",
-                sample.game_id, sample.outcome, sample.fixed_score
+                "{},{:.6},{},{}",
+                sample.game_id, sample.outcome, sample.fixed_score, sample.fen
             ));
             for difference in sample.piece_differences {
                 output.push_str(&format!(",{difference}"));
@@ -202,11 +203,15 @@ impl Dataset {
     fn decode(contents: &str) -> Result<Self, String> {
         let mut dataset = Self::new();
         let mut saw_version = false;
+        let mut legacy = false;
         let mut saw_pairs = false;
         let mut saw_seconds = false;
         for line in contents.lines() {
             if line.strip_prefix("# ") == Some(DATASET_VERSION) {
                 saw_version = true;
+            } else if line.strip_prefix("# ") == Some(LEGACY_DATASET_VERSION) {
+                saw_version = true;
+                legacy = true;
             } else if let Some(value) = line.strip_prefix("# completed_pairs=") {
                 dataset.completed_pairs = parse(value, "completed_pairs")?;
                 saw_pairs = true;
@@ -217,12 +222,13 @@ impl Dataset {
                 continue;
             } else {
                 let fields = line.split(',').collect::<Vec<_>>();
-                if fields.len() != PieceKind::COUNT + 3 {
+                let feature_offset = if legacy { 3 } else { 4 };
+                if fields.len() != PieceKind::COUNT + feature_offset {
                     return Err(format!("invalid dataset row with {} fields", fields.len()));
                 }
                 let mut piece_differences = [0_i16; PieceKind::COUNT];
                 for (index, difference) in piece_differences.iter_mut().enumerate() {
-                    *difference = parse(fields[index + 3], "piece difference")?;
+                    *difference = parse(fields[index + feature_offset], "piece difference")?;
                 }
                 let outcome = parse::<f64>(fields[1], "outcome")?;
                 if !outcome.is_finite() || !(0.0..=1.0).contains(&outcome) {
@@ -232,6 +238,11 @@ impl Dataset {
                     game_id: parse(fields[0], "game id")?,
                     outcome,
                     fixed_score: parse(fields[2], "fixed score")?,
+                    fen: if legacy {
+                        String::new()
+                    } else {
+                        fields[3].to_owned()
+                    },
                     piece_differences,
                 });
             }
@@ -1388,6 +1399,7 @@ mod tests {
             game_id: 5,
             outcome: 1.0,
             fixed_score: 12,
+            fen: "example fen".to_owned(),
             piece_differences: differences,
         });
         assert_eq!(
@@ -1401,6 +1413,39 @@ mod tests {
     }
 
     #[test]
+    fn legacy_v1_dataset_remains_readable_without_fens() {
+        let mut dataset = Dataset::new();
+        dataset.completed_pairs = 1;
+        dataset.samples.push(MaterialSample {
+            game_id: 0,
+            outcome: 0.5,
+            fixed_score: 12,
+            fen: "discarded in legacy format".to_owned(),
+            piece_differences: [0; PieceKind::COUNT],
+        });
+        let legacy = dataset
+            .encode()
+            .replace(DATASET_VERSION, LEGACY_DATASET_VERSION)
+            .lines()
+            .map(|line| {
+                if line.starts_with("game_id,") {
+                    line.replace(",fen", "")
+                } else if !line.starts_with('#') && !line.is_empty() {
+                    let mut fields = line.split(',').collect::<Vec<_>>();
+                    fields.remove(3);
+                    fields.join(",")
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let decoded = Dataset::decode(&legacy).unwrap();
+        assert_eq!(decoded.samples.len(), 1);
+        assert!(decoded.samples[0].fen.is_empty());
+    }
+
+    #[test]
     fn merging_datasets_remaps_colliding_game_ids_without_splitting_games() {
         let sample = |game_id, difference| {
             let mut piece_differences = [0; PieceKind::COUNT];
@@ -1409,6 +1454,7 @@ mod tests {
                 game_id,
                 outcome: 0.5,
                 fixed_score: 0,
+                fen: String::new(),
                 piece_differences,
             }
         };

@@ -3,10 +3,10 @@ use crate::evaluate::EvaluationParameters;
 use crate::key::{position_key, position_keys};
 use crate::state::SearchPosition;
 use crate::tt::{Bound, TranspositionTable};
-use capablanca_chess_plus::{Color, Move, MoveKind, Piece, Position, Square};
+use capablanca_chess_plus::{Color, Move, MoveKind, Piece, PieceKind, Position, Square};
 use std::cmp::Reverse;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 const INFINITY: i32 = 1_100_000;
@@ -133,6 +133,7 @@ pub struct Searcher {
     table: Arc<TranspositionTable>,
     control: SearchControl,
     history: Vec<i32>,
+    deterministic_nodes: bool,
 }
 
 impl Default for Searcher {
@@ -152,6 +153,7 @@ impl Searcher {
             evaluation: EvaluationParameters::production(),
             control: SearchControl::default(),
             history: vec![0; 2 * MAX_BOARD_SQUARES * MAX_BOARD_SQUARES],
+            deterministic_nodes: false,
         }
     }
 
@@ -199,6 +201,18 @@ impl Searcher {
 
     pub fn set_threads(&mut self, threads: usize) {
         self.options.threads = threads.clamp(1, 256);
+    }
+
+    /// Makes pure node-limited searches reproducible for a fixed thread count.
+    /// The default strength-oriented shared-TT mode remains enabled when this
+    /// option is false or no node limit is supplied.
+    pub fn set_deterministic_nodes(&mut self, enabled: bool) {
+        self.deterministic_nodes = enabled;
+    }
+
+    #[must_use]
+    pub const fn deterministic_nodes(&self) -> bool {
+        self.deterministic_nodes
     }
 
     #[must_use]
@@ -260,6 +274,7 @@ impl Searcher {
         let mut root = SearchPosition::new(position, &self.evaluation);
         let root_repetition = root.keys().repetition;
         let repetition = root_repetition_history(history, root_repetition);
+        let deterministic_nodes = self.deterministic_nodes && limits.max_nodes.is_some();
         let mut context = SearchContext {
             table: Arc::clone(&self.table),
             control: self.control.clone(),
@@ -268,6 +283,8 @@ impl Searcher {
             generation,
             nodes: Arc::new(AtomicU64::new(0)),
             threads: self.options.threads,
+            hash_megabytes: self.options.hash_megabytes,
+            deterministic_nodes,
             evaluation: self.evaluation,
             history: &mut self.history,
             killers: [[None; 2]; MAX_PLY],
@@ -300,7 +317,12 @@ impl Searcher {
         let mut stopped = false;
 
         for depth in 1..=max_depth {
-            if context.should_stop_now() {
+            if context.should_stop_now()
+                || (deterministic_nodes
+                    && limits
+                        .max_nodes
+                        .is_some_and(|maximum| context.node_count() >= maximum))
+            {
                 stopped = true;
                 break;
             }
@@ -363,7 +385,13 @@ impl Searcher {
             };
             reporter(&info);
 
-            if context.budget.soft_expired() || is_mate_score(best_score) {
+            if context.budget.soft_expired()
+                || is_mate_score(best_score)
+                || (deterministic_nodes
+                    && limits
+                        .max_nodes
+                        .is_some_and(|maximum| context.node_count() >= maximum))
+            {
                 break;
             }
         }
@@ -399,6 +427,8 @@ struct SearchContext<'a> {
     generation: u8,
     nodes: Arc<AtomicU64>,
     threads: usize,
+    hash_megabytes: usize,
+    deterministic_nodes: bool,
     evaluation: EvaluationParameters,
     history: &'a mut [i32],
     killers: [[Option<Move>; 2]; MAX_PLY],
@@ -443,12 +473,20 @@ impl SearchContext<'_> {
             let undo = position.make_move(chess_move, &self.evaluation);
             let score = (|| {
                 if move_index == 0 {
-                    return Ok(-self.negamax(position, i32::from(depth) - 1, 1, -beta, -alpha)?);
+                    return Ok(-self.negamax(
+                        position,
+                        i32::from(depth) - 1,
+                        1,
+                        -beta,
+                        -alpha,
+                        true,
+                    )?);
                 }
                 let mut score =
-                    -self.negamax(position, i32::from(depth) - 1, 1, -alpha - 1, -alpha)?;
+                    -self.negamax(position, i32::from(depth) - 1, 1, -alpha - 1, -alpha, true)?;
                 if score > alpha && score < beta {
-                    score = -self.negamax(position, i32::from(depth) - 1, 1, -beta, -alpha)?;
+                    score =
+                        -self.negamax(position, i32::from(depth) - 1, 1, -beta, -alpha, true)?;
                 }
                 Ok::<_, SearchAborted>(score)
             })();
@@ -505,7 +543,29 @@ impl SearchContext<'_> {
             tt_move.or(previous_best),
             0,
         );
-        let worker_count = self.threads.min(moves.len());
+        let deterministic_nodes = self.deterministic_nodes;
+        let mut leader = None;
+        let parallel_moves = if deterministic_nodes {
+            moves.as_slice()
+        } else {
+            let chess_move = moves[0];
+            let mut leader_position = position.clone();
+            let undo = leader_position.make_move(chess_move, &self.evaluation);
+            let score = self
+                .negamax(
+                    &mut leader_position,
+                    i32::from(depth) - 1,
+                    1,
+                    -beta,
+                    -alpha,
+                    true,
+                )
+                .map(|score| -score);
+            leader_position.unmake_move(undo);
+            leader = Some((chess_move, score?));
+            &moves[1..]
+        };
+        let worker_count = self.threads.min(parallel_moves.len()).max(1);
         let base_history = self.history.to_vec();
         let base_killers = self.killers;
         let table = Arc::clone(&self.table);
@@ -516,21 +576,34 @@ impl SearchContext<'_> {
         let evaluation = self.evaluation;
         let nodes = Arc::clone(&self.nodes);
         let repetition = self.repetition.clone();
+        let worker_hash = self.hash_megabytes.div_ceil(worker_count).max(1);
+        let shared_alpha = Arc::new(AtomicI32::new(
+            leader.map_or(alpha, |(_, score)| alpha.max(score)),
+        ));
 
         let worker_results = std::thread::scope(|scope| {
             let mut workers = Vec::with_capacity(worker_count);
             for worker_id in 0..worker_count {
-                let assigned = moves
+                let assigned = parallel_moves
                     .iter()
                     .copied()
                     .skip(worker_id)
                     .step_by(worker_count)
                     .collect::<Vec<_>>();
                 let mut position = position.clone();
-                let table = Arc::clone(&table);
+                let table = if deterministic_nodes {
+                    Arc::new(TranspositionTable::new(worker_hash))
+                } else {
+                    Arc::clone(&table)
+                };
                 let control = control.clone();
-                let nodes = Arc::clone(&nodes);
+                let worker_nodes = if deterministic_nodes {
+                    Arc::new(AtomicU64::new(0))
+                } else {
+                    Arc::clone(&nodes)
+                };
                 let repetition = repetition.clone();
+                let shared_alpha = Arc::clone(&shared_alpha);
                 let mut history = base_history.clone();
                 workers.push(scope.spawn(move || {
                     let mut worker = SearchContext {
@@ -539,8 +612,10 @@ impl SearchContext<'_> {
                         limits,
                         budget,
                         generation,
-                        nodes,
+                        nodes: Arc::clone(&worker_nodes),
                         threads: 1,
+                        hash_megabytes: worker_hash,
+                        deterministic_nodes,
                         evaluation,
                         history: &mut history,
                         killers: base_killers,
@@ -550,14 +625,49 @@ impl SearchContext<'_> {
                     for chess_move in assigned {
                         worker.check_stop()?;
                         let undo = position.make_move(chess_move, &worker.evaluation);
-                        let score = worker
-                            .negamax(&mut position, i32::from(depth) - 1, 1, -beta, -alpha)
-                            .map(|score| -score);
+                        let score = if deterministic_nodes {
+                            worker
+                                .negamax(
+                                    &mut position,
+                                    i32::from(depth) - 1,
+                                    1,
+                                    -beta,
+                                    -alpha,
+                                    true,
+                                )
+                                .map(|score| -score)
+                        } else {
+                            let local_alpha = shared_alpha.load(Ordering::Relaxed);
+                            let mut score = -worker.negamax(
+                                &mut position,
+                                i32::from(depth) - 1,
+                                1,
+                                -local_alpha - 1,
+                                -local_alpha,
+                                true,
+                            )?;
+                            if score > local_alpha && score < beta {
+                                score = -worker.negamax(
+                                    &mut position,
+                                    i32::from(depth) - 1,
+                                    1,
+                                    -beta,
+                                    -local_alpha,
+                                    true,
+                                )?;
+                            }
+                            shared_alpha.fetch_max(score, Ordering::Relaxed);
+                            Ok(score)
+                        };
                         position.unmake_move(undo);
                         let score = score?;
                         scores.push((chess_move, score));
                     }
-                    Ok::<_, SearchAborted>((scores, worker.killers))
+                    Ok::<_, SearchAborted>((
+                        scores,
+                        worker.killers,
+                        deterministic_nodes.then(|| worker_nodes.load(Ordering::Relaxed)),
+                    ))
                 }));
             }
             workers
@@ -566,10 +676,13 @@ impl SearchContext<'_> {
                 .collect::<Vec<_>>()
         });
 
-        let mut best_move = moves[0];
-        let mut best_score = -INFINITY;
+        let mut best_move = leader.map_or(moves[0], |(chess_move, _)| chess_move);
+        let mut best_score = leader.map_or(-INFINITY, |(_, score)| score);
         for result in worker_results {
-            let (scores, killers) = result?;
+            let (scores, killers, deterministic_worker_nodes) = result?;
+            if let Some(worker_nodes) = deterministic_worker_nodes {
+                self.nodes.fetch_add(worker_nodes, Ordering::Relaxed);
+            }
             self.killers = killers;
             for (chess_move, score) in scores {
                 if score > best_score {
@@ -606,6 +719,7 @@ impl SearchContext<'_> {
         ply: usize,
         mut alpha: i32,
         beta: i32,
+        allow_null: bool,
     ) -> Result<i32, SearchAborted> {
         self.visit_node()?;
         let keys = position.keys();
@@ -617,12 +731,23 @@ impl SearchContext<'_> {
         }
 
         self.repetition.push(keys.repetition);
-        let result =
-            self.negamax_current(position, keys.analysis, &mut depth, ply, &mut alpha, beta);
+        let result = self.negamax_current(
+            position,
+            keys.analysis,
+            &mut depth,
+            ply,
+            &mut alpha,
+            beta,
+            allow_null,
+        );
         self.repetition.pop();
         result
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "explicit alpha-beta state keeps recursive search calls auditable"
+    )]
     fn negamax_current(
         &mut self,
         position: &mut SearchPosition,
@@ -631,6 +756,7 @@ impl SearchContext<'_> {
         ply: usize,
         alpha: &mut i32,
         beta: i32,
+        allow_null: bool,
     ) -> Result<i32, SearchAborted> {
         let in_check = position
             .position()
@@ -665,6 +791,57 @@ impl SearchContext<'_> {
         }
 
         let static_evaluation = position.evaluate(&self.evaluation);
+        if allow_null
+            && !in_check
+            && *depth >= 3
+            && beta < MATE_THRESHOLD
+            && position.position().halfmove_clock() < 90
+            && static_evaluation >= beta
+            && has_non_pawn_material(position.position())
+        {
+            let reduction = 2 + *depth / 4;
+            let undo = position.make_null_move();
+            let null_repetition = vec![position.keys().repetition];
+            let real_repetition = std::mem::replace(&mut self.repetition, null_repetition);
+            let null_score = self
+                .negamax(
+                    position,
+                    (*depth - 1 - reduction).max(0),
+                    ply + 1,
+                    -beta,
+                    -beta + 1,
+                    false,
+                )
+                .map(|score| -score);
+            self.repetition = real_repetition;
+            position.unmake_move(undo);
+            let null_score = null_score?;
+            if null_score >= beta {
+                if *depth < 6 {
+                    return Ok(null_score);
+                }
+                let mut verification_depth = (*depth - reduction).max(1);
+                let mut verification_alpha = beta - 1;
+                let verification = self.negamax_current(
+                    position,
+                    key,
+                    &mut verification_depth,
+                    ply,
+                    &mut verification_alpha,
+                    beta,
+                    false,
+                )?;
+                if verification >= beta {
+                    return Ok(verification);
+                }
+            }
+        }
+        if !in_check && *depth <= 3 {
+            let margin = 140 * *depth;
+            if static_evaluation - margin >= beta {
+                return Ok(static_evaluation);
+            }
+        }
         if !in_check && *depth == 1 && static_evaluation + 180 <= *alpha {
             return self.quiescence_current(position, ply, *alpha, beta);
         }
@@ -679,6 +856,7 @@ impl SearchContext<'_> {
         let mut best_score = -INFINITY;
         let mut best_move = None;
         let moving_color = position.position().side_to_move();
+        let mut searched_quiets = Vec::new();
 
         for (move_index, chess_move) in moves.into_iter().enumerate() {
             let capture = captured_piece(position.position(), chess_move).is_some();
@@ -687,10 +865,27 @@ impl SearchContext<'_> {
             let gives_check = position
                 .position()
                 .is_in_check(position.position().side_to_move());
+            let futility = quiet
+                && !in_check
+                && !gives_check
+                && move_index > 0
+                && ((*depth == 1 && static_evaluation + 180 <= *alpha)
+                    || (*depth == 2 && move_index >= 20 && static_evaluation + 320 <= *alpha));
+            if futility {
+                position.unmake_move(undo);
+                continue;
+            }
 
             let score = (|| {
                 if move_index == 0 {
-                    return Ok(-self.negamax(position, *depth - 1, ply + 1, -beta, -*alpha)?);
+                    return Ok(-self.negamax(
+                        position,
+                        *depth - 1,
+                        ply + 1,
+                        -beta,
+                        -*alpha,
+                        true,
+                    )?);
                 }
                 let reduction = reduction(*depth, move_index, quiet, in_check, gives_check);
                 let mut score = -self.negamax(
@@ -699,17 +894,22 @@ impl SearchContext<'_> {
                     ply + 1,
                     -*alpha - 1,
                     -*alpha,
+                    true,
                 )?;
                 if reduction > 0 && score > *alpha {
-                    score = -self.negamax(position, *depth - 1, ply + 1, -*alpha - 1, -*alpha)?;
+                    score =
+                        -self.negamax(position, *depth - 1, ply + 1, -*alpha - 1, -*alpha, true)?;
                 }
                 if score > *alpha && score < beta {
-                    score = -self.negamax(position, *depth - 1, ply + 1, -beta, -*alpha)?;
+                    score = -self.negamax(position, *depth - 1, ply + 1, -beta, -*alpha, true)?;
                 }
                 Ok::<_, SearchAborted>(score)
             })();
             position.unmake_move(undo);
             let score = score?;
+            if quiet {
+                searched_quiets.push(chess_move);
+            }
 
             if score > best_score {
                 best_score = score;
@@ -723,6 +923,13 @@ impl SearchContext<'_> {
             }
             if *alpha >= beta {
                 if quiet {
+                    for failed in searched_quiets
+                        .iter()
+                        .copied()
+                        .filter(|failed| *failed != chess_move)
+                    {
+                        self.penalize_history(moving_color, failed, *depth);
+                    }
                     self.record_killer(ply, chess_move);
                     self.reward_history(moving_color, chess_move, *depth + 2);
                 }
@@ -766,20 +973,19 @@ impl SearchContext<'_> {
             alpha = alpha.max(stand_pat);
         }
 
-        let mut moves = position.legal_moves();
-        if moves.is_empty() {
-            return Ok(if in_check {
-                -MATE_SCORE + ply as i32
-            } else {
-                0
-            });
-        }
-        if !in_check {
-            moves.retain(|chess_move| {
-                captured_piece(position.position(), *chess_move).is_some()
-                    || chess_move.promotion.is_some()
-            });
-        }
+        let mut moves = if in_check {
+            let moves = position.legal_moves();
+            if moves.is_empty() {
+                return Ok(-MATE_SCORE + ply as i32);
+            }
+            moves
+        } else {
+            let moves = position.legal_tactical_moves();
+            if moves.is_empty() {
+                return Ok(alpha);
+            }
+            moves
+        };
         self.order_moves(position.position(), &mut moves, None, ply);
 
         for chess_move in moves {
@@ -789,6 +995,19 @@ impl SearchContext<'_> {
                 && chess_move.promotion.is_none()
             {
                 continue;
+            }
+            if !in_check && let Some(victim) = captured_piece(position.position(), chess_move) {
+                let attacker = position
+                    .position()
+                    .board()
+                    .piece_at(chess_move.from)
+                    .expect("generated capture must have an attacker");
+                if self.evaluation.material_value(attacker.kind)
+                    > self.evaluation.material_value(victim.kind)
+                    && static_exchange_evaluation(position, chess_move, &self.evaluation) < 0
+                {
+                    continue;
+                }
             }
             let undo = position.make_move(chess_move, &self.evaluation);
             let child_score = self.quiescence(position, ply + 1, -beta, -alpha);
@@ -881,6 +1100,12 @@ impl SearchContext<'_> {
         self.history[index] = (self.history[index] + bonus).min(32_000);
     }
 
+    fn penalize_history(&mut self, color: Color, chess_move: Move, depth: i32) {
+        let index = history_index(color, chess_move);
+        let penalty = (depth * depth).clamp(1, 400);
+        self.history[index] = (self.history[index] - penalty).max(-32_000);
+    }
+
     fn principal_variation(&self, position: &Position, depth: u8) -> Vec<Move> {
         let mut current = position.clone();
         let mut pv = Vec::with_capacity(usize::from(depth));
@@ -912,7 +1137,7 @@ impl SearchContext<'_> {
 
     fn visit_node(&mut self) -> Result<(), SearchAborted> {
         let nodes = self.nodes.fetch_add(1, Ordering::Relaxed).saturating_add(1);
-        if self.limits.max_nodes.is_some_and(|limit| nodes >= limit)
+        if (!self.deterministic_nodes && self.limits.max_nodes.is_some_and(|limit| nodes >= limit))
             || (nodes & 0x3ff == 0 && self.should_stop_now())
         {
             return Err(SearchAborted);
@@ -998,6 +1223,79 @@ fn captured_piece(position: &Position, chess_move: Move) -> Option<Piece> {
     }
 }
 
+fn static_exchange_evaluation(
+    position: &mut SearchPosition,
+    chess_move: Move,
+    evaluation: &EvaluationParameters,
+) -> i32 {
+    let Some(victim) = captured_piece(position.position(), chess_move) else {
+        return 0;
+    };
+    let attacker = position
+        .position()
+        .board()
+        .piece_at(chess_move.from)
+        .expect("generated capture must have an attacker");
+    let promotion_gain = chess_move.promotion.map_or(0, |promotion| {
+        evaluation.material_value(promotion) - evaluation.material_value(attacker.kind)
+    });
+    let gain = evaluation.material_value(victim.kind) + promotion_gain;
+    let undo = position.make_move(chess_move, evaluation);
+    let reply = exchange_gain(position, chess_move.to, evaluation, 0);
+    position.unmake_move(undo);
+    gain - reply
+}
+
+fn exchange_gain(
+    position: &mut SearchPosition,
+    target: Square,
+    evaluation: &EvaluationParameters,
+    ply: u8,
+) -> i32 {
+    if ply >= 16 {
+        return 0;
+    }
+    let Some(victim) = position.position().board().piece_at(target) else {
+        return 0;
+    };
+    let victim_value = evaluation.material_value(victim.kind);
+    let mut recaptures = position
+        .legal_tactical_moves()
+        .into_iter()
+        .filter(|chess_move| chess_move.to == target)
+        .collect::<Vec<_>>();
+    recaptures.sort_unstable_by_key(|chess_move| {
+        position
+            .position()
+            .board()
+            .piece_at(chess_move.from)
+            .map_or(i32::MAX, |piece| evaluation.material_value(piece.kind))
+    });
+    let mut best = 0;
+    for chess_move in recaptures {
+        let attacker = position
+            .position()
+            .board()
+            .piece_at(chess_move.from)
+            .expect("generated recapture must have an attacker");
+        let promotion_gain = chess_move.promotion.map_or(0, |promotion| {
+            evaluation.material_value(promotion) - evaluation.material_value(attacker.kind)
+        });
+        let undo = position.make_move(chess_move, evaluation);
+        let continuation = exchange_gain(position, target, evaluation, ply + 1);
+        position.unmake_move(undo);
+        best = best.max(victim_value + promotion_gain - continuation);
+    }
+    best
+}
+
+fn has_non_pawn_material(position: &Position) -> bool {
+    let side = position.side_to_move();
+    position.board().pieces().any(|(_, piece)| {
+        piece.color == side && !matches!(piece.kind, PieceKind::Pawn | PieceKind::King)
+    })
+}
+
 fn history_index(color: Color, chess_move: Move) -> usize {
     color.index() * MAX_BOARD_SQUARES * MAX_BOARD_SQUARES
         + square_index(chess_move.from) * MAX_BOARD_SQUARES
@@ -1005,12 +1303,15 @@ fn history_index(color: Color, chess_move: Move) -> usize {
 }
 
 fn reduction(depth: i32, move_index: usize, quiet: bool, in_check: bool, gives_check: bool) -> i32 {
-    if depth < 3 || move_index < 4 || !quiet || in_check || gives_check {
+    if depth < 3 || move_index < 3 || !quiet || in_check || gives_check {
         return 0;
     }
-    let depth_term = if depth >= 6 { 1 } else { 0 };
-    let move_term = if move_index >= 12 { 1 } else { 0 };
-    (1 + depth_term + move_term).min(depth - 2)
+    let reduction = 1
+        + i32::from(depth >= 6)
+        + i32::from(depth >= 10)
+        + i32::from(move_index >= 10)
+        + i32::from(move_index >= 24);
+    reduction.min(depth - 2)
 }
 
 fn age_history(history: &mut [i32]) {
@@ -1107,5 +1408,54 @@ mod tests {
             root_repetition_history(Some(&history), different_root),
             vec![different_root]
         );
+    }
+
+    #[test]
+    fn static_exchange_rejects_a_defended_low_value_capture() {
+        let position = Position::from_fen(
+            Variant::Gothic.rules(),
+            "9k/4r5/10/10/4p5/4Q5/10/K9 w - - 0 1",
+        )
+        .unwrap();
+        let chess_move = position.parse_uci_move("e3e4").unwrap();
+        let evaluation = EvaluationParameters::production();
+        let mut search_position = SearchPosition::new(&position, &evaluation);
+        assert!(static_exchange_evaluation(&mut search_position, chess_move, &evaluation) < 0);
+        assert_eq!(search_position.position(), &position);
+    }
+
+    #[test]
+    fn deterministic_node_mode_repeats_with_parallel_workers() {
+        let position = Variant::TerachessII.starting_position();
+        let run = |threads| {
+            let mut searcher = Searcher::new(SearchOptions {
+                hash_megabytes: 4,
+                threads,
+            });
+            assert!(!searcher.deterministic_nodes());
+            searcher.set_deterministic_nodes(true);
+            let result = searcher.analyze(
+                &position,
+                SearchLimits {
+                    max_depth: 8,
+                    max_nodes: Some(5_000),
+                    ..SearchLimits::default()
+                },
+            );
+            (
+                result.best_move,
+                result.score,
+                result.completed_depth,
+                result.nodes,
+                result.principal_variation,
+            )
+        };
+        for threads in [1, 2, 4, 12] {
+            let expected = run(threads);
+            assert!(expected.3 >= 5_000);
+            for _ in 0..3 {
+                assert_eq!(run(threads), expected, "Threads={threads}");
+            }
+        }
     }
 }

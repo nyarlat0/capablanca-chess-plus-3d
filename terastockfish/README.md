@@ -13,10 +13,14 @@ playing strength; the name describes the intended role and architecture.
 
 - iterative deepening with principal-variation search;
 - aspiration windows with automatic full-window recovery;
-- capture/check quiescence search;
-- check extensions, late-move reductions, and conservative shallow razoring;
+- capture/promotion quiescence search with complete legal evasions while in
+  check, delta pruning, and variant-aware static exchange pruning;
+- check extensions, late-move reductions, conservative futility pruning, and
+  verified null-move pruning with zugzwang guards;
 - TT, MVV-LVA, promotion, killer, and history move ordering;
-- a fixed-size lock-free transposition table shared by root workers;
+- indexed per-color board occupancy used by both full and tactical generation;
+- a four-entry clustered, fixed-size lock-free transposition table;
+- strength-oriented shared-alpha parallel root PVS with a shared TT;
 - 21-bit signed TT scores, leaving a safe range for Terachess material and
   distance-to-mate values;
 - repetition, fifty-move, mate, and stalemate terminal handling;
@@ -47,6 +51,7 @@ Example session:
 uci
 setoption name Hash value 512
 setoption name Threads value 4
+setoption name DeterministicNodes value false
 isready
 position startpos moves a4a6 a13a11
 go depth 8
@@ -60,6 +65,13 @@ Supported `go` limits are `depth`, `nodes`, `movetime`, `wtime`, `btime`,
 Moves use long coordinate notation, including multi-digit ranks, for example
 `a4a6` and `e10e12`.
 
+`DeterministicNodes` defaults to `false`. When enabled for `go nodes N`, each
+root worker uses a private TT and deterministic move assignment, so repeated
+runs with the same position, history, build, hash size, and thread count return
+the same move, score, depth, node count, and PV. The node limit becomes a soft
+iterative-deepening boundary and can be exceeded by the final completed
+iteration. Time-controlled searches retain the stronger shared-TT mode.
+
 ## Rust API
 
 ```rust
@@ -71,6 +83,7 @@ let mut searcher = Searcher::new(SearchOptions {
     hash_megabytes: 256,
     threads: 4,
 });
+searcher.set_deterministic_nodes(false);
 let result = searcher.analyze(&position, SearchLimits::depth(7));
 println!("best: {:?}, score: {}", result.best_move, result.score);
 ```
@@ -102,7 +115,9 @@ cargo run --release -p terastockfish --bin terastockfish-eval -- \
 
 Material, centrality, and advancement accept every `PieceKind` name. Scalar
 weights are `doubled_pawn`, `isolated_pawn`, `bishop_pair`, `king_shelter`,
-`king_jump`, and `tempo`. Run with `--help` for match limits. Output contains
+`king_jump`, `tempo`, `connected_pawn`, `passed_pawn`,
+`rook_semi_open_file`, and `rook_open_file`. Run with `--help` for match
+limits. Output contains
 per-game CSV records plus W/D/L, score, and a 95% confidence interval. A
 candidate should replace the published default only when the interval's lower
 bound exceeds 50%.
@@ -110,6 +125,11 @@ bound exceeds 50%.
 `--baseline published|production` selects the opponent explicitly.
 `--profile PATH` loads a complete material profile emitted by the Texel tool;
 additional `--set` options are applied after loading it.
+
+`--candidate strategic-v2` selects the built-in positional candidate that
+adds connected/passed-pawn and open-file terms. It is intentionally not the
+production default: its smoke run checks plumbing only and supplies no playing
+strength evidence. Promote it only after a fixed paired validation.
 
 ### Automatic material tuning
 
@@ -135,6 +155,12 @@ coverage and bootstrap 95% intervals for every piece, final W/D/L, ready-to-use
 `material.<piece>=<value>` lines, and `recommended=true|false|inconclusive`.
 The complete methodology, result tables, limitations, and decision record for
 that run are in the [Terachess II research log](docs/research/README.md).
+
+Newly written datasets use `TERASTOCKFISH_TEXEL_DATA_V2` and retain the FEN of
+every sampled position. This permits later positional-feature fitting without
+replaying the original games. The loader remains compatible with V1 material
+datasets; their samples have no recoverable FEN and therefore support only the
+original material features.
 
 ### Independent confirmation and pooled fit
 
@@ -306,11 +332,14 @@ cargo run --release -p terastockfish --bin terastockfish-tune -- --preset smoke
 cargo run --release -p terastockfish --bin terastockfish-texel -- --preset smoke
 ```
 
-The benchmark prints elapsed time, searched nodes, and nodes per second for the
-full Terachess II starting array. It is intentionally dependency-free so the
-same binary can be profiled on the eventual deployment machine.
+The dependency-free benchmark uses the full starting array plus fixed seeded
+opening, early-middlegame, and middlegame snapshots. Each case reports the
+median wall time of three fresh single-thread searches, node count, NPS, and
+best move, followed by an aggregate. The current search-foundation benchmark
+and its limitations are recorded in the
+[research log](docs/research/2026-08-18-search-strength-foundation.md).
 
-Future strength work can add variant-specific piece-square tables, null-move
-and stronger pruning verified for this ruleset, persistent opening data, and
-an NNUE-style evaluator without changing the public position/depth API or the
-18x18 TT move format.
+Future strength work should validate the strategic V2 evaluator, add
+variant-specific piece-square or mobility terms, improve parallel scaling
+beyond root splitting, and eventually investigate an NNUE-style evaluator.
+All can preserve the public position/depth API and the 18x18 TT move format.

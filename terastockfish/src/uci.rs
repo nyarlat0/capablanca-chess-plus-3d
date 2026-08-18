@@ -109,6 +109,18 @@ impl UciState {
                     .clamp(1, 256);
                 searcher.set_threads(threads);
             }
+            "deterministicnodes" => {
+                let enabled = match value
+                    .ok_or_else(|| "DeterministicNodes requires true or false".to_owned())?
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err("DeterministicNodes requires true or false".to_owned()),
+                };
+                searcher.set_deterministic_nodes(enabled);
+            }
             "clear hash" => searcher.clear_hash(),
             "uci_variant" => {
                 let variant = value.unwrap_or_default().to_ascii_lowercase();
@@ -200,6 +212,7 @@ fn print_identification() {
     println!("id author Capablanca Chess Plus contributors");
     println!("option name Hash type spin default 128 min 1 max 65536");
     println!("option name Threads type spin default 1 min 1 max 256");
+    println!("option name DeterministicNodes type check default false");
     println!("option name Clear Hash type button");
     println!("option name UCI_Variant type combo default terachessii var terachessii");
     println!("uciok");
@@ -385,5 +398,15 @@ mod tests {
             parse_setoption("setoption name Clear Hash").unwrap(),
             ("Clear Hash".to_owned(), None)
         );
+    }
+
+    #[test]
+    fn deterministic_nodes_option_is_disabled_by_default_and_settable() {
+        let mut state = UciState::default();
+        assert!(!state.searcher.as_ref().unwrap().deterministic_nodes());
+        state
+            .set_option("setoption name DeterministicNodes value true")
+            .unwrap();
+        assert!(state.searcher.as_ref().unwrap().deterministic_nodes());
     }
 }

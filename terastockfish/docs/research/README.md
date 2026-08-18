@@ -18,6 +18,7 @@ concluded from it.
 | 2026-08-17 | [Retrospective color balance and prospective protocol](2026-08-17-color-balance-prestudy.md) | Existing paired training data estimate White at 56.66%, paired 95% CI 54.37–58.94%; important protocol confounds remain | Treat as preliminary evidence; run fixed production-vs-production balance study |
 | 2026-08-18 | [Balance pilot invalidation and V2 protocol](2026-08-18-balance-protocol-correction.md) | 33/48 games hit the 300-ply cap and were misclassified as draws; 12 repeated and only 3 mated | Reject the pilot; add full repetition history, uncapped play, unresolved outcomes, conservative adjudication, and Wilson intervals |
 | 2026-08-18 | [Production color-balance V2](2026-08-18-color-balance-v2.md) | White scored 53.52% over 384 resolved games, 95% CI 48.52–58.44%; the estimate converged downward but neither advantage nor ±3% equivalence was established | Retain the current array; treat a small White edge as plausible but unproven |
+| 2026-08-18 | [Search-strength foundation](2026-08-18-search-strength-foundation.md) | Starting-position depth-4 time fell 47.9% and NPS rose 68.6%; 104 tests pass; no strength match was run | Retain implementation, keep deterministic mode opt-in and strategic V2 unpromoted; run paired search ablations next |
 
 ## Required record for future research
 

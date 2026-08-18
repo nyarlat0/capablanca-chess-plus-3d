@@ -39,6 +39,9 @@ pub struct MaterialSample {
     /// White-relative score of all evaluation terms except the 24 tuned
     /// material values. Pawn remains anchored at 100.
     pub fixed_score: i32,
+    /// Original position for recomputing future evaluation features. Empty
+    /// only for legacy V1 datasets that predate position retention.
+    pub fen: String,
     /// White piece count minus black piece count for every PieceKind.
     pub piece_differences: [i16; PieceKind::COUNT],
 }
@@ -64,6 +67,7 @@ impl MaterialSample {
             game_id,
             outcome,
             fixed_score,
+            fen: position.to_fen(),
             piece_differences,
         }
     }
@@ -600,6 +604,7 @@ mod tests {
                 game_id,
                 outcome: sigmoid(scale * score),
                 fixed_score: 0,
+                fen: String::new(),
                 piece_differences: differences,
             });
         }
@@ -631,6 +636,7 @@ mod tests {
                 game_id,
                 outcome: 0.5,
                 fixed_score: 0,
+                fen: String::new(),
                 piece_differences: [0; PieceKind::COUNT],
             })
             .collect::<Vec<_>>();

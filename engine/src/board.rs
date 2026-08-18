@@ -3,6 +3,7 @@ use std::fmt;
 
 const STORAGE_FILES: usize = 18;
 const STORAGE_SQUARES: usize = STORAGE_FILES * STORAGE_FILES;
+const STORAGE_WORDS: usize = STORAGE_SQUARES.div_ceil(u64::BITS as usize);
 
 /// Rectangular board dimensions supported by the engine.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -54,6 +55,8 @@ pub struct Board {
     size: BoardSize,
     squares: [Option<Piece>; STORAGE_SQUARES],
     king_squares: [Option<Square>; 2],
+    occupied: [u64; STORAGE_WORDS],
+    colors: [[u64; STORAGE_WORDS]; 2],
 }
 
 impl Board {
@@ -63,6 +66,8 @@ impl Board {
             size,
             squares: [None; STORAGE_SQUARES],
             king_squares: [None; 2],
+            occupied: [0; STORAGE_WORDS],
+            colors: [[0; STORAGE_WORDS]; 2],
         }
     }
 
@@ -95,12 +100,11 @@ impl Board {
     }
 
     pub fn pieces(&self) -> impl Iterator<Item = (Square, Piece)> + '_ {
-        (0..self.size.ranks()).flat_map(move |rank| {
-            (0..self.size.files()).filter_map(move |file| {
-                let square = Square::new(file, rank);
-                self.squares[square.storage_index()].map(|piece| (square, piece))
-            })
-        })
+        self.pieces_from_mask(self.occupied)
+    }
+
+    pub(crate) fn pieces_of(&self, color: Color) -> impl Iterator<Item = (Square, Piece)> + '_ {
+        self.pieces_from_mask(self.colors[color.index()])
     }
 
     #[must_use]
@@ -117,19 +121,51 @@ impl Board {
 
     fn replace_piece(&mut self, square: Square, piece: Option<Piece>) -> Option<Piece> {
         let index = square.storage_index();
+        let word = index / u64::BITS as usize;
+        let bit = 1_u64 << (index % u64::BITS as usize);
         let old = std::mem::replace(&mut self.squares[index], piece);
-        if let Some(old) = old
-            && old.kind == PieceKind::King
-            && self.king_squares[old.color.index()] == Some(square)
-        {
-            self.king_squares[old.color.index()] = None;
+        if let Some(old) = old {
+            self.occupied[word] &= !bit;
+            self.colors[old.color.index()][word] &= !bit;
+            if old.kind == PieceKind::King && self.king_squares[old.color.index()] == Some(square) {
+                self.king_squares[old.color.index()] = None;
+            }
         }
-        if let Some(piece) = piece
-            && piece.kind == PieceKind::King
-        {
-            self.king_squares[piece.color.index()] = Some(square);
+        if let Some(piece) = piece {
+            self.occupied[word] |= bit;
+            self.colors[piece.color.index()][word] |= bit;
+            if piece.kind == PieceKind::King {
+                self.king_squares[piece.color.index()] = Some(square);
+            }
         }
         old
+    }
+
+    fn pieces_from_mask(
+        &self,
+        mask: [u64; STORAGE_WORDS],
+    ) -> impl Iterator<Item = (Square, Piece)> + '_ {
+        let mut word_index = 0_usize;
+        let mut remaining = mask[0];
+        std::iter::from_fn(move || {
+            loop {
+                if remaining != 0 {
+                    let offset = remaining.trailing_zeros() as usize;
+                    remaining &= remaining - 1;
+                    let index = word_index * u64::BITS as usize + offset;
+                    let square =
+                        Square::new((index % STORAGE_FILES) as u8, (index / STORAGE_FILES) as u8);
+                    let piece =
+                        self.squares[index].expect("occupied mask must match board storage");
+                    return Some((square, piece));
+                }
+                word_index += 1;
+                if word_index == STORAGE_WORDS {
+                    return None;
+                }
+                remaining = mask[word_index];
+            }
+        })
     }
 }
 
@@ -165,5 +201,27 @@ mod tests {
         assert_eq!(board.set_piece(corner, Some(piece)).unwrap(), None);
         assert_eq!(board.piece_at(corner), Some(piece));
         assert_eq!(board.pieces().count(), 1);
+    }
+
+    #[test]
+    fn color_piece_indexes_follow_replacements() {
+        let mut board = Board::empty(BoardSize::TERACHESS);
+        let square: Square = "p16".parse().unwrap();
+        let white = Piece::new(Color::White, PieceKind::Amazon);
+        let black = Piece::new(Color::Black, PieceKind::Troll);
+        board.set_piece(square, Some(white)).unwrap();
+        assert_eq!(
+            board.pieces_of(Color::White).collect::<Vec<_>>(),
+            [(square, white)]
+        );
+        assert!(board.pieces_of(Color::Black).next().is_none());
+        board.set_piece(square, Some(black)).unwrap();
+        assert!(board.pieces_of(Color::White).next().is_none());
+        assert_eq!(
+            board.pieces_of(Color::Black).collect::<Vec<_>>(),
+            [(square, black)]
+        );
+        board.set_piece(square, None).unwrap();
+        assert!(board.pieces().next().is_none());
     }
 }

@@ -9,6 +9,7 @@ const SCORE_BITS: u32 = 21;
 const SCORE_MASK: u64 = (1 << SCORE_BITS) - 1;
 const MIN_STORED_SCORE: i32 = -(1 << (SCORE_BITS - 1));
 const MAX_STORED_SCORE: i32 = (1 << (SCORE_BITS - 1)) - 1;
+const CLUSTER_SIZE: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Bound {
@@ -50,11 +51,16 @@ struct AtomicEntry {
     data: AtomicU64,
 }
 
+#[derive(Default)]
+struct Cluster {
+    entries: [AtomicEntry; CLUSTER_SIZE],
+}
+
 /// A fixed-size, lock-free transposition table. Each slot uses the standard
 /// key-xor-data validation scheme, allowing search threads to share it without
 /// mutexes while rejecting torn reads.
 pub struct TranspositionTable {
-    entries: Box<[AtomicEntry]>,
+    clusters: Box<[Cluster]>,
     mask: usize,
     generation: AtomicU8,
 }
@@ -68,27 +74,29 @@ impl TranspositionTable {
             .checked_div(size_of::<AtomicEntry>())
             .unwrap_or(1)
             .max(1);
-        let capacity = floor_power_of_two(requested);
-        let entries = (0..capacity)
-            .map(|_| AtomicEntry::default())
+        let cluster_count = floor_power_of_two(requested.div_ceil(CLUSTER_SIZE));
+        let clusters = (0..cluster_count)
+            .map(|_| Cluster::default())
             .collect::<Vec<_>>()
             .into_boxed_slice();
         Self {
-            entries,
-            mask: capacity - 1,
+            clusters,
+            mask: cluster_count - 1,
             generation: AtomicU8::new(0),
         }
     }
 
     #[must_use]
     pub const fn capacity(&self) -> usize {
-        self.entries.len()
+        self.clusters.len() * CLUSTER_SIZE
     }
 
     pub fn clear(&self) {
-        for entry in &self.entries {
-            entry.key_xor_data.store(0, Ordering::Relaxed);
-            entry.data.store(0, Ordering::Relaxed);
+        for cluster in &self.clusters {
+            for entry in &cluster.entries {
+                entry.key_xor_data.store(0, Ordering::Relaxed);
+                entry.data.store(0, Ordering::Relaxed);
+            }
         }
     }
 
@@ -100,13 +108,17 @@ impl TranspositionTable {
     }
 
     pub(crate) fn probe(&self, key: u64) -> Option<TtData> {
-        let entry = &self.entries[key as usize & self.mask];
-        let data = entry.data.load(Ordering::Acquire);
-        if data & VALID_BIT == 0 {
-            return None;
+        for entry in &self.clusters[key as usize & self.mask].entries {
+            let data = entry.data.load(Ordering::Acquire);
+            if data & VALID_BIT == 0 {
+                continue;
+            }
+            let stored_key = entry.key_xor_data.load(Ordering::Relaxed) ^ data;
+            if stored_key == key {
+                return Some(unpack_data(data));
+            }
         }
-        let stored_key = entry.key_xor_data.load(Ordering::Relaxed) ^ data;
-        (stored_key == key).then(|| unpack_data(data))
+        None
     }
 
     pub(crate) fn store(
@@ -118,34 +130,48 @@ impl TranspositionTable {
         best_move: Option<Move>,
         generation: u8,
     ) {
-        let entry = &self.entries[key as usize & self.mask];
-        let old_data = entry.data.load(Ordering::Relaxed);
-        if old_data & VALID_BIT != 0 {
+        let cluster = &self.clusters[key as usize & self.mask];
+        let mut selected = &cluster.entries[0];
+        let mut selected_retention = i32::MAX;
+        for entry in &cluster.entries {
+            let old_data = entry.data.load(Ordering::Relaxed);
+            if old_data & VALID_BIT == 0 {
+                selected = entry;
+                break;
+            }
             let old_key = entry.key_xor_data.load(Ordering::Relaxed) ^ old_data;
+            if old_key == key {
+                selected = entry;
+                break;
+            }
             let old = unpack_data(old_data);
-            let exact_bonus = if bound == Bound::Exact { 1 } else { 0 };
-            let replace =
-                old_key == key || old.generation != generation || depth >= old.depth - exact_bonus;
-            if !replace {
-                return;
+            let age = i32::from(generation.wrapping_sub(old.generation) & 0x7f);
+            let exact_bonus = if old.bound == Bound::Exact { 4 } else { 0 };
+            let retention = i32::from(old.depth) + exact_bonus - age * 8;
+            if retention < selected_retention {
+                selected = entry;
+                selected_retention = retention;
             }
         }
 
         let data = pack_data(depth, score, bound, best_move, generation);
-        entry.key_xor_data.store(key ^ data, Ordering::Relaxed);
-        entry.data.store(data, Ordering::Release);
+        selected.key_xor_data.store(key ^ data, Ordering::Relaxed);
+        selected.data.store(data, Ordering::Release);
     }
 
     /// Approximate occupancy in permille, following the UCI `hashfull` scale.
     #[must_use]
     pub fn hashfull(&self) -> u16 {
-        let sample = self.entries.len().min(1_000);
+        let sample = self.capacity().min(1_000);
         if sample == 0 {
             return 0;
         }
         let generation = self.generation.load(Ordering::Relaxed) & 0x7f;
-        let used = self.entries[..sample]
+        let used = self
+            .clusters
             .iter()
+            .flat_map(|cluster| cluster.entries.iter())
+            .take(sample)
             .filter(|entry| {
                 let data = entry.data.load(Ordering::Relaxed);
                 data & VALID_BIT != 0 && unpack_data(data).generation == generation
@@ -251,6 +277,28 @@ mod tests {
         assert_eq!(hit.bound, Bound::Lower);
         assert_eq!(hit.best_move, Some(best_move));
         assert!(table.probe(18).is_none());
+    }
+
+    #[test]
+    fn cluster_retains_four_colliding_positions() {
+        let table = TranspositionTable::new(1);
+        let cluster_count = table.capacity() / CLUSTER_SIZE;
+        for slot in 0..CLUSTER_SIZE {
+            table.store(
+                slot as u64 * cluster_count as u64,
+                slot as i16 + 1,
+                slot as i32 * 10,
+                Bound::Exact,
+                None,
+                1,
+            );
+        }
+        for slot in 0..CLUSTER_SIZE {
+            let hit = table
+                .probe(slot as u64 * cluster_count as u64)
+                .expect("all four cluster ways must remain available");
+            assert_eq!(hit.score, slot as i32 * 10);
+        }
     }
 
     #[test]

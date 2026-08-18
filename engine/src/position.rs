@@ -352,16 +352,33 @@ impl Position {
     /// make/unmake storage. The position is restored before returning.
     #[must_use]
     pub fn legal_moves_mut(&mut self) -> Vec<Move> {
+        self.legal_moves_mut_with(false)
+    }
+
+    /// Generates legal captures and promotions while reusing this position as
+    /// temporary make/unmake storage. In-check callers must use
+    /// [`Self::legal_moves_mut`] because every legal evasion is tactical.
+    #[must_use]
+    pub fn legal_tactical_moves_mut(&mut self) -> Vec<Move> {
+        self.legal_moves_mut_with(true)
+    }
+
+    fn legal_moves_mut_with(&mut self, tactical_only: bool) -> Vec<Move> {
         let moving_color = self.side_to_move;
         let king_square = self
             .board
             .king_square(moving_color)
             .expect("a valid position must contain its moving side's king");
         let mut pseudo = Vec::with_capacity(96);
-        for (from, piece) in self.board.pieces() {
-            if piece.color == moving_color {
-                self.generate_piece_moves(from, piece, &mut pseudo);
-            }
+        for (from, piece) in self.board.pieces_of(moving_color) {
+            self.generate_piece_moves(from, piece, &mut pseudo);
+        }
+        if tactical_only {
+            pseudo.retain(|chess_move| {
+                chess_move.promotion.is_some()
+                    || chess_move.kind == MoveKind::EnPassant
+                    || self.board.piece_at(chess_move.to).is_some()
+            });
         }
 
         let mut legal = Vec::with_capacity(pseudo.len());
@@ -445,6 +462,21 @@ impl Position {
     #[must_use]
     pub fn make_move(&mut self, chess_move: Move) -> PositionUndo {
         self.make_move_unchecked(chess_move)
+    }
+
+    /// Passes the turn without moving a piece. This is not a legal chess move;
+    /// it exists solely for verified null-move search and must always be paired
+    /// with [`Self::unmake_move`].
+    #[must_use]
+    pub fn make_null_move(&mut self) -> PositionUndo {
+        let undo = PositionUndo::new(self);
+        self.en_passant = None;
+        // A null move is not part of the legal game history. Resetting this
+        // speculative clock prevents the search-only node from manufacturing
+        // a fifty-move draw.
+        self.halfmove_clock = 0;
+        self.side_to_move = self.side_to_move.opposite();
+        undo
     }
 
     /// Restores the exact position from before the corresponding
@@ -1344,8 +1376,7 @@ fn format_position_rights(rights: CastlingRights, king_jump_rights: [bool; 2]) -
 
 fn is_square_attacked_on(board: &Board, target: Square, by: Color) -> bool {
     board
-        .pieces()
-        .filter(|(_, piece)| piece.color == by)
+        .pieces_of(by)
         .any(|(from, piece)| piece_attacks_square(board, from, piece, target))
 }
 

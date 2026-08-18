@@ -13,6 +13,10 @@ pub struct EvaluationParameters {
     king_shelter_bonus: i32,
     king_jump_bonus: i32,
     tempo_bonus: i32,
+    connected_pawn_bonus: i32,
+    passed_pawn_bonus: i32,
+    rook_semi_open_file_bonus: i32,
+    rook_open_file_bonus: i32,
 }
 
 impl EvaluationParameters {
@@ -37,6 +41,10 @@ impl EvaluationParameters {
             king_shelter_bonus: 5,
             king_jump_bonus: 20,
             tempo_bonus: 12,
+            connected_pawn_bonus: 0,
+            passed_pawn_bonus: 0,
+            rook_semi_open_file_bonus: 0,
+            rook_open_file_bonus: 0,
         }
     }
 
@@ -56,6 +64,19 @@ impl EvaluationParameters {
     #[must_use]
     pub const fn production() -> Self {
         Self::empirical_v1()
+    }
+
+    /// Unvalidated positional-feature candidate. It is intentionally not the
+    /// production default until a fixed-sample self-play validation promotes
+    /// it.
+    #[must_use]
+    pub const fn strategic_v2_candidate() -> Self {
+        let mut parameters = Self::empirical_v1();
+        parameters.connected_pawn_bonus = 6;
+        parameters.passed_pawn_bonus = 5;
+        parameters.rook_semi_open_file_bonus = 6;
+        parameters.rook_open_file_bonus = 12;
+        parameters
     }
 
     #[must_use]
@@ -138,6 +159,42 @@ impl EvaluationParameters {
     pub fn set_tempo_bonus(&mut self, value: i32) {
         self.tempo_bonus = value;
     }
+
+    #[must_use]
+    pub const fn connected_pawn_bonus(&self) -> i32 {
+        self.connected_pawn_bonus
+    }
+
+    pub fn set_connected_pawn_bonus(&mut self, value: i32) {
+        self.connected_pawn_bonus = value;
+    }
+
+    #[must_use]
+    pub const fn passed_pawn_bonus(&self) -> i32 {
+        self.passed_pawn_bonus
+    }
+
+    pub fn set_passed_pawn_bonus(&mut self, value: i32) {
+        self.passed_pawn_bonus = value;
+    }
+
+    #[must_use]
+    pub const fn rook_semi_open_file_bonus(&self) -> i32 {
+        self.rook_semi_open_file_bonus
+    }
+
+    pub fn set_rook_semi_open_file_bonus(&mut self, value: i32) {
+        self.rook_semi_open_file_bonus = value;
+    }
+
+    #[must_use]
+    pub const fn rook_open_file_bonus(&self) -> i32 {
+        self.rook_open_file_bonus
+    }
+
+    pub fn set_rook_open_file_bonus(&mut self, value: i32) {
+        self.rook_open_file_bonus = value;
+    }
 }
 
 impl Default for EvaluationParameters {
@@ -170,6 +227,8 @@ pub fn evaluate_with(position: &Position, parameters: &EvaluationParameters) -> 
 pub(crate) struct EvalState {
     piece_score: [i32; 2],
     pawn_files: [[u8; 18]; 2],
+    pawns: [[u64; 6]; 2],
+    rook_file_pieces: [[u8; 18]; 2],
     bishops: [u8; 2],
 }
 
@@ -179,6 +238,8 @@ impl EvalState {
         let mut state = Self {
             piece_score: [0; 2],
             pawn_files: [[0; 18]; 2],
+            pawns: [[0; 6]; 2],
+            rook_file_pieces: [[0; 18]; 2],
             bishops: [0; 2],
         };
         let size = position.board().size();
@@ -213,6 +274,16 @@ impl EvalState {
             let side = color.index();
             score[side] += pawn_structure(
                 &self.pawn_files[side],
+                &self.pawns,
+                color,
+                size,
+                usize::from(size.files()),
+                parameters,
+            );
+            score[side] += rook_file_activity(
+                &self.rook_file_pieces[side],
+                &self.pawn_files,
+                color,
                 usize::from(size.files()),
                 parameters,
             );
@@ -241,8 +312,12 @@ impl EvalState {
         self.piece_score[side] += positional_piece_value(square, piece, size, parameters);
         if piece.kind == PieceKind::Pawn {
             self.pawn_files[side][usize::from(square.file())] += 1;
+            set_pawn(&mut self.pawns[side], square, true);
         } else if piece.kind == PieceKind::Bishop {
             self.bishops[side] += 1;
+        }
+        if is_rook_file_piece(piece.kind) {
+            self.rook_file_pieces[side][usize::from(square.file())] += 1;
         }
     }
 
@@ -257,8 +332,12 @@ impl EvalState {
         self.piece_score[side] -= positional_piece_value(square, piece, size, parameters);
         if piece.kind == PieceKind::Pawn {
             self.pawn_files[side][usize::from(square.file())] -= 1;
+            set_pawn(&mut self.pawns[side], square, false);
         } else if piece.kind == PieceKind::Bishop {
             self.bishops[side] -= 1;
+        }
+        if is_rook_file_piece(piece.kind) {
+            self.rook_file_pieces[side][usize::from(square.file())] -= 1;
         }
     }
 }
@@ -302,7 +381,14 @@ fn advancement_bonus(
     i32::from(relative_rank) * parameters.advancement_weight(kind)
 }
 
-fn pawn_structure(files: &[u8; 18], board_files: usize, parameters: &EvaluationParameters) -> i32 {
+fn pawn_structure(
+    files: &[u8; 18],
+    pawns: &[[u64; 6]; 2],
+    color: Color,
+    size: BoardSize,
+    board_files: usize,
+    parameters: &EvaluationParameters,
+) -> i32 {
     let mut score = 0;
     for file in 0..board_files {
         let count = files[file];
@@ -314,10 +400,99 @@ fn pawn_structure(files: &[u8; 18], board_files: usize, parameters: &EvaluationP
             let right = file + 1 < board_files && files[file + 1] > 0;
             if !left && !right {
                 score -= i32::from(count) * parameters.isolated_pawn_penalty;
+            } else {
+                score += i32::from(count) * parameters.connected_pawn_bonus;
+            }
+        }
+    }
+    if parameters.passed_pawn_bonus != 0 {
+        for square in pawn_squares(&pawns[color.index()]) {
+            if is_passed_pawn(square, color, size, &pawns[color.opposite().index()]) {
+                let relative_rank = match color {
+                    Color::White => square.rank(),
+                    Color::Black => size.ranks() - 1 - square.rank(),
+                };
+                score += i32::from(relative_rank) * parameters.passed_pawn_bonus;
             }
         }
     }
     score
+}
+
+fn rook_file_activity(
+    pieces: &[u8; 18],
+    pawn_files: &[[u8; 18]; 2],
+    color: Color,
+    board_files: usize,
+    parameters: &EvaluationParameters,
+) -> i32 {
+    if parameters.rook_semi_open_file_bonus == 0 && parameters.rook_open_file_bonus == 0 {
+        return 0;
+    }
+    let side = color.index();
+    let opponent = color.opposite().index();
+    (0..board_files)
+        .map(|file| {
+            let count = i32::from(pieces[file]);
+            if pawn_files[side][file] != 0 {
+                0
+            } else if pawn_files[opponent][file] == 0 {
+                count * parameters.rook_open_file_bonus
+            } else {
+                count * parameters.rook_semi_open_file_bonus
+            }
+        })
+        .sum()
+}
+
+fn is_rook_file_piece(kind: PieceKind) -> bool {
+    matches!(
+        kind,
+        PieceKind::Rook | PieceKind::Chancellor | PieceKind::Admiral
+    )
+}
+
+fn set_pawn(pawns: &mut [u64; 6], square: Square, present: bool) {
+    let index = usize::from(square.rank()) * 18 + usize::from(square.file());
+    let word = index / u64::BITS as usize;
+    let bit = 1_u64 << (index % u64::BITS as usize);
+    if present {
+        pawns[word] |= bit;
+    } else {
+        pawns[word] &= !bit;
+    }
+}
+
+fn pawn_squares(pawns: &[u64; 6]) -> impl Iterator<Item = Square> + '_ {
+    pawns.iter().enumerate().flat_map(|(word, bits)| {
+        let mut remaining = *bits;
+        std::iter::from_fn(move || {
+            if remaining == 0 {
+                return None;
+            }
+            let offset = remaining.trailing_zeros() as usize;
+            remaining &= remaining - 1;
+            let index = word * u64::BITS as usize + offset;
+            Some(Square::new((index % 18) as u8, (index / 18) as u8))
+        })
+    })
+}
+
+fn is_passed_pawn(
+    square: Square,
+    color: Color,
+    size: BoardSize,
+    opponent_pawns: &[u64; 6],
+) -> bool {
+    pawn_squares(opponent_pawns).all(|opponent| {
+        if square.file().abs_diff(opponent.file()) > 1 {
+            return true;
+        }
+        match color {
+            Color::White => opponent.rank() <= square.rank(),
+            Color::Black => opponent.rank() >= square.rank(),
+        }
+    }) && size.contains(square)
 }
 
 fn king_shelter(position: &Position, color: Color, parameters: &EvaluationParameters) -> i32 {
@@ -474,5 +649,38 @@ mod tests {
             evaluate_with(&position, &parameters),
             parameters.tempo_bonus()
         );
+    }
+
+    #[test]
+    fn strategic_candidate_rewards_connected_and_passed_pawns() {
+        let production = EvaluationParameters::production();
+        assert_eq!(production.connected_pawn_bonus(), 0);
+        assert_eq!(production.passed_pawn_bonus(), 0);
+        assert_eq!(production.rook_semi_open_file_bonus(), 0);
+        assert_eq!(production.rook_open_file_bonus(), 0);
+
+        let parameters = EvaluationParameters::strategic_v2_candidate();
+        assert_eq!(parameters.connected_pawn_bonus(), 6);
+        assert_eq!(parameters.passed_pawn_bonus(), 5);
+        assert_eq!(parameters.rook_semi_open_file_bonus(), 6);
+        assert_eq!(parameters.rook_open_file_bonus(), 12);
+
+        let mut pawns = [[0_u64; 6]; 2];
+        let white: Square = "e6".parse().unwrap();
+        set_pawn(&mut pawns[Color::White.index()], white, true);
+        assert!(is_passed_pawn(
+            white,
+            Color::White,
+            BoardSize::TERACHESS,
+            &pawns[Color::Black.index()]
+        ));
+        let blocker: Square = "f9".parse().unwrap();
+        set_pawn(&mut pawns[Color::Black.index()], blocker, true);
+        assert!(!is_passed_pawn(
+            white,
+            Color::White,
+            BoardSize::TERACHESS,
+            &pawns[Color::Black.index()]
+        ));
     }
 }
