@@ -158,7 +158,7 @@ fn production_and_published_profiles_remain_explicitly_available() {
     );
     assert_eq!(
         EvaluationParameters::production(),
-        EvaluationParameters::empirical_v1()
+        EvaluationParameters::strategic_v2()
     );
     assert_eq!(
         EvaluationParameters::production().material_value(capablanca_chess_plus::PieceKind::Eagle),

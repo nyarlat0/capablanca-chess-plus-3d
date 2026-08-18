@@ -66,6 +66,27 @@ fn tactical_generator_matches_filtered_legal_moves_across_variants() {
 }
 
 #[test]
+fn tactical_status_distinguishes_quiet_play_from_stalemate() {
+    let mut quiet = Position::from_fen(
+        Variant::Capablanca.rules(),
+        "9k/10/10/10/10/10/10/K9 w - - 0 1",
+    )
+    .unwrap();
+    let (tactical, has_legal_move) = quiet.legal_tactical_moves_with_status_mut();
+    assert!(tactical.is_empty());
+    assert!(has_legal_move);
+
+    let mut stalemate = Position::from_fen(
+        Variant::Capablanca.rules(),
+        "k9/2Q7/2K7/10/10/10/10/10 b - - 0 1",
+    )
+    .unwrap();
+    let (tactical, has_legal_move) = stalemate.legal_tactical_moves_with_status_mut();
+    assert!(tactical.is_empty());
+    assert!(!has_legal_move);
+}
+
+#[test]
 fn castling_en_passant_and_promotion_round_trip_exactly() {
     let castling = Position::from_fen(
         Variant::Gothic.rules(),
@@ -123,5 +144,41 @@ fn terachess_initial_king_jump_round_trips_its_rights() {
     assert!(!jumps.is_empty());
     for chess_move in jumps {
         assert_round_trip(&position, chess_move);
+    }
+}
+
+#[test]
+fn deterministic_random_lines_preserve_fen_and_reversible_state() {
+    for (variant_index, variant) in Variant::ALL.into_iter().enumerate() {
+        let mut position = variant.starting_position();
+        let mut random = SplitMix64(0x4155_4449_545f_4d55 ^ variant_index as u64);
+        for ply in 0..128 {
+            let fen = position.to_fen();
+            assert_eq!(
+                Position::from_fen(variant.rules(), &fen).unwrap(),
+                position,
+                "{variant:?} FEN round trip at ply {ply}"
+            );
+            let legal = position.legal_moves();
+            if legal.is_empty() {
+                position = variant.starting_position();
+                continue;
+            }
+            let chess_move = legal[(random.next() % legal.len() as u64) as usize];
+            assert_round_trip(&position, chess_move);
+            position.play(chess_move).unwrap();
+        }
+    }
+}
+
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut value = self.0;
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^ (value >> 31)
     }
 }

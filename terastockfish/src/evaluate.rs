@@ -60,23 +60,31 @@ impl EvaluationParameters {
         parameters
     }
 
-    /// The profile used by default search and static evaluation.
+    /// The second strategic profile, adding inexpensive pawn-structure and
+    /// rook-file activity terms to [`Self::empirical_v1`]. Its fixed-sample
+    /// validation produced a positive but statistically inconclusive result;
+    /// it was promoted as a practical non-regression decision.
     #[must_use]
-    pub const fn production() -> Self {
-        Self::empirical_v1()
-    }
-
-    /// Unvalidated positional-feature candidate. It is intentionally not the
-    /// production default until a fixed-sample self-play validation promotes
-    /// it.
-    #[must_use]
-    pub const fn strategic_v2_candidate() -> Self {
+    pub const fn strategic_v2() -> Self {
         let mut parameters = Self::empirical_v1();
         parameters.connected_pawn_bonus = 6;
         parameters.passed_pawn_bonus = 5;
         parameters.rook_semi_open_file_bonus = 6;
         parameters.rook_open_file_bonus = 12;
         parameters
+    }
+
+    /// Compatibility name retained for experiment configurations created
+    /// while Strategic V2 was still a candidate.
+    #[must_use]
+    pub const fn strategic_v2_candidate() -> Self {
+        Self::strategic_v2()
+    }
+
+    /// The profile used by default search and static evaluation.
+    #[must_use]
+    pub const fn production() -> Self {
+        Self::strategic_v2()
     }
 
     #[must_use]
@@ -194,6 +202,34 @@ impl EvaluationParameters {
 
     pub fn set_rook_open_file_bonus(&mut self, value: i32) {
         self.rook_open_file_bonus = value;
+    }
+
+    /// Stable text representation of every evaluation weight used to prevent
+    /// research checkpoints from mixing different profiles on resume.
+    #[must_use]
+    pub fn research_fingerprint(self) -> String {
+        let material = PieceKind::ALL
+            .map(|kind| self.material_value(kind).to_string())
+            .join(":");
+        let centrality = PieceKind::ALL
+            .map(|kind| self.centrality_weight(kind).to_string())
+            .join(":");
+        let advancement = PieceKind::ALL
+            .map(|kind| self.advancement_weight(kind).to_string())
+            .join(":");
+        format!(
+            "m={material};c={centrality};a={advancement};dp={};ip={};bp={};ks={};kj={};t={};cp={};pp={};rs={};ro={}",
+            self.doubled_pawn_penalty(),
+            self.isolated_pawn_penalty(),
+            self.bishop_pair_bonus(),
+            self.king_shelter_bonus(),
+            self.king_jump_bonus(),
+            self.tempo_bonus(),
+            self.connected_pawn_bonus(),
+            self.passed_pawn_bonus(),
+            self.rook_semi_open_file_bonus(),
+            self.rook_open_file_bonus(),
+        )
     }
 }
 
@@ -400,14 +436,19 @@ fn pawn_structure(
             let right = file + 1 < board_files && files[file + 1] > 0;
             if !left && !right {
                 score -= i32::from(count) * parameters.isolated_pawn_penalty;
-            } else {
-                score += i32::from(count) * parameters.connected_pawn_bonus;
             }
         }
     }
-    if parameters.passed_pawn_bonus != 0 {
+    if parameters.connected_pawn_bonus != 0 || parameters.passed_pawn_bonus != 0 {
         for square in pawn_squares(&pawns[color.index()]) {
-            if is_passed_pawn(square, color, size, &pawns[color.opposite().index()]) {
+            if parameters.connected_pawn_bonus != 0
+                && is_connected_pawn(square, &pawns[color.index()])
+            {
+                score += parameters.connected_pawn_bonus;
+            }
+            if parameters.passed_pawn_bonus != 0
+                && is_passed_pawn(square, color, size, &pawns[color.opposite().index()])
+            {
                 let relative_rank = match color {
                     Color::White => square.rank(),
                     Color::Black => size.ranks() - 1 - square.rank(),
@@ -417,6 +458,12 @@ fn pawn_structure(
         }
     }
     score
+}
+
+fn is_connected_pawn(square: Square, friendly_pawns: &[u64; 6]) -> bool {
+    pawn_squares(friendly_pawns).any(|friendly| {
+        friendly.file().abs_diff(square.file()) == 1 && friendly.rank().abs_diff(square.rank()) <= 1
+    })
 }
 
 fn rook_file_activity(
@@ -577,6 +624,14 @@ mod tests {
         parameters
     }
 
+    fn feature_only() -> EvaluationParameters {
+        let mut parameters = material_only();
+        for kind in PieceKind::ALL {
+            parameters.set_material_value(kind, 0);
+        }
+        parameters
+    }
+
     #[test]
     fn published_material_table_covers_every_piece_kind() {
         let expected = [
@@ -653,17 +708,18 @@ mod tests {
 
     #[test]
     fn strategic_candidate_rewards_connected_and_passed_pawns() {
-        let production = EvaluationParameters::production();
-        assert_eq!(production.connected_pawn_bonus(), 0);
-        assert_eq!(production.passed_pawn_bonus(), 0);
-        assert_eq!(production.rook_semi_open_file_bonus(), 0);
-        assert_eq!(production.rook_open_file_bonus(), 0);
+        let previous = EvaluationParameters::empirical_v1();
+        assert_eq!(previous.connected_pawn_bonus(), 0);
+        assert_eq!(previous.passed_pawn_bonus(), 0);
+        assert_eq!(previous.rook_semi_open_file_bonus(), 0);
+        assert_eq!(previous.rook_open_file_bonus(), 0);
 
-        let parameters = EvaluationParameters::strategic_v2_candidate();
+        let parameters = EvaluationParameters::strategic_v2();
         assert_eq!(parameters.connected_pawn_bonus(), 6);
         assert_eq!(parameters.passed_pawn_bonus(), 5);
         assert_eq!(parameters.rook_semi_open_file_bonus(), 6);
         assert_eq!(parameters.rook_open_file_bonus(), 12);
+        assert_eq!(parameters, EvaluationParameters::production());
 
         let mut pawns = [[0_u64; 6]; 2];
         let white: Square = "e6".parse().unwrap();
@@ -682,5 +738,47 @@ mod tests {
             BoardSize::TERACHESS,
             &pawns[Color::Black.index()]
         ));
+    }
+
+    #[test]
+    fn strategic_terms_have_their_exact_documented_effects() {
+        let mut connected = feature_only();
+        connected.set_connected_pawn_bonus(6);
+        let connected_pawns = position(
+            &[('K', "a1"), ('P', "e6"), ('P', "f6"), ('k', "p16")],
+            Color::White,
+        );
+        assert_eq!(evaluate_with(&connected_pawns, &connected), 12);
+        let disconnected = position(
+            &[('K', "a1"), ('P', "e3"), ('P', "f10"), ('k', "p16")],
+            Color::White,
+        );
+        assert_eq!(evaluate_with(&disconnected, &connected), 0);
+
+        let mut passed = feature_only();
+        passed.set_passed_pawn_bonus(5);
+        let passed_pawn = position(&[('K', "a1"), ('P', "e6"), ('k', "p16")], Color::White);
+        assert_eq!(evaluate_with(&passed_pawn, &passed), 25);
+        let blocked = position(
+            &[('K', "a1"), ('P', "e6"), ('p', "f9"), ('k', "p16")],
+            Color::White,
+        );
+        assert_eq!(evaluate_with(&blocked, &passed), 0);
+
+        let mut files = feature_only();
+        files.set_rook_semi_open_file_bonus(6);
+        files.set_rook_open_file_bonus(12);
+        let open = position(&[('K', "a1"), ('R', "e6"), ('k', "p16")], Color::White);
+        assert_eq!(evaluate_with(&open, &files), 12);
+        let semi_open = position(
+            &[('K', "a1"), ('R', "e6"), ('p', "e10"), ('k', "p16")],
+            Color::White,
+        );
+        assert_eq!(evaluate_with(&semi_open, &files), 6);
+        let closed = position(
+            &[('K', "a1"), ('P', "e5"), ('R', "e6"), ('k', "p16")],
+            Color::White,
+        );
+        assert_eq!(evaluate_with(&closed, &files), 0);
     }
 }

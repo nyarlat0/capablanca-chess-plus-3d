@@ -352,7 +352,7 @@ impl Position {
     /// make/unmake storage. The position is restored before returning.
     #[must_use]
     pub fn legal_moves_mut(&mut self) -> Vec<Move> {
-        self.legal_moves_mut_with(false)
+        self.legal_moves_mut_with_status(false).0
     }
 
     /// Generates legal captures and promotions while reusing this position as
@@ -360,10 +360,41 @@ impl Position {
     /// [`Self::legal_moves_mut`] because every legal evasion is tactical.
     #[must_use]
     pub fn legal_tactical_moves_mut(&mut self) -> Vec<Move> {
-        self.legal_moves_mut_with(true)
+        self.legal_tactical_moves_with_status_mut().0
     }
 
-    fn legal_moves_mut_with(&mut self, tactical_only: bool) -> Vec<Move> {
+    /// Generates legal captures/promotions and reports whether the position
+    /// has any legal move at all. This lets quiescence distinguish a quiet
+    /// position from stalemate without performing a second full generation.
+    #[must_use]
+    pub fn legal_tactical_moves_with_status_mut(&mut self) -> (Vec<Move>, bool) {
+        self.legal_moves_mut_with_status(true)
+    }
+
+    /// Returns whether the side to move has at least one legal move, stopping
+    /// at the first one and restoring the position before returning.
+    #[must_use]
+    pub fn has_legal_move_mut(&mut self) -> bool {
+        let moving_color = self.side_to_move;
+        let king_square = self
+            .board
+            .king_square(moving_color)
+            .expect("a valid position must contain its moving side's king");
+        let pieces = self.board.pieces_of(moving_color).collect::<Vec<_>>();
+        let mut pseudo = Vec::with_capacity(32);
+        for (from, piece) in pieces {
+            pseudo.clear();
+            self.generate_piece_moves(from, piece, &mut pseudo);
+            for chess_move in pseudo.iter().copied() {
+                if self.generated_move_is_legal(chess_move, moving_color, king_square) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn legal_moves_mut_with_status(&mut self, tactical_only: bool) -> (Vec<Move>, bool) {
         let moving_color = self.side_to_move;
         let king_square = self
             .board
@@ -373,31 +404,43 @@ impl Position {
         for (from, piece) in self.board.pieces_of(moving_color) {
             self.generate_piece_moves(from, piece, &mut pseudo);
         }
-        if tactical_only {
-            pseudo.retain(|chess_move| {
-                chess_move.promotion.is_some()
-                    || chess_move.kind == MoveKind::EnPassant
-                    || self.board.piece_at(chess_move.to).is_some()
-            });
-        }
-
         let mut legal = Vec::with_capacity(pseudo.len());
+        let mut has_legal_move = false;
         for chess_move in pseudo {
-            let moving_piece = self
-                .board
-                .piece_at(chess_move.from)
-                .expect("generated move must have a moving piece");
-            let undo = self.make_move_unchecked(chess_move);
-            let king_after = if moving_piece.kind == PieceKind::King {
-                chess_move.to
-            } else {
-                king_square
-            };
-            if !is_square_attacked_on(&self.board, king_after, moving_color.opposite()) {
-                legal.push(chess_move);
+            let tactical = chess_move.promotion.is_some()
+                || chess_move.kind == MoveKind::EnPassant
+                || self.board.piece_at(chess_move.to).is_some();
+            if tactical_only && !tactical && has_legal_move {
+                continue;
             }
-            self.unmake_move(undo);
+            if self.generated_move_is_legal(chess_move, moving_color, king_square) {
+                has_legal_move = true;
+                if !tactical_only || tactical {
+                    legal.push(chess_move);
+                }
+            }
         }
+        (legal, has_legal_move)
+    }
+
+    fn generated_move_is_legal(
+        &mut self,
+        chess_move: Move,
+        moving_color: Color,
+        king_square: Square,
+    ) -> bool {
+        let moving_piece = self
+            .board
+            .piece_at(chess_move.from)
+            .expect("generated move must have a moving piece");
+        let undo = self.make_move_unchecked(chess_move);
+        let king_after = if moving_piece.kind == PieceKind::King {
+            chess_move.to
+        } else {
+            king_square
+        };
+        let legal = !is_square_attacked_on(&self.board, king_after, moving_color.opposite());
+        self.unmake_move(undo);
         legal
     }
 

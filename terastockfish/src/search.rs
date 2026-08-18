@@ -968,7 +968,8 @@ impl SearchContext<'_> {
         let stand_pat = position.evaluate(&self.evaluation);
         if !in_check {
             if stand_pat >= beta {
-                return Ok(stand_pat);
+                let has_legal_move = position.has_legal_move();
+                return Ok(if has_legal_move { stand_pat } else { 0 });
             }
             alpha = alpha.max(stand_pat);
         }
@@ -980,9 +981,9 @@ impl SearchContext<'_> {
             }
             moves
         } else {
-            let moves = position.legal_tactical_moves();
+            let (moves, has_legal_move) = position.legal_tactical_moves_with_status();
             if moves.is_empty() {
-                return Ok(alpha);
+                return Ok(if has_legal_move { alpha } else { 0 });
             }
             moves
         };
@@ -1422,6 +1423,42 @@ mod tests {
         let mut search_position = SearchPosition::new(&position, &evaluation);
         assert!(static_exchange_evaluation(&mut search_position, chess_move, &evaluation) < 0);
         assert_eq!(search_position.position(), &position);
+    }
+
+    #[test]
+    fn quiescence_scores_stalemate_as_draw_even_through_a_stand_pat_cutoff() {
+        let position = Position::from_fen(
+            Variant::Capablanca.rules(),
+            "k9/2Q7/2K7/10/10/10/10/10 b - - 0 1",
+        )
+        .unwrap();
+        let evaluation = EvaluationParameters::production();
+        let mut search_position = SearchPosition::new(&position, &evaluation);
+        let limits = SearchLimits::depth(1);
+        let table = Arc::new(TranspositionTable::new(1));
+        let generation = table.next_generation();
+        let mut history = vec![0; 2 * MAX_BOARD_SQUARES * MAX_BOARD_SQUARES];
+        let mut context = SearchContext {
+            table,
+            control: SearchControl::default(),
+            limits,
+            budget: TimeBudget::new(Instant::now(), limits),
+            generation,
+            nodes: Arc::new(AtomicU64::new(0)),
+            threads: 1,
+            hash_megabytes: 1,
+            deterministic_nodes: false,
+            evaluation,
+            history: &mut history,
+            killers: [[None; 2]; MAX_PLY],
+            repetition: Vec::new(),
+        };
+        assert_eq!(
+            context
+                .quiescence_current(&mut search_position, 0, -3_000, -2_000)
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

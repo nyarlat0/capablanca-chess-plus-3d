@@ -13,6 +13,8 @@ pub struct SelfPlayConfig {
     /// Hard limit for the comparison.
     pub maximum_pairs: u32,
     pub nodes_per_move: u64,
+    /// Optional safety cap. Zero disables the cap and lets chess termination
+    /// rules or score adjudication end the game.
     pub maximum_plies: u16,
     pub opening_plies: u8,
     pub hash_megabytes: usize,
@@ -233,22 +235,7 @@ where
             let mut workers = Vec::with_capacity((batch_end - next_pair) as usize);
             for pair in next_pair..batch_end {
                 workers.push(scope.spawn(move || {
-                    let (opening, history) =
-                        generated_opening(config.seed, pair, config.opening_plies)?;
-                    Color::ALL
-                        .into_iter()
-                        .map(|candidate_color| {
-                            play_game(
-                                &opening,
-                                &history,
-                                pair,
-                                candidate_color,
-                                baseline,
-                                candidate,
-                                config,
-                            )
-                        })
-                        .collect::<Result<Vec<_>, _>>()
+                    play_profile_pair(pair, baseline, candidate, config).map(Vec::from)
                 }));
             }
             workers
@@ -275,6 +262,39 @@ where
     }
 
     Ok(summary)
+}
+
+/// Plays one reproducible color-swapped pair. This is the resumable building
+/// block used by fixed-sample research tools; pair indices are independent and
+/// may be evaluated in any order.
+pub fn play_profile_pair(
+    pair: u32,
+    baseline: EvaluationParameters,
+    candidate: EvaluationParameters,
+    config: SelfPlayConfig,
+) -> Result<[SelfPlayGame; 2], SelfPlayError> {
+    let (opening, history) = generated_opening(config.seed, pair, config.opening_plies)?;
+    let [first_color, second_color] = Color::ALL;
+    Ok([
+        play_game(
+            &opening,
+            &history,
+            pair,
+            first_color,
+            baseline,
+            candidate,
+            config,
+        )?,
+        play_game(
+            &opening,
+            &history,
+            pair,
+            second_color,
+            baseline,
+            candidate,
+            config,
+        )?,
+    ])
 }
 
 fn play_game(
@@ -313,7 +333,7 @@ fn play_game(
                 started,
             ));
         }
-        if plies >= config.maximum_plies.max(1) {
+        if config.maximum_plies > 0 && plies >= config.maximum_plies {
             return Ok(finished_game(
                 opening,
                 pair,

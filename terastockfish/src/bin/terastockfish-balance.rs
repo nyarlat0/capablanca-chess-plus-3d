@@ -1,4 +1,4 @@
-use capablanca_chess_plus::{PieceKind, Variant};
+use capablanca_chess_plus::Variant;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,7 +9,7 @@ use terastockfish::balance::{
 };
 use terastockfish::{EvaluationParameters, SearchLimits, SearchOptions, Searcher};
 
-const FORMAT_VERSION: &str = "TERASTOCKFISH_BALANCE_V2";
+const FORMAT_VERSION: &str = "TERASTOCKFISH_BALANCE_V3";
 
 #[derive(Clone, Debug)]
 struct Options {
@@ -257,13 +257,9 @@ fn print_terminations(games: &[BalanceGame]) {
 
 fn header(options: &Options) -> String {
     let profile = EvaluationParameters::production();
-    let material = PieceKind::ALL
-        .into_iter()
-        .map(|kind| profile.material_value(kind).to_string())
-        .collect::<Vec<_>>()
-        .join(":");
     format!(
-        "# {FORMAT_VERSION}\n# profile=production\n# material={material}\n# games={}\n# nodes_per_move={}\n# maximum_plies={}\n# opening_plies={}\n# hash_megabytes={}\n# adjudication_score={}\n# adjudication_plies={}\n# seed={}\n# practical_margin={}\n# maximum_unresolved_fraction={}\ngame,white_result,termination,plies,nodes,elapsed_ms,final_score,opening_fen,final_fen\n",
+        "# {FORMAT_VERSION}\n# profile=production/strategic-v2\n# evaluation_fingerprint={}\n# games={}\n# nodes_per_move={}\n# maximum_plies={}\n# opening_plies={}\n# hash_megabytes={}\n# adjudication_score={}\n# adjudication_plies={}\n# seed={}\n# practical_margin={}\n# maximum_unresolved_fraction={}\ngame,white_result,termination,plies,nodes,elapsed_ms,final_score,opening_fen,final_fen\n",
+        profile.research_fingerprint(),
         options.games,
         options.config.nodes_per_move,
         options.config.maximum_plies,
@@ -621,5 +617,7 @@ mod tests {
         assert!(header(&preset).contains("# maximum_plies=0\n"));
         assert!(header(&preset).contains("# adjudication_score=1500\n"));
         assert!(header(&preset).contains("# adjudication_plies=20\n"));
+        assert!(header(&preset).contains("# TERASTOCKFISH_BALANCE_V3\n"));
+        assert!(header(&preset).contains(";cp=6;pp=5;rs=6;ro=12\n"));
     }
 }

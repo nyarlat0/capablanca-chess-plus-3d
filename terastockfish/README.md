@@ -94,16 +94,17 @@ must stop it. Reuse one `Searcher` across positions to preserve its hash table
 and move-ordering history; call `clear_hash` for a completely fresh analysis.
 
 The default evaluator uses `EvaluationParameters::production()`, which now
-equals the independently validated `EvaluationParameters::empirical_v1()`.
-The historical Terachess II scale remains available through
-`EvaluationParameters::published()`. Experiments can use
+equals `EvaluationParameters::strategic_v2()`. The preceding validated material
+baseline remains available as `EvaluationParameters::empirical_v1()`, and the
+historical Terachess II scale as `EvaluationParameters::published()`. Experiments can use
 `Searcher::with_evaluation` or `set_evaluation_parameters`; replacing a
 profile clears score-dependent hash and history state automatically.
 
 ## Evaluation validation
 
-`terastockfish-eval` compares a candidate profile with the published baseline
-in deterministic paired self-play. Every opening is played twice with colors
+`terastockfish-eval` compares a configurable candidate with the production
+baseline in deterministic paired self-play (use `--baseline published` for
+historical material-profile checks). Every opening is played twice with colors
 swapped. The default validation starts testing significance after 100 games
 and stops after at most 400 games; use the smoke mode only to check the tool:
 
@@ -119,17 +120,51 @@ weights are `doubled_pawn`, `isolated_pawn`, `bishop_pair`, `king_shelter`,
 `rook_semi_open_file`, and `rook_open_file`. Run with `--help` for match
 limits. Output contains
 per-game CSV records plus W/D/L, score, and a 95% confidence interval. A
-candidate should replace the published default only when the interval's lower
-bound exceeds 50%.
+candidate has demonstrated superiority only when the interval's lower bound
+exceeds 50%. A practical non-regression promotion with a weaker criterion must
+be identified and documented separately.
 
-`--baseline published|production` selects the opponent explicitly.
+`--baseline published|empirical-v1|production` selects the opponent explicitly.
 `--profile PATH` loads a complete material profile emitted by the Texel tool;
 additional `--set` options are applied after loading it.
 
-`--candidate strategic-v2` selects the built-in positional candidate that
-adds connected/passed-pawn and open-file terms. It is intentionally not the
-production default: its smoke run checks plumbing only and supplies no playing
-strength evidence. Promote it only after a fixed paired validation.
+`--candidate strategic-v2` selects the current positional profile, adding
+connected/passed-pawn and open-file terms to `empirical_v1`.
+
+### Fixed strategic-v2 validation
+
+`terastockfish-strategic` is the resumable fixed-sample comparison used for
+that promotion decision. It always compares `empirical_v1()` with `strategic-v2`
+candidate, plays every opening with colors swapped, never stops early, and
+atomically updates a CSV checkpoint after every parallel batch. On the recorded
+12-core/24-thread machine, run:
+
+```sh
+cargo build --release -p terastockfish --bin terastockfish-strategic
+./target/release/terastockfish-strategic \
+  --preset overnight --jobs 24 --hash 32
+```
+
+The preset runs 192 pairs (384 games) at 50,000 nodes per move. It has no ply
+cap, uses ordinary mate/draw rules plus a conservative ±1,500 score sustained
+for 20 plies, and consumes roughly `2 × jobs × hash` MiB for search tables
+(about 1.5 GiB in the command above). Resume the exact run with:
+
+```sh
+./target/release/terastockfish-strategic \
+  --preset overnight --jobs 24 --hash 32 --resume
+```
+
+`decision=strategic_v2_stronger` means the paired 95% interval lies entirely
+above 50%; `strategic_v2_weaker` means it lies below 50%; otherwise the result
+is inconclusive. Any ply-capped game makes a study invalid. `quick` and
+`smoke` verify the harness only; `deep` runs 256 pairs at 100,000 nodes. Exact
+methodology and the precommitted decision rule are in the
+[strategic V2 protocol](docs/research/2026-08-18-strategic-v2-validation-protocol.md).
+The completed run scored 53.39% with paired 95% CI 48.62–58.15%. It did not
+prove superiority, but the user accepted it as a practical non-regression
+baseline; the deviation from the strict criterion is recorded in the
+[result report](docs/research/2026-08-18-strategic-v2-validation-result.md).
 
 ### Automatic material tuning
 
@@ -213,8 +248,9 @@ Setting minimum and maximum validation pairs to the same value made this a
 fixed-sample experiment, avoiding uncorrected early significance stopping.
 The frozen candidate scored 55.25% with paired 95% CI 50.89–59.61%; its lower
 bound exceeded the preregistered 50% promotion threshold. The exact profile was
-therefore promoted as `EvaluationParameters::empirical_v1()` and is now the
-production default. Full results and limitations are in the
+therefore promoted as `EvaluationParameters::empirical_v1()` and became the
+stable material baseline. Strategic V2 later retained that material table and
+added structural terms. Full results and limitations are in the
 [final validation report](docs/research/2026-08-17-final-material-validation.md).
 
 The frozen profile can also be rechecked independently without retyping all

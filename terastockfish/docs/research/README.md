@@ -19,6 +19,9 @@ concluded from it.
 | 2026-08-18 | [Balance pilot invalidation and V2 protocol](2026-08-18-balance-protocol-correction.md) | 33/48 games hit the 300-ply cap and were misclassified as draws; 12 repeated and only 3 mated | Reject the pilot; add full repetition history, uncapped play, unresolved outcomes, conservative adjudication, and Wilson intervals |
 | 2026-08-18 | [Production color-balance V2](2026-08-18-color-balance-v2.md) | White scored 53.52% over 384 resolved games, 95% CI 48.52–58.44%; the estimate converged downward but neither advantage nor ±3% equivalence was established | Retain the current array; treat a small White edge as plausible but unproven |
 | 2026-08-18 | [Search-strength foundation](2026-08-18-search-strength-foundation.md) | Starting-position depth-4 time fell 47.9% and NPS rose 68.6%; 104 tests pass; no strength match was run | Retain implementation, keep deterministic mode opt-in and strategic V2 unpromoted; run paired search ablations next |
+| 2026-08-18 | [Strategic V2 validation protocol](2026-08-18-strategic-v2-validation-protocol.md) | Frozen 192-pair, 50k-node, color-swapped protocol; result not run yet | Keep Strategic V2 out of production pending the fixed-sample result |
+| 2026-08-18 | [Engine audit and Strategic V2 tool verification](2026-08-18-engine-audit-and-strategic-tool.md) | 111 release tests pass; perft(4)=10,562,564; fixed connected-pawn semantics, zero-cap handling, and qsearch stalemate | Use the resumable fixed-sample tool; production remains unchanged pending results |
+| 2026-08-18 | [Strategic V2 fixed-sample validation result](2026-08-18-strategic-v2-validation-result.md) | 53.39% over 192 pairs, paired 95% CI 48.62–58.15%; superiority criterion not met, no large regression observed | Promote by explicit practical non-regression decision; retain `empirical_v1` as the reproducible baseline |
 
 ## Required record for future research
 

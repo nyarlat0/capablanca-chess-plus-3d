@@ -19,7 +19,7 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let mut config = SelfPlayConfig::default();
-    let mut baseline_name = "published".to_owned();
+    let mut baseline_name = "production".to_owned();
     let mut candidate_name = None;
     let mut profile_path = None;
     let mut changes = Vec::new();
@@ -86,6 +86,7 @@ fn run() -> Result<(), String> {
 
     let baseline = match baseline_name.as_str() {
         "published" => EvaluationParameters::published(),
+        "empirical-v1" => EvaluationParameters::empirical_v1(),
         "production" => EvaluationParameters::production(),
         _ => return Err(format!("unknown baseline `{baseline_name}`")),
     };
@@ -101,7 +102,7 @@ fn run() -> Result<(), String> {
     } else if let Some(name) = candidate_name {
         match name.as_str() {
             "strategic-v2" => (
-                EvaluationParameters::strategic_v2_candidate(),
+                EvaluationParameters::strategic_v2(),
                 "strategic-v2".to_owned(),
             ),
             _ => return Err(format!("unknown candidate `{name}`")),
@@ -279,14 +280,14 @@ fn print_help() {
            --min-pairs N           Earliest statistical stop (default: 50)\n\
            --max-pairs N           Hard limit (default: 200)\n\
            --nodes N               Node limit per move (default: 100000)\n\
-           --max-plies N           Adjudicate longer games as draws (default: 400)\n\
+           --max-plies N           Adjudicate longer games as draws; 0 disables (default: 400)\n\
            --opening-plies N       Deterministic opening length (default: 6)\n\
            --hash MB               Hash per player (default: 64)\n\
            --jobs N                Concurrent game pairs (default: 1)\n\
            --adjudication-score N  Sustained winning score; 0 disables\n\
            --adjudication-plies N  Required consecutive half-moves\n\
            --seed N|0xHEX          Opening generator seed\n\
-           --baseline NAME         published|production (default: published)\n\
+           --baseline NAME         published|empirical-v1|production (default: production)\n\
            --candidate NAME        Built-in candidate: strategic-v2\n\
            --profile PATH          Candidate material profile file\n\
            --set NAME=VALUE        Candidate weight; may be repeated\n\

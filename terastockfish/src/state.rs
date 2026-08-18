@@ -42,6 +42,16 @@ impl SearchPosition {
     }
 
     #[must_use]
+    pub fn legal_tactical_moves_with_status(&mut self) -> (Vec<Move>, bool) {
+        self.position.legal_tactical_moves_with_status_mut()
+    }
+
+    #[must_use]
+    pub fn has_legal_move(&mut self) -> bool {
+        self.position.has_legal_move_mut()
+    }
+
+    #[must_use]
     pub const fn keys(&self) -> PositionKeys {
         self.keys
     }
