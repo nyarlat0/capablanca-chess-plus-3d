@@ -1,6 +1,6 @@
 use crate::capacity::{MAX_BOARD_SQUARES, square_index};
 use crate::evaluate::EvaluationParameters;
-use crate::key::position_key;
+use crate::key::{position_key, position_keys};
 use crate::state::SearchPosition;
 use crate::tt::{Bound, TranspositionTable};
 use capablanca_chess_plus::{Color, Move, MoveKind, Piece, Position, Square};
@@ -84,6 +84,27 @@ pub struct AnalysisResult {
     pub elapsed: Duration,
     pub principal_variation: Vec<Move>,
     pub stopped: bool,
+}
+
+/// Repetition state accumulated by the game containing the position being
+/// analyzed. Recording the current position after every real move lets search
+/// recognize a third occurrence that depends on history before the root.
+#[derive(Clone, Debug, Default)]
+pub struct SearchHistory {
+    repetition: Vec<u64>,
+}
+
+impl SearchHistory {
+    #[must_use]
+    pub fn new(position: &Position) -> Self {
+        Self {
+            repetition: vec![position_keys(position).repetition],
+        }
+    }
+
+    pub fn record(&mut self, position: &Position) {
+        self.repetition.push(position_keys(position).repetition);
+    }
 }
 
 #[derive(Clone, Default)]
@@ -185,9 +206,46 @@ impl Searcher {
         self.analyze_with(position, limits, |_| {})
     }
 
+    #[must_use]
+    pub fn analyze_with_history(
+        &mut self,
+        position: &Position,
+        history: &SearchHistory,
+        limits: SearchLimits,
+    ) -> AnalysisResult {
+        self.analyze_with_optional_history(position, Some(history), limits, |_| {})
+    }
+
+    /// [`Self::analyze_with_history`] with an iterative-deepening callback.
+    pub fn analyze_with_history_and<F>(
+        &mut self,
+        position: &Position,
+        history: &SearchHistory,
+        limits: SearchLimits,
+        reporter: F,
+    ) -> AnalysisResult
+    where
+        F: FnMut(&AnalysisInfo),
+    {
+        self.analyze_with_optional_history(position, Some(history), limits, reporter)
+    }
+
     pub fn analyze_with<F>(
         &mut self,
         position: &Position,
+        limits: SearchLimits,
+        mut reporter: F,
+    ) -> AnalysisResult
+    where
+        F: FnMut(&AnalysisInfo),
+    {
+        self.analyze_with_optional_history(position, None, limits, &mut reporter)
+    }
+
+    fn analyze_with_optional_history<F>(
+        &mut self,
+        position: &Position,
+        history: Option<&SearchHistory>,
         limits: SearchLimits,
         mut reporter: F,
     ) -> AnalysisResult
@@ -200,6 +258,8 @@ impl Searcher {
         let budget = TimeBudget::new(start, limits);
         let generation = self.table.next_generation();
         let mut root = SearchPosition::new(position, &self.evaluation);
+        let root_repetition = root.keys().repetition;
+        let repetition = root_repetition_history(history, root_repetition);
         let mut context = SearchContext {
             table: Arc::clone(&self.table),
             control: self.control.clone(),
@@ -211,7 +271,7 @@ impl Searcher {
             evaluation: self.evaluation,
             history: &mut self.history,
             killers: [[None; 2]; MAX_PLY],
-            repetition: vec![root.keys().repetition],
+            repetition,
         };
 
         let root_moves = root.legal_moves();
@@ -318,6 +378,12 @@ impl Searcher {
             stopped,
         }
     }
+}
+
+fn root_repetition_history(history: Option<&SearchHistory>, root: u64) -> Vec<u64> {
+    history
+        .filter(|history| history.repetition.last() == Some(&root))
+        .map_or_else(|| vec![root], |history| history.repetition.clone())
 }
 
 struct RootResult {
@@ -1021,5 +1087,25 @@ mod tests {
         assert!(result.stopped);
         assert!(result.completed_depth >= 1);
         assert!(result.best_move.is_some());
+    }
+
+    #[test]
+    fn matching_history_is_used_once_and_stale_history_is_rejected() {
+        let mut position = Variant::TerachessII.starting_position();
+        let root = position_keys(&position).repetition;
+        let mut history = SearchHistory::new(&position);
+        history.record(&position);
+        assert_eq!(
+            root_repetition_history(Some(&history), root),
+            vec![root, root]
+        );
+
+        let chess_move = position.legal_moves()[0];
+        position.play(chess_move).unwrap();
+        let different_root = position_keys(&position).repetition;
+        assert_eq!(
+            root_repetition_history(Some(&history), different_root),
+            vec![different_root]
+        );
     }
 }

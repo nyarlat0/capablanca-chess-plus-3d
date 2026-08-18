@@ -13,7 +13,7 @@ use terastockfish::texel::{
     fit_material,
 };
 use terastockfish::validation::{SelfPlayConfig, compare_profiles};
-use terastockfish::{EvaluationParameters, SearchLimits, SearchOptions, Searcher};
+use terastockfish::{EvaluationParameters, SearchHistory, SearchLimits, SearchOptions, Searcher};
 
 const DATASET_VERSION: &str = "TERASTOCKFISH_TEXEL_DATA_V1";
 const CHECKPOINT_VERSION: &str = "TERASTOCKFISH_TEXEL_RUN_V1";
@@ -604,7 +604,7 @@ fn training_batch(
 }
 
 fn training_pair(pair: u32, options: &Options) -> Result<[TrainingGame; 2], String> {
-    let opening = generated_opening(
+    let (opening, history) = generated_opening(
         options.seed ^ u64::from(pair).wrapping_mul(0x9e37_79b9_7f4a_7c15),
         options.opening_plies,
     )?;
@@ -613,6 +613,7 @@ fn training_pair(pair: u32, options: &Options) -> Result<[TrainingGame; 2], Stri
         training_game(
             pair as u64 * 2,
             &opening,
+            &history,
             lower,
             upper,
             Color::White,
@@ -621,6 +622,7 @@ fn training_pair(pair: u32, options: &Options) -> Result<[TrainingGame; 2], Stri
         training_game(
             pair as u64 * 2 + 1,
             &opening,
+            &history,
             lower,
             upper,
             Color::Black,
@@ -632,6 +634,7 @@ fn training_pair(pair: u32, options: &Options) -> Result<[TrainingGame; 2], Stri
 fn training_game(
     game_id: u64,
     opening: &Position,
+    opening_history: &SearchHistory,
     first: EvaluationParameters,
     second: EvaluationParameters,
     first_color: Color,
@@ -644,6 +647,7 @@ fn training_game(
     let mut first_searcher = Searcher::with_evaluation(search_options, first);
     let mut second_searcher = Searcher::with_evaluation(search_options, second);
     let mut game = Game::new(opening.clone());
+    let mut history = opening_history.clone();
     let mut plies = 0_u16;
     let mut pending = Vec::<PendingSample>::new();
     let mut eligible_samples = 0_u64;
@@ -668,8 +672,9 @@ fn training_game(
         } else {
             &mut second_searcher
         };
-        let analysis = searcher.analyze(
+        let analysis = searcher.analyze_with_history(
             game.position(),
+            &history,
             SearchLimits {
                 max_depth: 191,
                 max_nodes: Some(options.training_nodes.max(1)),
@@ -708,6 +713,7 @@ fn training_game(
         }
         game.play(chess_move)
             .map_err(|error| format!("training search returned an illegal move: {error}"))?;
+        history.record(game.position());
         plies = plies.saturating_add(1);
     };
 
@@ -1084,8 +1090,9 @@ fn print_report(options: &Options, dataset: &Dataset, state: &RunState) {
     println!("recommended={recommendation}");
 }
 
-fn generated_opening(seed: u64, opening_plies: u8) -> Result<Position, String> {
+fn generated_opening(seed: u64, opening_plies: u8) -> Result<(Position, SearchHistory), String> {
     let mut position = Variant::TerachessII.starting_position();
+    let mut history = SearchHistory::new(&position);
     let mut random = SplitMix64::new(seed);
     for _ in 0..opening_plies {
         let mut moves = position.legal_moves();
@@ -1097,8 +1104,9 @@ fn generated_opening(seed: u64, opening_plies: u8) -> Result<Position, String> {
         position
             .play(chess_move)
             .map_err(|error| format!("opening generator produced an illegal move: {error}"))?;
+        history.record(&position);
     }
-    Ok(position)
+    Ok((position, history))
 }
 
 fn terminal_white_outcome(outcome: GameOutcome) -> Option<f64> {

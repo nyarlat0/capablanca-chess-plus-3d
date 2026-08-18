@@ -15,6 +15,9 @@ concluded from it.
 | 2026-08-17 | [Material feature identifiability diagnostic](2026-08-17-material-feature-identifiability.md) | Both designs are full-rank; pooled standardized condition number 4.46; no severe Archer collinearity | Investigate optimizer/bootstrap convergence and model sensitivity before more self-play |
 | 2026-08-17 | [Pooled material convergence and profile freeze](2026-08-17-pooled-material-convergence.md) | Eight restarts, 256×48 bootstrap and eight-split CV stabilize a regularization-0.08 candidate | Freeze candidate; proceed to fixed 200-pair/100k-node validation |
 | 2026-08-17 | [Final material-profile validation](2026-08-17-final-material-validation.md) | Frozen candidate scored 55.25%, paired 95% CI 50.89–59.61% over 200 color-swapped pairs | Promote unchanged as `empirical_v1()` and make it the production default |
+| 2026-08-17 | [Retrospective color balance and prospective protocol](2026-08-17-color-balance-prestudy.md) | Existing paired training data estimate White at 56.66%, paired 95% CI 54.37–58.94%; important protocol confounds remain | Treat as preliminary evidence; run fixed production-vs-production balance study |
+| 2026-08-18 | [Balance pilot invalidation and V2 protocol](2026-08-18-balance-protocol-correction.md) | 33/48 games hit the 300-ply cap and were misclassified as draws; 12 repeated and only 3 mated | Reject the pilot; add full repetition history, uncapped play, unresolved outcomes, conservative adjudication, and Wilson intervals |
+| 2026-08-18 | [Production color-balance V2](2026-08-18-color-balance-v2.md) | White scored 53.52% over 384 resolved games, 95% CI 48.52–58.44%; the estimate converged downward but neither advantage nor ±3% equivalence was established | Retain the current array; treat a small White edge as plausible but unproven |
 
 ## Required record for future research
 

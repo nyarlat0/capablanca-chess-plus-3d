@@ -1,6 +1,6 @@
 //! Deterministic paired self-play for comparing evaluation profiles.
 
-use crate::{EvaluationParameters, SearchLimits, SearchOptions, Searcher};
+use crate::{EvaluationParameters, SearchHistory, SearchLimits, SearchOptions, Searcher};
 use capablanca_chess_plus::{Color, DrawReason, Game, GameOutcome, Position, Variant};
 use std::error::Error;
 use std::fmt;
@@ -233,11 +233,20 @@ where
             let mut workers = Vec::with_capacity((batch_end - next_pair) as usize);
             for pair in next_pair..batch_end {
                 workers.push(scope.spawn(move || {
-                    let opening = generated_opening(config.seed, pair, config.opening_plies)?;
+                    let (opening, history) =
+                        generated_opening(config.seed, pair, config.opening_plies)?;
                     Color::ALL
                         .into_iter()
                         .map(|candidate_color| {
-                            play_game(&opening, pair, candidate_color, baseline, candidate, config)
+                            play_game(
+                                &opening,
+                                &history,
+                                pair,
+                                candidate_color,
+                                baseline,
+                                candidate,
+                                config,
+                            )
                         })
                         .collect::<Result<Vec<_>, _>>()
                 }));
@@ -270,6 +279,7 @@ where
 
 fn play_game(
     opening: &Position,
+    opening_history: &SearchHistory,
     pair: u32,
     candidate_color: Color,
     baseline: EvaluationParameters,
@@ -283,6 +293,7 @@ fn play_game(
     let mut baseline_searcher = Searcher::with_evaluation(options, baseline);
     let mut candidate_searcher = Searcher::with_evaluation(options, candidate);
     let mut game = Game::new(opening.clone());
+    let mut history = opening_history.clone();
     let started = Instant::now();
     let mut nodes = 0_u64;
     let mut plies = 0_u16;
@@ -320,8 +331,9 @@ fn play_game(
         } else {
             &mut baseline_searcher
         };
-        let analysis = searcher.analyze(
+        let analysis = searcher.analyze_with_history(
             game.position(),
+            &history,
             SearchLimits {
                 max_depth: 191,
                 max_nodes: Some(config.nodes_per_move.max(1)),
@@ -376,6 +388,7 @@ fn play_game(
                 chess_move.to_uci()
             ))
         })?;
+        history.record(game.position());
         plies = plies.saturating_add(1);
     }
 }
@@ -428,8 +441,13 @@ fn terminal_result(
     }
 }
 
-fn generated_opening(seed: u64, pair: u32, opening_plies: u8) -> Result<Position, SelfPlayError> {
+fn generated_opening(
+    seed: u64,
+    pair: u32,
+    opening_plies: u8,
+) -> Result<(Position, SearchHistory), SelfPlayError> {
     let mut position = Variant::TerachessII.starting_position();
+    let mut history = SearchHistory::new(&position);
     let mut random = SplitMix64::new(seed ^ u64::from(pair).wrapping_mul(0x9e37_79b9_7f4a_7c15));
     for _ in 0..opening_plies {
         let mut moves = position.legal_moves();
@@ -444,8 +462,9 @@ fn generated_opening(seed: u64, pair: u32, opening_plies: u8) -> Result<Position
                 chess_move.to_uci()
             ))
         })?;
+        history.record(&position);
     }
-    Ok(position)
+    Ok((position, history))
 }
 
 struct SplitMix64(u64);
@@ -477,8 +496,8 @@ mod tests {
         let first = generated_opening(7, 3, 6).unwrap();
         let again = generated_opening(7, 3, 6).unwrap();
         let different = generated_opening(8, 3, 6).unwrap();
-        assert_eq!(first, again);
-        assert_ne!(first, different);
+        assert_eq!(first.0, again.0);
+        assert_ne!(first.0, different.0);
     }
 
     #[test]

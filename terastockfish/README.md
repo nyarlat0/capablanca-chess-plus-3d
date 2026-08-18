@@ -211,6 +211,49 @@ cargo run --release -p terastockfish --bin terastockfish-texel -- \
   --checkpoint target/terastockfish-texel-smoke.chk
 ```
 
+### Starting-position color balance
+
+`terastockfish-balance` measures White's empirical advantage without comparing
+different evaluators: `production()` plays both colors. The `eight-hour` preset
+first analyzes the exact starting position at several node budgets, then plays
+384 reproducible eight-ply randomized openings at 50,000 nodes per move. Search
+receives the complete game repetition history. There is no ply cap: games end
+by mate, stalemate, threefold repetition, the fifty-move rule, or a conservative
+±1,500 evaluation sustained for 20 plies. Recall that every pawn move or capture
+resets the fifty-move clock, so it is not a general wall-clock bound on a game
+with 128 starting pieces.
+
+If a manual `--max-plies` safety cap is supplied, capped games are recorded as
+`unresolved`, excluded from W/D/L scoring, and invalidate conclusions when they
+exceed 10% of the sample. The V2 atomic CSV stores opening and final FENs plus
+the final White-relative score and doubles as a resume checkpoint. Approximately
+4–8 hours remains the operational target, not a hard deadline.
+
+On a 12-core/24-thread machine with 32 GiB RAM, run:
+
+```sh
+cargo build --release -p terastockfish --bin terastockfish-balance
+./target/release/terastockfish-balance \
+  --preset eight-hour \
+  --jobs 24 --hash 32 --root-threads 24 \
+  --seed 0x42414c414e434531 \
+  --output target/terastockfish-balance-v2.csv
+```
+
+Resume with the same command plus `--resume --skip-root`. Explicit CLI options
+override preset values. The report separates ordinary evidence of a White edge
+from practical equivalence within 47–53% and evidence that the edge exceeds
+three percentage points. With 384 games the protocol is designed to detect a
+repeat of the preliminary 6–7-point edge; failure to do so does not by itself
+prove strict ±3-point equivalence. Methodology and the preliminary estimate are recorded in the
+[balance prestudy](docs/research/2026-08-17-color-balance-prestudy.md). The
+first capped pilot and the corrected V2 protocol are documented in the
+[protocol correction](docs/research/2026-08-18-balance-protocol-correction.md).
+The completed 384-game V2 study scored White at 53.52%, with a 95% interval of
+48.52–58.44%. It showed convergence away from extreme early estimates but
+established neither a White advantage nor strict ±3% equivalence; see the
+[final balance report](docs/research/2026-08-18-color-balance-v2.md).
+
 The older `terastockfish-tune` performs direct SPSA self-play. It remains
 available for exhaustive multi-day confirmation:
 

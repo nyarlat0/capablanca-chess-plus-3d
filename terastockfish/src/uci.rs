@@ -1,7 +1,7 @@
 //! Minimal, standards-oriented UCI frontend for GUI and command-line use.
 
 use crate::search::mate_distance;
-use crate::{AnalysisInfo, SearchLimits, Searcher, evaluate};
+use crate::{AnalysisInfo, SearchHistory, SearchLimits, Searcher, evaluate};
 use capablanca_chess_plus::{Color, Position, Variant};
 use std::io::{self, BufRead, Write};
 use std::thread::{self, JoinHandle};
@@ -17,14 +17,17 @@ struct ActiveSearch {
 
 struct UciState {
     position: Position,
+    history: SearchHistory,
     searcher: Option<Searcher>,
     active: Option<ActiveSearch>,
 }
 
 impl Default for UciState {
     fn default() -> Self {
+        let position = Variant::TerachessII.starting_position();
         Self {
-            position: Variant::TerachessII.starting_position(),
+            history: SearchHistory::new(&position),
+            position,
             searcher: Some(Searcher::default()),
             active: None,
         }
@@ -63,8 +66,9 @@ impl UciState {
         let mut searcher = self.searcher.take().unwrap_or_default();
         let control = searcher.control();
         let position = self.position.clone();
+        let history = self.history.clone();
         let worker = thread::spawn(move || {
-            let result = searcher.analyze_with(&position, limits, print_info);
+            let result = searcher.analyze_with_history_and(&position, &history, limits, print_info);
             let best_move = result
                 .best_move
                 .map_or_else(|| "0000".to_owned(), |chess_move| chess_move.to_uci());
@@ -80,7 +84,7 @@ impl UciState {
 
     fn replace_position(&mut self, command: &str) -> Result<(), String> {
         self.join_search(true);
-        self.position = parse_position(command)?;
+        (self.position, self.history) = parse_position(command)?;
         Ok(())
     }
 
@@ -138,6 +142,7 @@ pub fn run_stdio() -> io::Result<()> {
         } else if command == "ucinewgame" {
             state.join_search(true);
             state.position = Variant::TerachessII.starting_position();
+            state.history = SearchHistory::new(&state.position);
             state
                 .searcher
                 .as_ref()
@@ -219,7 +224,7 @@ fn print_info(info: &AnalysisInfo) {
     );
 }
 
-fn parse_position(command: &str) -> Result<Position, String> {
+fn parse_position(command: &str) -> Result<(Position, SearchHistory), String> {
     let words = command.split_whitespace().collect::<Vec<_>>();
     let mut cursor = 1;
     let mut position = match words.get(cursor).copied() {
@@ -239,6 +244,7 @@ fn parse_position(command: &str) -> Result<Position, String> {
         }
         _ => return Err("position must contain startpos or fen".to_owned()),
     };
+    let mut history = SearchHistory::new(&position);
     if words.get(cursor) == Some(&"moves") {
         cursor += 1;
     }
@@ -246,8 +252,9 @@ fn parse_position(command: &str) -> Result<Position, String> {
         position
             .play_uci(chess_move)
             .map_err(|error| error.to_string())?;
+        history.record(&position);
     }
-    Ok(position)
+    Ok((position, history))
 }
 
 fn parse_setoption(command: &str) -> Result<(String, Option<String>), String> {
@@ -357,7 +364,7 @@ mod tests {
     fn position_command_replays_large_board_moves() {
         let mut expected = Variant::TerachessII.starting_position();
         expected.play_uci("a4a6").unwrap();
-        let parsed = parse_position("position startpos moves a4a6").unwrap();
+        let (parsed, _) = parse_position("position startpos moves a4a6").unwrap();
         assert_eq!(parsed, expected);
     }
 

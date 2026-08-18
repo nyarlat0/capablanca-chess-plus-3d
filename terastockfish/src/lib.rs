@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod balance;
 mod capacity;
 mod evaluate;
 mod key;
@@ -23,7 +24,7 @@ pub use evaluate::{EvaluationParameters, evaluate, evaluate_with, piece_value};
 pub use key::position_key;
 pub use profile::MaterialProfile;
 pub use search::{
-    AnalysisInfo, AnalysisResult, SearchControl, SearchLimits, SearchOptions, Searcher,
-    is_mate_score, mate_distance,
+    AnalysisInfo, AnalysisResult, SearchControl, SearchHistory, SearchLimits, SearchOptions,
+    Searcher, is_mate_score, mate_distance,
 };
 pub use tt::{Bound, TranspositionTable};

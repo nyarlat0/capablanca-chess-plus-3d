@@ -93,6 +93,49 @@ The promoted material vector, anchored at Pawn=100 and King=0, is:
 | Prince | 466 | Sorceress | 1,609 |
 | Duchess | 1,178 | Troll | 510 |
 
+### Direct comparison in the author's scale
+
+The [reference rules](https://www.chessvariants.com/rules/terachess-ii) express
+relative material in pawn units. TeraStockfish stores the same scale multiplied
+by 100 for integer search arithmetic. The following table converts both
+profiles back to the author's metric (`Pawn = 1.00`); `Δ` is empirical minus
+published. The King has no exchange value because it is royal, so zero is an
+engine sentinel rather than a claim that losing the King costs nothing.
+
+| Piece | Published | Empirical v1 | Δ | Δ % |
+|---|---:|---:|---:|---:|
+| Pawn | 1.00 | 1.00 | 0.00 | 0.0% |
+| Knight | 4.00 | 3.92 | −0.08 | −2.0% |
+| Bishop | 6.80 | 7.12 | +0.32 | +4.7% |
+| Rook | 10.00 | 9.97 | −0.03 | −0.3% |
+| Queen | 16.60 | 16.09 | −0.51 | −3.1% |
+| King | royal | royal | — | — |
+| Archbishop | 10.60 | 10.66 | +0.06 | +0.6% |
+| Chancellor | 13.80 | 14.05 | +0.25 | +1.8% |
+| Cannon | 10.00 | 10.22 | +0.22 | +2.2% |
+| Elephant | 4.00 | 3.92 | −0.08 | −2.0% |
+| Camel | 3.60 | 3.60 | 0.00 | 0.0% |
+| Giraffe | 3.40 | 3.47 | +0.07 | +2.1% |
+| Archer | 6.60 | 6.47 | −0.13 | −2.0% |
+| Machine | 4.40 | 4.39 | −0.01 | −0.2% |
+| Amazon | 20.40 | 20.14 | −0.26 | −1.3% |
+| Lion | 12.00 | 11.63 | −0.37 | −3.1% |
+| Buffalo | 10.80 | 11.54 | +0.74 | +6.9% |
+| Centaur | 8.20 | 8.26 | +0.06 | +0.7% |
+| Admiral | 12.00 | 11.47 | −0.53 | −4.4% |
+| Missionary | 8.80 | 8.52 | −0.28 | −3.2% |
+| Eagle | 16.80 | 14.62 | **−2.18** | **−13.0%** |
+| Rhinoceros | 12.20 | 12.95 | **+0.75** | **+6.1%** |
+| Prince | 4.60 | 4.66 | +0.06 | +1.3% |
+| Sorceress | 16.40 | 16.09 | −0.31 | −1.9% |
+| Duchess | 11.60 | 11.78 | +0.18 | +1.6% |
+| Troll | 4.80 | 5.10 | **+0.30** | **+6.3%** |
+
+Most fitted changes are smaller than half a pawn. Eagle is the clear large
+downward revision; Buffalo, Rhinoceros, and Troll have the largest relative
+increases. These are coefficients of this evaluator, not isolated proofs of
+context-independent exchange values.
+
 ## Interpretation and limitations
 
 Supported: this complete frozen material profile outperformed the published

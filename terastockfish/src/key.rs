@@ -1,5 +1,5 @@
 use crate::capacity::square_index;
-use capablanca_chess_plus::{CastleSide, Color, Piece, Position, PositionUndo, Square};
+use capablanca_chess_plus::{CastleSide, Color, MoveKind, Piece, Position, PositionUndo, Square};
 
 const KEY_SEED: u64 = 0x5445_5241_5354_4f43;
 
@@ -14,16 +14,19 @@ pub fn position_key(position: &Position) -> u64 {
 pub(crate) struct PositionKeys {
     pub analysis: u64,
     pub repetition: u64,
+    effective_en_passant: Option<Square>,
 }
 
 /// Computes both keys in one board traversal. Search visits this hot path at
 /// every node, so it must not hash the (large) board twice.
 #[must_use]
 pub(crate) fn position_keys(position: &Position) -> PositionKeys {
-    let repetition = state_key(position);
+    let effective_en_passant = effective_en_passant(position);
+    let repetition = state_key(position, effective_en_passant);
     PositionKeys {
         repetition,
         analysis: repetition ^ halfmove_component(position.halfmove_clock()),
+        effective_en_passant,
     }
 }
 
@@ -54,19 +57,21 @@ pub(crate) fn position_keys_after_move(
             repetition ^= king_jump_component(color);
         }
     }
-    if let Some(square) = undo.previous_en_passant() {
+    if let Some(square) = previous.effective_en_passant {
         repetition ^= en_passant_component(square);
     }
-    if let Some(square) = position.en_passant() {
+    let effective_en_passant = effective_en_passant(position);
+    if let Some(square) = effective_en_passant {
         repetition ^= en_passant_component(square);
     }
     PositionKeys {
         repetition,
         analysis: repetition ^ halfmove_component(position.halfmove_clock()),
+        effective_en_passant,
     }
 }
 
-fn state_key(position: &Position) -> u64 {
+fn state_key(position: &Position, effective_en_passant: Option<Square>) -> u64 {
     let mut key = mix64(
         KEY_SEED
             ^ u64::from(position.board().size().files())
@@ -91,10 +96,19 @@ fn state_key(position: &Position) -> u64 {
             key ^= king_jump_component(color);
         }
     }
-    if let Some(square) = position.en_passant() {
+    if let Some(square) = effective_en_passant {
         key ^= en_passant_component(square);
     }
     key
+}
+
+fn effective_en_passant(position: &Position) -> Option<Square> {
+    let square = position.en_passant()?;
+    position
+        .legal_moves()
+        .iter()
+        .any(|chess_move| chess_move.kind == MoveKind::EnPassant)
+        .then_some(square)
 }
 
 fn piece_component(square: Square, piece: Piece) -> u64 {
@@ -127,4 +141,31 @@ pub(crate) const fn mix64(mut value: u64) -> u64 {
     value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     value ^ (value >> 31)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use capablanca_chess_plus::Variant;
+
+    fn gothic(fen: &str) -> Position {
+        Position::from_fen(Variant::Gothic.rules(), fen).unwrap()
+    }
+
+    #[test]
+    fn repetition_key_uses_only_a_legally_available_en_passant_capture() {
+        let legal = gothic("9k/10/10/4Pp4/10/10/10/K9 w - f6 0 1");
+        let legal_without_marker = gothic("9k/10/10/4Pp4/10/10/10/K9 w - - 0 1");
+        assert_ne!(
+            position_keys(&legal).repetition,
+            position_keys(&legal_without_marker).repetition
+        );
+
+        let unavailable = gothic("9k/10/10/5p4/10/10/10/K9 w - f6 0 1");
+        let unavailable_without_marker = gothic("9k/10/10/5p4/10/10/10/K9 w - - 0 1");
+        assert_eq!(
+            position_keys(&unavailable).repetition,
+            position_keys(&unavailable_without_marker).repetition
+        );
+    }
 }
