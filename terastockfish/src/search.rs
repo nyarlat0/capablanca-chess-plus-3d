@@ -84,7 +84,18 @@ pub struct AnalysisResult {
     pub nodes: u64,
     pub elapsed: Duration,
     pub principal_variation: Vec<Move>,
+    /// Scores recorded for every root move in the last fully completed
+    /// iterative-deepening pass, ordered from best to worst. Non-PV entries
+    /// are alpha-beta bounds rather than independent full-window searches,
+    /// which is sufficient for policy targets and tactical candidate filters.
+    pub root_candidates: Vec<RootCandidate>,
     pub stopped: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RootCandidate {
+    pub chess_move: Move,
+    pub score: i32,
 }
 
 /// Repetition state accumulated by the game containing the position being
@@ -306,6 +317,7 @@ impl Searcher {
                 nodes: 0,
                 elapsed: start.elapsed(),
                 principal_variation: Vec::new(),
+                root_candidates: Vec::new(),
                 stopped: false,
             };
         }
@@ -315,6 +327,7 @@ impl Searcher {
         let mut best_score = root.evaluate(&self.evaluation);
         let mut completed_depth = 0;
         let mut principal_variation = best_move.into_iter().collect::<Vec<_>>();
+        let mut root_candidates = Vec::new();
         let mut stopped = false;
 
         for depth in 1..=max_depth {
@@ -372,6 +385,13 @@ impl Searcher {
             };
             best_move = Some(iteration.best_move);
             best_score = iteration.score;
+            root_candidates = iteration.candidates;
+            root_candidates.sort_unstable_by(|left, right| {
+                right
+                    .score
+                    .cmp(&left.score)
+                    .then_with(|| left.chess_move.to_uci().cmp(&right.chess_move.to_uci()))
+            });
             completed_depth = depth;
             principal_variation = context.principal_variation(position, depth);
             let elapsed = start.elapsed();
@@ -404,6 +424,7 @@ impl Searcher {
             nodes: context.node_count(),
             elapsed: start.elapsed(),
             principal_variation,
+            root_candidates,
             stopped,
         }
     }
@@ -418,6 +439,7 @@ fn root_repetition_history(history: Option<&SearchHistory>, root: u64) -> Vec<u6
 struct RootResult {
     score: i32,
     best_move: Move,
+    candidates: Vec<RootCandidate>,
 }
 
 struct SearchContext<'a> {
@@ -468,6 +490,7 @@ impl SearchContext<'_> {
         );
         let mut best_move = moves[0];
         let mut best_score = -INFINITY;
+        let mut candidates = Vec::with_capacity(moves.len());
 
         for (move_index, chess_move) in moves.into_iter().enumerate() {
             self.check_stop()?;
@@ -493,6 +516,7 @@ impl SearchContext<'_> {
             })();
             position.unmake_move(undo);
             let score = score?;
+            candidates.push(RootCandidate { chess_move, score });
 
             if score > best_score {
                 best_score = score;
@@ -522,6 +546,7 @@ impl SearchContext<'_> {
         Ok(RootResult {
             score: best_score,
             best_move,
+            candidates,
         })
     }
 
@@ -679,6 +704,10 @@ impl SearchContext<'_> {
 
         let mut best_move = leader.map_or(moves[0], |(chess_move, _)| chess_move);
         let mut best_score = leader.map_or(-INFINITY, |(_, score)| score);
+        let mut candidates = leader
+            .map(|(chess_move, score)| RootCandidate { chess_move, score })
+            .into_iter()
+            .collect::<Vec<_>>();
         for result in worker_results {
             let (scores, killers, deterministic_worker_nodes) = result?;
             if let Some(worker_nodes) = deterministic_worker_nodes {
@@ -686,6 +715,7 @@ impl SearchContext<'_> {
             }
             self.killers = killers;
             for (chess_move, score) in scores {
+                candidates.push(RootCandidate { chess_move, score });
                 if score > best_score {
                     best_score = score;
                     best_move = chess_move;
@@ -710,6 +740,7 @@ impl SearchContext<'_> {
         Ok(RootResult {
             score: best_score,
             best_move,
+            candidates,
         })
     }
 

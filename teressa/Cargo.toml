@@ -1,0 +1,36 @@
+[package]
+name = "teressa"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license.workspace = true
+description = "Plan-conditioned neural research engine for Terachess II"
+default-run = "teressa"
+
+[dependencies]
+burn = { version = "0.21", default-features = false, features = ["autodiff", "flex", "std", "store", "vulkan", "wgpu"] }
+capablanca-engine = { path = "../engine" }
+rand = "0.9"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+terastockfish = { path = "../terastockfish" }
+zstd = "0.13"
+
+[dev-dependencies]
+tempfile = "3.20"
+
+[[bin]]
+name = "teressa-benchmark"
+path = "src/bin/teressa-benchmark.rs"
+
+[[bin]]
+name = "teressa-generate"
+path = "src/bin/teressa-generate.rs"
+
+[[bin]]
+name = "teressa-train"
+path = "src/bin/teressa-train.rs"
+
+[[bin]]
+name = "teressa-eval"
+path = "src/bin/teressa-eval.rs"

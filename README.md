@@ -51,6 +51,7 @@ promotion, and the initial king jump implemented by the shared rules engine.
 | --- | --- |
 | [`engine`](engine/) | Dependency-free rules, game state, move generation, and FEN. |
 | [`terastockfish`](terastockfish/) | Native UCI/Rust and browser-worker analysis engine for Terachess II, with 18x18-capable search storage. |
+| [`teressa`](teressa/) | Native Vulkan neural research engine with explicit bilingual plans and TeraStockfish tactical safety. |
 | [`bevy-front`](bevy-front/) | Bevy desktop/WASM client, rendering, UI, animation, audio, engine integration, and multiplayer client. |
 | [`multiplayer-protocol`](multiplayer-protocol/) | Shared versioned WebSocket message types. |
 | [`backend`](backend/) | Actix WebSocket server with authoritative validation and PostgreSQL persistence. |
@@ -256,6 +257,10 @@ for non-Terachess variants. Terachess II uses this workspace's TeraStockfish.
 Exact native and browser versions, upstream sources, authors, and the GPLv3
 license are documented in
 [`bevy-front/assets/engine/THIRD_PARTY.md`](bevy-front/assets/engine/THIRD_PARTY.md).
+
+The separate experimental [`Teressa`](teressa/) crate trains a
+plan-conditioned neural policy for Terachess II. It is native-only and is not
+part of the browser download unless it is explicitly integrated in the future.
 
 ## License
 
