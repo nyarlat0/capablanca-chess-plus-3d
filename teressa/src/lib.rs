@@ -29,7 +29,8 @@ pub use hybrid::{
     HybridAgent, HybridDecision, HybridOptions, NeuralAdvice, NeuralAdvisor, PolicyCandidate,
 };
 pub use model::{
-    BdhConfig, BdhNetwork, NetworkOutput, ResidualConfig, ResidualNetwork, StrategyNetwork,
+    BdhConfig, BdhNetwork, NetworkInput, NetworkOutput, ResidualConfig, ResidualNetwork,
+    StrategyNetwork,
 };
 pub use plan::{
     BoardRegion, CancelCondition, PlanActor, PlanKind, PlanMethod, PlanReason, PlanState,
@@ -41,6 +42,6 @@ pub use training::{
     make_batch, split_records, train_vulkan,
 };
 
-pub const MODEL_FORMAT_VERSION: &str = "TERESSA_MODEL_V2";
+pub const MODEL_FORMAT_VERSION: &str = "TERESSA_MODEL_V3";
 pub const DATASET_FORMAT_VERSION: &str = "TERESSA_DATASET_V2";
 pub const LEGACY_DATASET_FORMAT_VERSION: &str = "TERESSA_DATASET_V1";

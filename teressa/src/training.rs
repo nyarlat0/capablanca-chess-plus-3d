@@ -1,12 +1,18 @@
 use crate::MODEL_FORMAT_VERSION;
 use crate::dataset::{DatasetRecord, DatasetShardReader};
-use crate::encode::{BOARD_FEATURES, BOARD_TOKENS, MOVE_FEATURES, encode_position_uci_history};
-use crate::model::{BdhConfig, ResidualConfig, StrategyNetwork};
+use crate::encode::{
+    BOARD_FEATURES, BOARD_TOKENS, HISTORY_PLIES, MOVE_FEATURES, encode_position_uci_history,
+};
+use crate::model::{BdhConfig, NetworkInput, ResidualConfig, StrategyNetwork};
 use crate::plan::PlanKind;
 use burn::module::AutodiffModule;
 use burn::optim::{AdamWConfig, GradientsParams, Optimizer};
 use burn::prelude::*;
-use burn::record::CompactRecorder;
+use burn::record::{
+    BinFileRecorder, CompactRecorder, DefaultRecorder, FullPrecisionSettings, Recorder,
+};
+use burn::tensor::Int;
+use burn::tensor::activation::softmax;
 use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::loss::cross_entropy_with_logits;
 use rand::SeedableRng;
@@ -90,11 +96,15 @@ pub struct TrainingOptions {
     pub epochs: usize,
     pub batch_size: usize,
     pub learning_rate: f64,
+    pub warmup_fraction: f64,
+    pub minimum_learning_rate_ratio: f64,
+    pub plan_loss_weight: f64,
     pub seed: u64,
     pub width: usize,
     pub layers_or_steps: usize,
     pub heads: usize,
     pub sparse_per_head: usize,
+    pub resume: bool,
 }
 
 impl Default for TrainingOptions {
@@ -106,13 +116,34 @@ impl Default for TrainingOptions {
             epochs: 20,
             batch_size: 16,
             learning_rate: 3.0e-4,
+            warmup_fraction: 0.05,
+            minimum_learning_rate_ratio: 0.1,
+            plan_loss_weight: 1.0,
             seed: 0x5445_5245_5353_4132,
             width: 192,
             layers_or_steps: 4,
             heads: 4,
             sparse_per_head: 48,
+            resume: false,
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct TrainingState {
+    format: String,
+    architecture: Architecture,
+    width: usize,
+    layers_or_steps: usize,
+    heads: usize,
+    sparse_per_head: usize,
+    seed: u64,
+    completed_epochs: usize,
+    optimizer_steps: usize,
+    /// Two alternating slots keep the checkpoint transaction recoverable. The
+    /// state file is published last and therefore always points at a complete
+    /// model/optimizer pair, even if the next save is interrupted.
+    checkpoint_slot: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -122,17 +153,30 @@ pub struct EpochMetrics {
     pub policy_target_entropy: f32,
     pub policy_uniform_cross_entropy: f32,
     pub policy_top1: f32,
+    pub plan_cross_entropy: f32,
+    pub plan_target_entropy: f32,
+    pub plan_prior_cross_entropy: f32,
     pub wdl_accuracy: f32,
+    pub wdl_majority_accuracy: f32,
+    pub wdl_balanced_accuracy: f32,
+    pub wdl_recall: [f32; 3],
+    pub wdl_target_fraction: [f32; 3],
     pub plan_accuracy: f32,
     pub plan_macro_recall: f32,
     pub plan_recall: [f32; PlanKind::COUNT],
+    pub plan_target_mass: [f32; PlanKind::COUNT],
+    pub plan_predicted_mass: [f32; PlanKind::COUNT],
     pub samples: usize,
 }
 
 pub struct TrainingBatch<B: Backend> {
     pub board: Tensor<B, 3>,
     pub board_mask: Tensor<B, 2>,
+    pub history: Tensor<B, 3>,
+    pub history_mask: Tensor<B, 2>,
     pub moves: Tensor<B, 3>,
+    pub move_from: Tensor<B, 2, Int>,
+    pub move_to: Tensor<B, 2, Int>,
     pub move_mask: Tensor<B, 2>,
     pub plan_input: Tensor<B, 2>,
     pub policy_target: Tensor<B, 2>,
@@ -140,6 +184,42 @@ pub struct TrainingBatch<B: Backend> {
     pub plan_target: Tensor<B, 2>,
     pub score_target: Tensor<B, 2>,
     pub risk_target: Tensor<B, 2>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LossWeights {
+    pub policy: f64,
+    pub wdl: f64,
+    pub plan: f64,
+    pub score: f64,
+    pub tactical_risk: f64,
+}
+
+impl Default for LossWeights {
+    fn default() -> Self {
+        Self {
+            policy: 1.0,
+            wdl: 0.7,
+            plan: 1.0,
+            score: 0.25,
+            tactical_risk: 0.2,
+        }
+    }
+}
+
+impl<B: Backend> TrainingBatch<B> {
+    pub fn network_input(&self) -> NetworkInput<B> {
+        NetworkInput {
+            board: self.board.clone(),
+            board_mask: self.board_mask.clone(),
+            history: self.history.clone(),
+            history_mask: self.history_mask.clone(),
+            moves: self.moves.clone(),
+            move_from: self.move_from.clone(),
+            move_to: self.move_to.clone(),
+            plan: self.plan_input.clone(),
+        }
+    }
 }
 
 pub fn initialize_vulkan() -> burn::backend::wgpu::WgpuDevice {
@@ -160,8 +240,18 @@ pub fn initialize_vulkan() -> burn::backend::wgpu::WgpuDevice {
 }
 
 pub fn train_vulkan(options: &TrainingOptions) -> Result<ModelManifest, String> {
-    if options.epochs == 0 || options.batch_size == 0 || options.width == 0 {
-        return Err("epochs, batch-size, and width must be positive".to_owned());
+    if options.epochs == 0
+        || options.batch_size == 0
+        || options.width == 0
+        || options.learning_rate <= 0.0
+        || options.plan_loss_weight <= 0.0
+        || !(0.0..1.0).contains(&options.warmup_fraction)
+        || !(0.0..=1.0).contains(&options.minimum_learning_rate_ratio)
+    {
+        return Err(
+            "epochs, batch-size, width, learning-rate, and plan-loss-weight must be positive; warmup must be in [0,1) and minimum LR ratio in [0,1]"
+                .to_owned(),
+        );
     }
     let records = load_records(&options.inputs)?;
     if records.iter().any(|record| record.plan_policy.is_empty()) {
@@ -179,7 +269,7 @@ pub fn train_vulkan(options: &TrainingOptions) -> Result<ModelManifest, String> 
     let device = initialize_vulkan();
     type Base = burn::backend::Wgpu;
     type Train = burn::backend::Autodiff<Base>;
-    match options.architecture {
+    let trained_epochs = match options.architecture {
         Architecture::Bdh => {
             let model = BdhConfig::new()
                 .with_width(options.width)
@@ -187,7 +277,7 @@ pub fn train_vulkan(options: &TrainingOptions) -> Result<ModelManifest, String> 
                 .with_sparse_per_head(options.sparse_per_head)
                 .with_reasoning_steps(options.layers_or_steps)
                 .init::<Train>(&device);
-            train_model(model, &mut train, &validation, options, &device)?;
+            train_model(model, &mut train, &validation, options, &device)?
         }
         Architecture::Residual => {
             let model = ResidualConfig::new()
@@ -195,9 +285,9 @@ pub fn train_vulkan(options: &TrainingOptions) -> Result<ModelManifest, String> 
                 .with_layers(options.layers_or_steps)
                 .with_hidden(options.width * 2)
                 .init::<Train>(&device);
-            train_model(model, &mut train, &validation, options, &device)?;
+            train_model(model, &mut train, &validation, options, &device)?
         }
-    }
+    };
     let manifest = ModelManifest {
         format: MODEL_FORMAT_VERSION.to_owned(),
         architecture: options.architecture,
@@ -205,7 +295,7 @@ pub fn train_vulkan(options: &TrainingOptions) -> Result<ModelManifest, String> 
         layers_or_steps: options.layers_or_steps,
         sparse_per_head: options.sparse_per_head,
         heads: options.heads,
-        trained_epochs: options.epochs,
+        trained_epochs,
         training_positions: train.len(),
         validation_positions: validation.len(),
     };
@@ -219,33 +309,74 @@ fn train_model<B, M>(
     validation: &[DatasetRecord],
     options: &TrainingOptions,
     device: &B::Device,
-) -> Result<(), String>
+) -> Result<usize, String>
 where
     B: AutodiffBackend,
     M: StrategyNetwork<B> + AutodiffModule<B>,
     M::InnerModule: StrategyNetwork<B::InnerBackend>,
 {
     let mut optimizer = AdamWConfig::new().init::<B, M>();
-    let mut rng = StdRng::seed_from_u64(options.seed);
+    let (completed_epochs, previous_steps) = if options.resume {
+        let state = load_training_state(&options.output_prefix)?;
+        validate_training_state(&state, options)?;
+        model = model
+            .load_file(
+                training_model_prefix(&options.output_prefix, state.checkpoint_slot),
+                &DefaultRecorder::new(),
+                device,
+            )
+            .map_err(|error| format!("cannot resume training model: {error}"))?;
+        let optimizer_record = BinFileRecorder::<FullPrecisionSettings>::default()
+            .load(
+                training_optimizer_prefix(&options.output_prefix, state.checkpoint_slot),
+                device,
+            )
+            .map_err(|error| format!("cannot resume AdamW state: {error}"))?;
+        optimizer = optimizer.load_record(optimizer_record);
+        println!(
+            "resume completed_epochs={} optimizer_steps={}",
+            state.completed_epochs, state.optimizer_steps
+        );
+        (state.completed_epochs, state.optimizer_steps)
+    } else {
+        (0, 0)
+    };
     let training_max_moves = maximum_legal_moves(train);
     let validation_max_moves = maximum_legal_moves(validation);
+    let steps_per_epoch = train.len().div_ceil(options.batch_size);
+    let total_steps = steps_per_epoch.saturating_mul(options.epochs).max(1);
+    let warmup_steps = ((total_steps as f64 * options.warmup_fraction).round() as usize)
+        .min(total_steps.saturating_sub(1));
+    let loss_weights = LossWeights {
+        plan: options.plan_loss_weight,
+        ..LossWeights::default()
+    };
+    let mut invocation_step = 0_usize;
+    let mut optimizer_steps = previous_steps;
     println!(
         "tensor_shapes training_max_moves={} validation_max_moves={}",
         training_max_moves, validation_max_moves
     );
-    for epoch in 0..options.epochs {
+    for epoch_offset in 0..options.epochs {
+        let epoch = completed_epochs + epoch_offset;
+        train.sort_unstable_by_key(|record| (record.game_id, record.ply));
+        let mut rng = StdRng::seed_from_u64(splitmix64(options.seed ^ epoch as u64));
         train.shuffle(&mut rng);
         for (batch_index, records) in train.chunks(options.batch_size).enumerate() {
             let batch = make_batch_padded(records, training_max_moves, device)?;
-            let output = model.predict(
-                batch.board.clone(),
-                batch.board_mask.clone(),
-                batch.moves.clone(),
-                batch.plan_input.clone(),
-            );
-            let loss = training_loss(output, &batch);
+            let output = model.predict(batch.network_input());
+            let loss = training_loss_with_weights(output, &batch, loss_weights);
             let gradients = GradientsParams::from_grads(loss.backward(), &model);
-            model = optimizer.step(options.learning_rate, model, gradients);
+            let learning_rate = scheduled_learning_rate(
+                options.learning_rate,
+                options.minimum_learning_rate_ratio,
+                invocation_step,
+                total_steps,
+                warmup_steps,
+            );
+            model = optimizer.step(learning_rate, model, gradients);
+            invocation_step += 1;
+            optimizer_steps += 1;
             // Drop all per-batch upload tensors before asking CubeCL to release
             // unused pages. Keeping this batch alive made cleanup ineffective.
             drop(batch);
@@ -265,6 +396,7 @@ where
             options.batch_size,
             training_max_moves,
             device,
+            loss_weights,
         )?;
         let metrics = evaluate_model_padded(
             &validation_model,
@@ -272,13 +404,21 @@ where
             options.batch_size,
             validation_max_moves,
             device,
+            loss_weights,
         )?;
         drop(validation_model);
         maintain_gpu::<B>(device, "after validation")?;
         println!(
-            "epoch={}/{} train_probe_loss={:.6} validation_loss={:.6} policy_ce={:.6} policy_kl={:.6} policy_gain_vs_uniform={:.6} policy_top1={:.4} wdl_accuracy={:.4} plan_accuracy={:.4} plan_macro_recall={:.4}",
+            "epoch={}/{} lr={:.8} train_probe_loss={:.6} validation_loss={:.6} policy_ce={:.6} policy_kl={:.6} policy_gain_vs_uniform={:.6} policy_top1={:.4} wdl_accuracy={:.4} wdl_majority={:.4} wdl_balanced={:.4} plan_ce={:.6} plan_kl={:.6} plan_gain_vs_prior={:.6} plan_accuracy={:.4} plan_macro_recall={:.4}",
             epoch + 1,
-            options.epochs,
+            completed_epochs + options.epochs,
+            scheduled_learning_rate(
+                options.learning_rate,
+                options.minimum_learning_rate_ratio,
+                invocation_step.saturating_sub(1),
+                total_steps,
+                warmup_steps,
+            ),
             training_probe.loss,
             metrics.loss,
             metrics.policy_cross_entropy,
@@ -286,9 +426,16 @@ where
             metrics.policy_uniform_cross_entropy - metrics.policy_cross_entropy,
             metrics.policy_top1,
             metrics.wdl_accuracy,
+            metrics.wdl_majority_accuracy,
+            metrics.wdl_balanced_accuracy,
+            metrics.plan_cross_entropy,
+            metrics.plan_cross_entropy - metrics.plan_target_entropy,
+            metrics.plan_prior_cross_entropy - metrics.plan_cross_entropy,
             metrics.plan_accuracy,
             metrics.plan_macro_recall,
         );
+        maintain_gpu::<B>(device, "before training checkpoint")?;
+        save_training_checkpoint(&model, &optimizer, options, epoch + 1, optimizer_steps)?;
     }
     if let Some(parent) = options.output_prefix.parent() {
         fs::create_dir_all(parent)
@@ -297,7 +444,127 @@ where
     model
         .valid()
         .save_file(&options.output_prefix, &CompactRecorder::new())
-        .map_err(|error| format!("cannot save Burn checkpoint: {error}"))
+        .map_err(|error| format!("cannot save Burn checkpoint: {error}"))?;
+    Ok(completed_epochs + options.epochs)
+}
+
+fn save_training_checkpoint<B, M, O>(
+    model: &M,
+    optimizer: &O,
+    options: &TrainingOptions,
+    completed_epochs: usize,
+    optimizer_steps: usize,
+) -> Result<(), String>
+where
+    B: AutodiffBackend,
+    M: StrategyNetwork<B> + AutodiffModule<B>,
+    O: Optimizer<M, B>,
+{
+    if let Some(parent) = options.output_prefix.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create training checkpoint directory: {error}"))?;
+    }
+    let checkpoint_slot = completed_epochs % 2;
+    let model_final = training_model_prefix(&options.output_prefix, checkpoint_slot);
+    let model_temporary = suffixed_checkpoint_path(&model_final, "-next");
+    model
+        .clone()
+        .save_file(&model_temporary, &DefaultRecorder::new())
+        .map_err(|error| format!("cannot save resumable training model: {error}"))?;
+
+    let optimizer_final = training_optimizer_prefix(&options.output_prefix, checkpoint_slot);
+    let optimizer_temporary = suffixed_checkpoint_path(&optimizer_final, "-next");
+    BinFileRecorder::<FullPrecisionSettings>::default()
+        .record(optimizer.to_record(), optimizer_temporary.clone())
+        .map_err(|error| format!("cannot save AdamW state: {error}"))?;
+
+    fs::rename(
+        model_temporary.with_extension("mpk"),
+        model_final.with_extension("mpk"),
+    )
+    .map_err(|error| format!("cannot publish resumable training model: {error}"))?;
+    fs::rename(
+        optimizer_temporary.with_extension("bin"),
+        optimizer_final.with_extension("bin"),
+    )
+    .map_err(|error| format!("cannot publish AdamW state: {error}"))?;
+
+    let state = TrainingState {
+        format: MODEL_FORMAT_VERSION.to_owned(),
+        architecture: options.architecture,
+        width: options.width,
+        layers_or_steps: options.layers_or_steps,
+        heads: options.heads,
+        sparse_per_head: options.sparse_per_head,
+        seed: options.seed,
+        completed_epochs,
+        optimizer_steps,
+        checkpoint_slot,
+    };
+    let state_final = training_state_path(&options.output_prefix);
+    let state_temporary = state_final.with_extension("json.part");
+    fs::write(
+        &state_temporary,
+        serde_json::to_vec_pretty(&state)
+            .map_err(|error| format!("cannot encode training state: {error}"))?,
+    )
+    .map_err(|error| format!("cannot write training state: {error}"))?;
+    fs::rename(state_temporary, state_final)
+        .map_err(|error| format!("cannot publish training state: {error}"))
+}
+
+fn load_training_state(prefix: &Path) -> Result<TrainingState, String> {
+    let bytes = fs::read(training_state_path(prefix)).map_err(|error| {
+        format!(
+            "cannot read resumable training state for {}: {error}",
+            prefix.display()
+        )
+    })?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("cannot decode resumable training state: {error}"))
+}
+
+fn validate_training_state(state: &TrainingState, options: &TrainingOptions) -> Result<(), String> {
+    if state.format != MODEL_FORMAT_VERSION
+        || state.architecture != options.architecture
+        || state.width != options.width
+        || state.layers_or_steps != options.layers_or_steps
+        || state.heads != options.heads
+        || state.sparse_per_head != options.sparse_per_head
+        || state.seed != options.seed
+        || state.checkpoint_slot > 1
+    {
+        return Err(
+            "resume checkpoint does not match model format, architecture, dimensions, or split seed"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn training_model_prefix(prefix: &Path, slot: usize) -> PathBuf {
+    suffixed_prefix(prefix, &format!("-training-{slot}"))
+}
+
+fn training_optimizer_prefix(prefix: &Path, slot: usize) -> PathBuf {
+    suffixed_prefix(prefix, &format!("-optimizer-{slot}"))
+}
+
+fn training_state_path(prefix: &Path) -> PathBuf {
+    suffixed_prefix(prefix, "-training-state").with_extension("json")
+}
+
+fn suffixed_prefix(prefix: &Path, suffix: &str) -> PathBuf {
+    let mut name = prefix
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("teressa"))
+        .to_os_string();
+    name.push(suffix);
+    prefix.parent().unwrap_or_else(|| Path::new(".")).join(name)
+}
+
+fn suffixed_checkpoint_path(prefix: &Path, suffix: &str) -> PathBuf {
+    suffixed_prefix(prefix, suffix)
 }
 
 pub fn evaluate_model<B: Backend, M: StrategyNetwork<B>>(
@@ -312,6 +579,7 @@ pub fn evaluate_model<B: Backend, M: StrategyNetwork<B>>(
         batch_size,
         maximum_legal_moves(records),
         device,
+        LossWeights::default(),
     )
 }
 
@@ -321,19 +589,17 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
     batch_size: usize,
     max_moves: usize,
     device: &B::Device,
+    loss_weights: LossWeights,
 ) -> Result<EpochMetrics, String> {
     let mut aggregate = EpochMetrics::default();
     let mut plan_correct_by_kind = [0.0_f32; PlanKind::COUNT];
     let mut plan_total_by_kind = [0.0_f32; PlanKind::COUNT];
+    let mut wdl_correct_by_outcome = [0.0_f32; 3];
+    let mut wdl_total_by_outcome = [0.0_f32; 3];
     for (batch_index, records) in records.chunks(batch_size.max(1)).enumerate() {
         let batch = make_batch_padded(records, max_moves, device)?;
-        let output = model.predict(
-            batch.board.clone(),
-            batch.board_mask.clone(),
-            batch.moves.clone(),
-            batch.plan_input.clone(),
-        );
-        let loss = training_loss(output.clone(), &batch);
+        let output = model.predict(batch.network_input());
+        let loss = training_loss_with_weights(output.clone(), &batch, loss_weights);
         let policy_logits = masked_logits(output.policy_logits, batch.move_mask.clone());
         let policy_cross_entropy =
             cross_entropy_with_logits(policy_logits.clone(), batch.policy_target.clone());
@@ -348,18 +614,21 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
             .clamp_min(1.0)
             .log()
             .mean();
+        let plan_cross_entropy =
+            cross_entropy_with_logits(output.plan_logits.clone(), batch.plan_target.clone());
+        let plan_target_entropy =
+            -(batch.plan_target.clone() * batch.plan_target.clone().clamp_min(1.0e-12).log()).sum()
+                / records.len() as f64;
         let policy_correct = policy_logits
             .argmax(1)
             .equal(batch.policy_target.clone().argmax(1))
             .float()
             .sum();
-        let wdl_correct = output
-            .wdl_logits
-            .argmax(1)
-            .equal(batch.wdl_target.clone().argmax(1))
-            .float()
-            .sum();
-        let predicted_plan = output.plan_logits.argmax(1);
+        let predicted_wdl = output.wdl_logits.argmax(1);
+        let target_wdl = batch.wdl_target.clone().argmax(1);
+        let wdl_correct_mask = predicted_wdl.equal(target_wdl.clone()).float();
+        let wdl_correct = wdl_correct_mask.clone().sum();
+        let predicted_plan = output.plan_logits.clone().argmax(1);
         let target_plan = batch.plan_target.clone().argmax(1);
         let plan_correct_mask = predicted_plan.clone().equal(target_plan.clone()).float();
         let plan_correct = plan_correct_mask.clone().sum();
@@ -368,6 +637,8 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
             policy_cross_entropy,
             policy_target_entropy,
             policy_uniform_cross_entropy,
+            plan_cross_entropy,
+            plan_target_entropy,
             policy_correct,
             wdl_correct,
             plan_correct,
@@ -377,6 +648,17 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
             metric_tensors.push((plan_correct_mask.clone() * target_mask.clone()).sum());
             metric_tensors.push(target_mask.sum());
         }
+        for outcome in 0..3 {
+            let target_mask = target_wdl.clone().equal_elem(outcome as i64).float();
+            metric_tensors.push((wdl_correct_mask.clone() * target_mask.clone()).sum());
+            metric_tensors.push(target_mask.sum());
+        }
+        metric_tensors.push(batch.plan_target.clone().sum_dim(0).squeeze_dim::<1>(0));
+        metric_tensors.push(
+            softmax(output.plan_logits, 1)
+                .sum_dim(0)
+                .squeeze_dim::<1>(0),
+        );
         // A single small transfer replaces separate transfers of full
         // prediction and target arrays for every validation batch.
         let values = Tensor::cat(metric_tensors, 0)
@@ -387,12 +669,28 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
         aggregate.policy_cross_entropy += values[1] * records.len() as f32;
         aggregate.policy_target_entropy += values[2] * records.len() as f32;
         aggregate.policy_uniform_cross_entropy += values[3] * records.len() as f32;
-        aggregate.policy_top1 += values[4];
-        aggregate.wdl_accuracy += values[5];
-        aggregate.plan_accuracy += values[6];
+        aggregate.plan_cross_entropy += values[4] * records.len() as f32;
+        aggregate.plan_target_entropy += values[5] * records.len() as f32;
+        aggregate.policy_top1 += values[6];
+        aggregate.wdl_accuracy += values[7];
+        aggregate.plan_accuracy += values[8];
+        let mut cursor = 9;
         for kind in PlanKind::ALL {
-            plan_correct_by_kind[kind.index()] += values[7 + kind.index() * 2];
-            plan_total_by_kind[kind.index()] += values[8 + kind.index() * 2];
+            plan_correct_by_kind[kind.index()] += values[cursor];
+            plan_total_by_kind[kind.index()] += values[cursor + 1];
+            cursor += 2;
+        }
+        for outcome in 0..3 {
+            wdl_correct_by_outcome[outcome] += values[cursor];
+            wdl_total_by_outcome[outcome] += values[cursor + 1];
+            cursor += 2;
+        }
+        for kind in PlanKind::ALL {
+            aggregate.plan_target_mass[kind.index()] += values[cursor + kind.index()];
+        }
+        cursor += PlanKind::COUNT;
+        for kind in PlanKind::ALL {
+            aggregate.plan_predicted_mass[kind.index()] += values[cursor + kind.index()];
         }
         aggregate.samples += records.len();
         drop(batch);
@@ -405,11 +703,35 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
     aggregate.policy_cross_entropy /= count;
     aggregate.policy_target_entropy /= count;
     aggregate.policy_uniform_cross_entropy /= count;
+    aggregate.plan_cross_entropy /= count;
+    aggregate.plan_target_entropy /= count;
     aggregate.policy_top1 /= count;
     aggregate.wdl_accuracy /= count;
     aggregate.plan_accuracy /= count;
+    let mut represented_outcomes = 0_usize;
+    for outcome in 0..3 {
+        aggregate.wdl_target_fraction[outcome] = wdl_total_by_outcome[outcome] / count;
+        if wdl_total_by_outcome[outcome] > 0.0 {
+            aggregate.wdl_recall[outcome] =
+                wdl_correct_by_outcome[outcome] / wdl_total_by_outcome[outcome];
+            aggregate.wdl_balanced_accuracy += aggregate.wdl_recall[outcome];
+            represented_outcomes += 1;
+        }
+    }
+    aggregate.wdl_balanced_accuracy /= represented_outcomes.max(1) as f32;
+    aggregate.wdl_majority_accuracy = aggregate
+        .wdl_target_fraction
+        .iter()
+        .copied()
+        .fold(0.0, f32::max);
     let mut represented = 0_usize;
     for kind in PlanKind::ALL {
+        aggregate.plan_target_mass[kind.index()] /= count;
+        aggregate.plan_predicted_mass[kind.index()] /= count;
+        let probability = aggregate.plan_target_mass[kind.index()];
+        if probability > 0.0 {
+            aggregate.plan_prior_cross_entropy -= probability * probability.ln();
+        }
         if plan_total_by_kind[kind.index()] > 0.0 {
             aggregate.plan_recall[kind.index()] =
                 plan_correct_by_kind[kind.index()] / plan_total_by_kind[kind.index()];
@@ -439,6 +761,14 @@ pub fn training_loss<B: Backend>(
     output: crate::model::NetworkOutput<B>,
     batch: &TrainingBatch<B>,
 ) -> Tensor<B, 1> {
+    training_loss_with_weights(output, batch, LossWeights::default())
+}
+
+pub fn training_loss_with_weights<B: Backend>(
+    output: crate::model::NetworkOutput<B>,
+    batch: &TrainingBatch<B>,
+    weights: LossWeights,
+) -> Tensor<B, 1> {
     let policy = cross_entropy_with_logits(
         masked_logits(output.policy_logits, batch.move_mask.clone()),
         batch.policy_target.clone(),
@@ -449,7 +779,34 @@ pub fn training_loss<B: Backend>(
     let risk_prob = burn::tensor::activation::sigmoid(output.tactical_risk_logits);
     let risk_error = (risk_prob - batch.risk_target.clone()).square() * batch.move_mask.clone();
     let risk = risk_error.sum() / batch.move_mask.clone().sum().clamp_min(1.0);
-    policy + wdl * 0.7 + plan * 0.35 + score * 0.25 + risk * 0.2
+    policy * weights.policy
+        + wdl * weights.wdl
+        + plan * weights.plan
+        + score * weights.score
+        + risk * weights.tactical_risk
+}
+
+fn scheduled_learning_rate(
+    maximum: f64,
+    minimum_ratio: f64,
+    step: usize,
+    total_steps: usize,
+    warmup_steps: usize,
+) -> f64 {
+    if total_steps <= 1 {
+        return maximum;
+    }
+    if warmup_steps > 0 && step < warmup_steps {
+        return maximum * (step + 1) as f64 / warmup_steps as f64;
+    }
+    let decay_intervals = total_steps
+        .saturating_sub(warmup_steps)
+        .saturating_sub(1)
+        .max(1);
+    let decay_step = step.saturating_sub(warmup_steps).min(decay_intervals);
+    let progress = decay_step as f64 / decay_intervals as f64;
+    let minimum = maximum * minimum_ratio;
+    minimum + 0.5 * (maximum - minimum) * (1.0 + (std::f64::consts::PI * progress).cos())
 }
 
 fn masked_logits<B: Backend>(logits: Tensor<B, 2>, mask: Tensor<B, 2>) -> Tensor<B, 2> {
@@ -484,7 +841,11 @@ fn make_batch_padded<B: Backend>(
     let batch = records.len();
     let mut boards = Vec::with_capacity(batch * BOARD_TOKENS * BOARD_FEATURES);
     let mut board_masks = Vec::with_capacity(batch * BOARD_TOKENS);
+    let mut histories = Vec::with_capacity(batch * HISTORY_PLIES * MOVE_FEATURES);
+    let mut history_masks = Vec::with_capacity(batch * HISTORY_PLIES);
     let mut moves = vec![0.0; batch * max_moves * MOVE_FEATURES];
+    let mut move_from = vec![0_i64; batch * max_moves];
+    let mut move_to = vec![0_i64; batch * max_moves];
     let mut move_masks = vec![0.0; batch * max_moves];
     let mut plan_inputs = vec![0.0; batch * PlanKind::COUNT];
     let mut policy_targets = vec![0.0; batch * max_moves];
@@ -502,6 +863,10 @@ fn make_batch_padded<B: Backend>(
         let encoded = encode_position_uci_history(&position, &record.history);
         boards.extend(encoded.board);
         board_masks.extend(encoded.board_mask);
+        for history in encoded.history {
+            history_masks.push(history.values[11]);
+            histories.extend(history.values);
+        }
         let mut legal = position.legal_moves();
         legal.sort_unstable_by_key(|chess_move| chess_move.to_uci());
         let policy_by_move = record
@@ -520,6 +885,8 @@ fn make_batch_padded<B: Backend>(
         {
             let flat = (sample * max_moves + move_index) * MOVE_FEATURES;
             moves[flat..flat + MOVE_FEATURES].copy_from_slice(&encoded_move.values);
+            move_from[sample * max_moves + move_index] = encoded_move.from_token as i64;
+            move_to[sample * max_moves + move_index] = encoded_move.to_token as i64;
             move_masks[sample * max_moves + move_index] = 1.0;
             if let Some(target) = policy_by_move.get(chess_move.to_uci().as_str()) {
                 policy_targets[sample * max_moves + move_index] = target.probability;
@@ -543,10 +910,20 @@ fn make_batch_padded<B: Backend>(
             device,
         ),
         board_mask: Tensor::from_data(TensorData::new(board_masks, [batch, BOARD_TOKENS]), device),
+        history: Tensor::from_data(
+            TensorData::new(histories, [batch, HISTORY_PLIES, MOVE_FEATURES]),
+            device,
+        ),
+        history_mask: Tensor::from_data(
+            TensorData::new(history_masks, [batch, HISTORY_PLIES]),
+            device,
+        ),
         moves: Tensor::from_data(
             TensorData::new(moves, [batch, max_moves, MOVE_FEATURES]),
             device,
         ),
+        move_from: Tensor::from_data(TensorData::new(move_from, [batch, max_moves]), device),
+        move_to: Tensor::from_data(TensorData::new(move_to, [batch, max_moves]), device),
         move_mask: Tensor::from_data(TensorData::new(move_masks, [batch, max_moves]), device),
         plan_input: Tensor::from_data(
             TensorData::new(plan_inputs, [batch, PlanKind::COUNT]),
@@ -651,6 +1028,15 @@ mod tests {
     use crate::plan::generate_plan_candidates;
     use burn::backend::Flex;
     use capablanca_chess_plus::Variant;
+
+    #[test]
+    fn warmup_cosine_schedule_reaches_peak_and_floor() {
+        let peak = 6.0e-4;
+        assert!((scheduled_learning_rate(peak, 0.1, 0, 100, 10) - peak * 0.1).abs() < 1e-12);
+        assert!((scheduled_learning_rate(peak, 0.1, 9, 100, 10) - peak).abs() < 1e-12);
+        assert!((scheduled_learning_rate(peak, 0.1, 10, 100, 10) - peak).abs() < 1e-12);
+        assert!((scheduled_learning_rate(peak, 0.1, 99, 100, 10) - peak * 0.1).abs() < 1e-12);
+    }
 
     #[test]
     fn batches_pad_variable_move_lists_and_keep_targets_normalized() {

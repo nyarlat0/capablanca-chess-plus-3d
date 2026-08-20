@@ -45,8 +45,35 @@ Both supplied trunks use identical encodings and output heads:
 - 64 relative-to-side-to-move features per square, including all 26 piece
   types, geometry, attacks, en passant, king jump, halfmove state, and recent
   move markers.
-- A variable-size legal-move list with 12 geometric/special-move features.
+- The last eight plies, including explicit recency, instead of silently
+  discarding the history already stored in the dataset.
+- A variable-size legal-move list with 13 geometric/special-move features and
+  integer origin/destination token indices.
 - Heads for legal-move policy, WDL, scalar value, plan class, and tactical risk.
+
+Model V3 fixes three information bottlenecks discovered by the first V2 pilot.
+V2 classified plans from linearly projected squares *before* the BDH reasoning
+steps and mean-pooled them, so much of the spatial configuration was lost. Its
+move head saw only move geometry plus one global position vector: it could not
+directly tell which piece occupied the origin or what was on the destination.
+The encoded move history was never passed to either trunk. V3 instead:
+
+- performs recurrent/residual reasoning before plan classification;
+- uses learned attention pooling rather than an unweighted square average;
+- gathers the contextual board embeddings at every legal move's origin and
+  destination and combines both with move geometry, global context, and the
+  active plan;
+- canonicalizes rank coordinates and move direction to the side-to-move
+  perspective, so mirrored white/black ideas do not have to be learned twice;
+- projects the ordered eight-ply history into the board context;
+- normalizes BDH associative retrieval by the number of real board squares,
+  not the fixed 18x18 padding size;
+- trains the soft plan head at full weight and uses linear warmup followed by
+  cosine learning-rate decay.
+
+The policy is conditioned on the selected persistent plan, while plan, WDL,
+and scalar value are predicted from the position itself. This avoids allowing
+the chosen plan to leak into the target that chooses that plan.
 
 `bdh` is the experimental trunk. It adapts the useful part of the published
 BDH recurrence to a non-causal board: positive sparse features form an
@@ -137,9 +164,10 @@ normalized progress over the plan horizon, keeps the best concrete candidate
 per kind, and applies a softmax across kinds. Candidate count therefore cannot
 inflate a class, and no target distribution is artificially forced to be
 uniform. Newly generated datasets already use the same trajectory labeler.
-The model format is also V2: the old `bdh-pilot-368g` remains useful as an
-experiment record but is intentionally rejected for play because its plan head
-has the obsolete hard-label meaning.
+The dataset remains V2 and does **not** need to be generated or relabeled
+again. The model format is V3. Old `bdh-pilot-368g` and
+`bdh-trajectory-v2-bs256` checkpoints remain useful experiment records but
+cannot be loaded into the changed network; the loader rejects them explicitly.
 
 ## Choosing a safe GPU batch
 
@@ -167,12 +195,14 @@ cargo run --release -p teressa --bin teressa-benchmark -- \
   --width 192 --steps 4 --heads 4 --sparse-per-head 48
 ```
 
-On 2026-08-20 this completed on the project Radeon RX 6700 XT with a measured
+On 2026-08-20 the V2 architecture completed this on the project Radeon RX 6700
+XT with a measured
 peak of 2165.5 MiB total VRAM use, including 505.4 MiB already in use before
-the process. This is a regression measurement for that machine and driver, not
-a universal memory guarantee. Use the largest batch that completes comfortably
-without desktop latency; throughput, not allocated VRAM by itself, is the
-deciding metric.
+the process. V3 adds endpoint gathers and history tensors, so that number is
+now a historical regression measurement rather than a V3 guarantee. Rerun the
+benchmark before assuming that a larger batch is safe. Use the largest batch
+that completes comfortably without desktop latency; throughput, not allocated
+VRAM by itself, is the deciding metric.
 
 The original sudden jump from roughly 1.4 GiB to the complete 12 GiB heap was
 at the first epoch boundary, before the first epoch log line. Validation was
@@ -187,26 +217,65 @@ upload/intermediate allocation bounded.
 
 ## Training and evaluation
 
-Train the BDH candidate:
+Build the trainer and evaluator once:
 
 ```sh
-cargo run --release -p teressa --bin teressa-train -- \
+cargo build --release -p teressa --bin teressa-train --bin teressa-eval
+```
+
+The first meaningful V3 candidate can reuse the existing V2 dataset. Eight
+epochs at batch 256 provide about 4,300 optimizer updates on the current
+174,717-position corpus; the old three-epoch run provided too few updates to
+judge the repaired architecture. If V3 no longer fits comfortably in VRAM,
+reduce only `--batch-size` to 192 or 128 first:
+
+```sh
+./target/release/teressa-train \
   --input target/teressa-data-v2 \
-  --output target/teressa/bdh-trajectory-v2 \
+  --output target/teressa/bdh-context-v3 \
   --architecture bdh \
-  --epochs 3 --batch-size 64 --learning-rate 0.0003 \
+  --epochs 8 --batch-size 256 --learning-rate 0.0006 \
+  --warmup-fraction 0.05 --minimum-lr-ratio 0.10 \
+  --plan-loss-weight 1.0 \
   --width 192 --steps 4 --heads 4 --sparse-per-head 48 \
   --seed 0x5445524553534132
 ```
 
-Train the control with the same input, split seed, width, epochs, and batch:
+At every completed epoch the trainer atomically publishes an alternating-slot
+full-precision model/AdamW checkpoint. If training is interrupted, continue
+the same output prefix and exact architecture/split seed; `--epochs` means the
+number of **additional** epochs in this invocation:
 
 ```sh
-cargo run --release -p teressa --bin teressa-train -- \
+./target/release/teressa-train \
   --input target/teressa-data-v2 \
-  --output target/teressa/residual-trajectory-v2 \
+  --output target/teressa/bdh-context-v3 \
+  --architecture bdh \
+  --epochs 4 --batch-size 256 --learning-rate 0.0003 \
+  --warmup-fraction 0.03 --minimum-lr-ratio 0.10 \
+  --plan-loss-weight 1.0 \
+  --width 192 --steps 4 --heads 4 --sparse-per-head 48 \
+  --seed 0x5445524553534132 \
+  --resume
+```
+
+The additional segment gets its own warmup/cosine schedule but retains the
+model and AdamW moments. Lowering the peak learning rate for a continuation is
+intentional. The compact play checkpoint is `<output>.mpk`; resumable files
+use `<output>-training-{0,1}.mpk`, `<output>-optimizer-{0,1}.bin`, and a small
+state JSON published last.
+
+Train the residual control with the same input, split seed, update count, and
+batch:
+
+```sh
+./target/release/teressa-train \
+  --input target/teressa-data-v2 \
+  --output target/teressa/residual-context-v3 \
   --architecture residual \
-  --epochs 3 --batch-size 64 --learning-rate 0.0003 \
+  --epochs 8 --batch-size 256 --learning-rate 0.0006 \
+  --warmup-fraction 0.05 --minimum-lr-ratio 0.10 \
+  --plan-loss-weight 1.0 \
   --width 192 --steps 4 \
   --seed 0x5445524553534132
 ```
@@ -214,17 +283,21 @@ cargo run --release -p teressa --bin teressa-train -- \
 Check untouched test positions:
 
 ```sh
-cargo run --release -p teressa --bin teressa-eval -- \
-  --model target/teressa/bdh-trajectory-v2 \
-  --input target/teressa-data-v2 --batch-size 64 \
+./target/release/teressa-eval \
+  --model target/teressa/bdh-context-v3 \
+  --input target/teressa-data-v2 --batch-size 256 \
   --seed 0x5445524553534132
 ```
 
-The report includes combined loss, policy cross-entropy, target entropy, KL,
-gain over the uniform legal-move policy, top-1, WDL accuracy, ordinary plan
-accuracy, macro recall, and recall for every plan kind. Macro recall prevents a
-dominant plan class from making the model look successful. These remain smoke
-metrics, not proof of human-like strategy. A research candidate should
+The report now compares every head against a useful trivial baseline. Policy
+reports gain over a uniform legal-move distribution and the fraction of the
+available target-information gap it explains. WDL reports ordinary accuracy,
+majority-class accuracy, balanced accuracy, and per-outcome recall. Plans
+report soft-target CE/KL, gain over the corpus plan prior, explained fraction,
+target probability mass, predicted probability mass, and hard argmax recall
+per kind. `plan_accuracy` alone is not an acceptance metric: on the old pilot
+it hid the collapse into `ImprovePiece`. These remain smoke metrics, not proof
+of human-like strategy. A research candidate should
 additionally be accepted only after fixed-sample, color-swapped matches report:
 
 - score and confidence interval versus both residual and TeraStockfish;

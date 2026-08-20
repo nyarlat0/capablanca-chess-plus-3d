@@ -5,12 +5,19 @@ pub const MAX_FILES: usize = 18;
 pub const MAX_RANKS: usize = 18;
 pub const BOARD_TOKENS: usize = MAX_FILES * MAX_RANKS;
 pub const BOARD_FEATURES: usize = 64;
-pub const MOVE_FEATURES: usize = 12;
+/// Twelve move-geometry/special-move values plus a relative history-age value.
+/// Legal moves leave the age at zero; stored history moves use `(slot + 1) / 8`
+/// so the network can distinguish move order instead of receiving an unordered
+/// bag of coordinates.
+pub const MOVE_FEATURES: usize = 13;
 pub const HISTORY_PLIES: usize = 8;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct EncodedMove {
     pub values: [f32; MOVE_FEATURES],
+    /// Indices into the fixed row-major 18x18 board-token array.
+    pub from_token: usize,
+    pub to_token: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -65,6 +72,8 @@ pub fn encode_position(position: &Position, history: &[Move]) -> EncodedPosition
     }
     let empty_move = EncodedMove {
         values: [0.0; MOVE_FEATURES],
+        from_token: 0,
+        to_token: 0,
     };
     let mut encoded_history = std::array::from_fn(|_| empty_move.clone());
     for (slot, chess_move) in encoded_history
@@ -72,13 +81,18 @@ pub fn encode_position(position: &Position, history: &[Move]) -> EncodedPosition
         .rev()
         .zip(history.iter().rev().take(HISTORY_PLIES))
     {
-        *slot = encode_move(*chess_move, size.files(), size.ranks());
+        *slot = encode_move(*chess_move, size.files(), size.ranks(), side);
+    }
+    for (index, slot) in encoded_history.iter_mut().enumerate() {
+        if slot.values[11] > 0.0 {
+            slot.values[12] = (index + 1) as f32 / HISTORY_PLIES as f32;
+        }
     }
     let mut legal = position.legal_moves();
     legal.sort_unstable_by_key(|chess_move| chess_move.to_uci());
     let legal_moves = legal
         .into_iter()
-        .map(|chess_move| encode_move(chess_move, size.files(), size.ranks()))
+        .map(|chess_move| encode_move(chess_move, size.files(), size.ranks(), side))
         .collect();
     EncodedPosition {
         board,
@@ -117,14 +131,16 @@ fn uci_geometry(value: &str) -> Option<Move> {
 }
 
 #[must_use]
-pub fn encode_move(chess_move: Move, files: u8, ranks: u8) -> EncodedMove {
+pub fn encode_move(chess_move: Move, files: u8, ranks: u8, perspective: Color) -> EncodedMove {
     let mut values = [0.0; MOVE_FEATURES];
+    let from_rank = relative_rank(chess_move.from.rank(), ranks, perspective);
+    let to_rank = relative_rank(chess_move.to.rank(), ranks, perspective);
     values[0] = normalized(chess_move.from.file(), files);
-    values[1] = normalized(chess_move.from.rank(), ranks);
+    values[1] = normalized(from_rank, ranks);
     values[2] = normalized(chess_move.to.file(), files);
-    values[3] = normalized(chess_move.to.rank(), ranks);
+    values[3] = normalized(to_rank, ranks);
     values[4] = normalized_delta(chess_move.to.file(), chess_move.from.file(), files);
-    values[5] = normalized_delta(chess_move.to.rank(), chess_move.from.rank(), ranks);
+    values[5] = normalized_delta(to_rank, from_rank, ranks);
     values[6] = f32::from(chess_move.promotion.is_some());
     values[7] = chess_move.promotion.map_or(0.0, |kind| {
         (kind.index() + 1) as f32 / PieceKind::COUNT as f32
@@ -133,7 +149,18 @@ pub fn encode_move(chess_move: Move, files: u8, ranks: u8) -> EncodedMove {
     values[9] = f32::from(chess_move.kind == MoveKind::Castle(CastleSide::QueenSide));
     values[10] = f32::from(chess_move.kind == MoveKind::Castle(CastleSide::KingSide));
     values[11] = 1.0;
-    EncodedMove { values }
+    EncodedMove {
+        values,
+        from_token: chess_move.from.rank() as usize * MAX_FILES + chess_move.from.file() as usize,
+        to_token: chess_move.to.rank() as usize * MAX_FILES + chess_move.to.file() as usize,
+    }
+}
+
+const fn relative_rank(rank: u8, ranks: u8, perspective: Color) -> u8 {
+    match perspective {
+        Color::White => rank,
+        Color::Black => ranks - 1 - rank,
+    }
 }
 
 fn normalized(value: u8, extent: u8) -> f32 {
@@ -191,5 +218,36 @@ mod tests {
         let to = (4 * MAX_FILES + 6) * BOARD_FEATURES;
         assert_eq!(encoded.board[from + 62], 1.0);
         assert_eq!(encoded.board[to + 63], 1.0);
+    }
+
+    #[test]
+    fn history_encoding_preserves_recency_and_board_endpoints() {
+        let position = Variant::TerachessII.starting_position();
+        let first = Move::normal(Square::new(3, 1), Square::new(6, 4));
+        let second = Move::normal(Square::new(3, 14), Square::new(6, 11));
+        let encoded = encode_position(&position, &[first, second]);
+        assert_eq!(encoded.history[6].values[12], 7.0 / 8.0);
+        assert_eq!(encoded.history[7].values[12], 1.0);
+        assert_eq!(encoded.history[7].from_token, 14 * MAX_FILES + 3);
+        assert_eq!(encoded.history[7].to_token, 11 * MAX_FILES + 6);
+    }
+
+    #[test]
+    fn move_geometry_is_canonical_for_the_side_to_move() {
+        let white = encode_move(
+            Move::normal(Square::new(3, 1), Square::new(6, 4)),
+            16,
+            16,
+            Color::White,
+        );
+        let black = encode_move(
+            Move::normal(Square::new(3, 14), Square::new(6, 11)),
+            16,
+            16,
+            Color::Black,
+        );
+        assert_eq!(&white.values[..12], &black.values[..12]);
+        assert_ne!(white.from_token, black.from_token);
+        assert_ne!(white.to_token, black.to_token);
     }
 }

@@ -1,6 +1,8 @@
-use crate::encode::{BOARD_FEATURES, BOARD_TOKENS, MOVE_FEATURES, encode_position};
+use crate::encode::{BOARD_FEATURES, BOARD_TOKENS, HISTORY_PLIES, MOVE_FEATURES, encode_position};
 use crate::hybrid::{NeuralAdvice, NeuralAdvisor, PolicyCandidate};
-use crate::model::{BdhConfig, BdhNetwork, ResidualConfig, ResidualNetwork, StrategyNetwork};
+use crate::model::{
+    BdhConfig, BdhNetwork, NetworkInput, ResidualConfig, ResidualNetwork, StrategyNetwork,
+};
 use crate::plan::{PlanKind, StrategicPlan};
 use crate::training::{Architecture, ModelManifest, initialize_vulkan};
 use burn::module::Module;
@@ -20,14 +22,11 @@ enum LoadedModel {
 impl LoadedModel {
     fn predict(
         &self,
-        board: Tensor<InferenceBackend, 3>,
-        mask: Tensor<InferenceBackend, 2>,
-        moves: Tensor<InferenceBackend, 3>,
-        plan: Tensor<InferenceBackend, 2>,
+        input: NetworkInput<InferenceBackend>,
     ) -> crate::model::NetworkOutput<InferenceBackend> {
         match self {
-            Self::Bdh(model) => model.predict(board, mask, moves, plan),
-            Self::Residual(model) => model.predict(board, mask, moves, plan),
+            Self::Bdh(model) => model.predict(input),
+            Self::Residual(model) => model.predict(input),
         }
     }
 }
@@ -79,28 +78,51 @@ impl VulkanAdvisor {
             return Err("cannot infer a terminal position".to_owned());
         }
         let mut move_values = Vec::with_capacity(moves_count * MOVE_FEATURES);
+        let mut move_from = Vec::with_capacity(moves_count);
+        let mut move_to = Vec::with_capacity(moves_count);
         for chess_move in encoded.legal_moves {
             move_values.extend(chess_move.values);
+            move_from.push(chess_move.from_token as i64);
+            move_to.push(chess_move.to_token as i64);
+        }
+        let mut history_values = Vec::with_capacity(HISTORY_PLIES * MOVE_FEATURES);
+        let mut history_mask = Vec::with_capacity(HISTORY_PLIES);
+        for chess_move in encoded.history {
+            history_mask.push(chess_move.values[11]);
+            history_values.extend(chess_move.values);
         }
         let mut plan = vec![0.0; PlanKind::COUNT];
         if let Some(kind) = plan_kind {
             plan[kind.index()] = 1.0;
         }
-        let output = self.model.predict(
-            Tensor::from_data(
+        let output = self.model.predict(NetworkInput {
+            board: Tensor::from_data(
                 TensorData::new(encoded.board, [1, BOARD_TOKENS, BOARD_FEATURES]),
                 &self.device,
             ),
-            Tensor::from_data(
+            board_mask: Tensor::from_data(
                 TensorData::new(encoded.board_mask, [1, BOARD_TOKENS]),
                 &self.device,
             ),
-            Tensor::from_data(
+            history: Tensor::from_data(
+                TensorData::new(history_values, [1, HISTORY_PLIES, MOVE_FEATURES]),
+                &self.device,
+            ),
+            history_mask: Tensor::from_data(
+                TensorData::new(history_mask, [1, HISTORY_PLIES]),
+                &self.device,
+            ),
+            moves: Tensor::from_data(
                 TensorData::new(move_values, [1, moves_count, MOVE_FEATURES]),
                 &self.device,
             ),
-            Tensor::from_data(TensorData::new(plan, [1, PlanKind::COUNT]), &self.device),
-        );
+            move_from: Tensor::from_data(
+                TensorData::new(move_from, [1, moves_count]),
+                &self.device,
+            ),
+            move_to: Tensor::from_data(TensorData::new(move_to, [1, moves_count]), &self.device),
+            plan: Tensor::from_data(TensorData::new(plan, [1, PlanKind::COUNT]), &self.device),
+        });
         Ok(RawAdvice {
             policy: values(softmax(output.policy_logits, 1))?,
             risk: values(sigmoid(output.tactical_risk_logits))?,

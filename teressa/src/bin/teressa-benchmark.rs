@@ -8,9 +8,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use teressa::encode::{BOARD_FEATURES, BOARD_TOKENS, MOVE_FEATURES};
+use teressa::encode::{BOARD_FEATURES, BOARD_TOKENS, HISTORY_PLIES, MOVE_FEATURES};
 use teressa::training::{TrainingBatch, training_loss};
-use teressa::{Architecture, BdhConfig, PlanKind, ResidualConfig, StrategyNetwork};
+use teressa::{Architecture, BdhConfig, NetworkInput, PlanKind, ResidualConfig, StrategyNetwork};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BenchmarkMode {
@@ -169,19 +169,27 @@ fn benchmark_inference<M: StrategyNetwork<burn::backend::Wgpu>>(
 ) -> Result<(), String> {
     let board = Tensor::zeros([batch, BOARD_TOKENS, BOARD_FEATURES], device);
     let mask = Tensor::ones([batch, BOARD_TOKENS], device);
+    let history = Tensor::zeros([batch, HISTORY_PLIES, MOVE_FEATURES], device);
+    let history_mask = Tensor::zeros([batch, HISTORY_PLIES], device);
     let legal = Tensor::zeros([batch, moves, MOVE_FEATURES], device);
+    let move_from = Tensor::zeros([batch, moves], device);
+    let move_to = Tensor::zeros([batch, moves], device);
     let plan = Tensor::zeros([batch, PlanKind::COUNT], device);
+    let input = || NetworkInput {
+        board: board.clone(),
+        board_mask: mask.clone(),
+        history: history.clone(),
+        history_mask: history_mask.clone(),
+        moves: legal.clone(),
+        move_from: move_from.clone(),
+        move_to: move_to.clone(),
+        plan: plan.clone(),
+    };
     // Warm up pipeline compilation before measuring steady-state inference.
-    model
-        .predict(board.clone(), mask.clone(), legal.clone(), plan.clone())
-        .wdl_logits
-        .into_data();
+    model.predict(input()).wdl_logits.into_data();
     let started = Instant::now();
     for _ in 0..iterations {
-        model
-            .predict(board.clone(), mask.clone(), legal.clone(), plan.clone())
-            .wdl_logits
-            .into_data();
+        model.predict(input()).wdl_logits.into_data();
     }
     let elapsed = started.elapsed();
     let positions = batch * iterations;
@@ -260,12 +268,7 @@ where
         // The production trainer builds every tensor from fresh host vectors.
         // Reusing GPU tensors here hid accumulation in upload/readback buffers.
         let training_batch = synthetic_training_batch::<B>(batch, moves, device);
-        let output = model.predict(
-            training_batch.board.clone(),
-            training_batch.board_mask.clone(),
-            training_batch.moves.clone(),
-            training_batch.plan_input.clone(),
-        );
+        let output = model.predict(training_batch.network_input());
         let loss = training_loss(output, &training_batch);
         let gradients = GradientsParams::from_grads(loss.backward(), &model);
         model = optimizer.step(3.0e-4, model, gradients);
@@ -312,12 +315,7 @@ fn benchmark_validation<B: Backend, M: StrategyNetwork<B>>(
 ) -> Result<(), String> {
     for iteration in 0..iterations {
         let validation_batch = synthetic_training_batch::<B>(batch, moves, device);
-        let output = model.predict(
-            validation_batch.board.clone(),
-            validation_batch.board_mask.clone(),
-            validation_batch.moves.clone(),
-            validation_batch.plan_input.clone(),
-        );
+        let output = model.predict(validation_batch.network_input());
         let loss = training_loss(output.clone(), &validation_batch);
         let policy_correct = output
             .policy_logits
@@ -380,11 +378,30 @@ fn synthetic_training_batch<B: Backend>(
             TensorData::new(vec![1.0; batch * BOARD_TOKENS], [batch, BOARD_TOKENS]),
             device,
         ),
+        history: Tensor::from_data(
+            TensorData::new(
+                vec![0.0; batch * HISTORY_PLIES * MOVE_FEATURES],
+                [batch, HISTORY_PLIES, MOVE_FEATURES],
+            ),
+            device,
+        ),
+        history_mask: Tensor::from_data(
+            TensorData::new(vec![0.0; batch * HISTORY_PLIES], [batch, HISTORY_PLIES]),
+            device,
+        ),
         moves: Tensor::from_data(
             TensorData::new(
                 vec![0.0; batch * moves * MOVE_FEATURES],
                 [batch, moves, MOVE_FEATURES],
             ),
+            device,
+        ),
+        move_from: Tensor::from_data(
+            TensorData::new(vec![0_i64; batch * moves], [batch, moves]),
+            device,
+        ),
+        move_to: Tensor::from_data(
+            TensorData::new(vec![0_i64; batch * moves], [batch, moves]),
             device,
         ),
         move_mask: Tensor::from_data(

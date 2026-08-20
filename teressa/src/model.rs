@@ -10,7 +10,23 @@ use crate::encode::{BOARD_FEATURES, MOVE_FEATURES};
 use crate::plan::PlanKind;
 use burn::nn::{LayerNorm, LayerNormConfig, Linear, LinearConfig};
 use burn::prelude::*;
-use burn::tensor::activation::{gelu, relu};
+use burn::tensor::Int;
+use burn::tensor::activation::{gelu, relu, softmax};
+
+/// Complete network input. Move endpoints remain integer board-token indices
+/// so the policy can gather contextual origin/destination embeddings without
+/// materializing a huge move-by-square one-hot tensor.
+#[derive(Clone, Debug)]
+pub struct NetworkInput<B: Backend> {
+    pub board: Tensor<B, 3>,
+    pub board_mask: Tensor<B, 2>,
+    pub history: Tensor<B, 3>,
+    pub history_mask: Tensor<B, 2>,
+    pub moves: Tensor<B, 3>,
+    pub move_from: Tensor<B, 2, Int>,
+    pub move_to: Tensor<B, 2, Int>,
+    pub plan: Tensor<B, 2>,
+}
 
 #[derive(Clone, Debug)]
 pub struct NetworkOutput<B: Backend> {
@@ -23,13 +39,7 @@ pub struct NetworkOutput<B: Backend> {
 
 /// Common forward surface used by training, evaluation, and native inference.
 pub trait StrategyNetwork<B: Backend>: Module<B> {
-    fn predict(
-        &self,
-        board: Tensor<B, 3>,
-        board_mask: Tensor<B, 2>,
-        moves: Tensor<B, 3>,
-        plan: Tensor<B, 2>,
-    ) -> NetworkOutput<B>;
+    fn predict(&self, input: NetworkInput<B>) -> NetworkOutput<B>;
 }
 
 #[derive(Config, Debug)]
@@ -55,6 +65,7 @@ impl BdhConfig {
         let sparse = self.heads * self.sparse_per_head;
         BdhNetwork {
             board_projection: LinearConfig::new(BOARD_FEATURES, self.width).init(device),
+            history_projection: LinearConfig::new(MOVE_FEATURES, self.width).init(device),
             plan_projection: LinearConfig::new(PlanKind::COUNT, self.width).init(device),
             core: BdhCoreConfig::new(self.width, sparse).init(device),
             heads: OutputHeadsConfig::new(self.width).init(device),
@@ -66,6 +77,7 @@ impl BdhConfig {
 #[derive(Module, Debug)]
 pub struct BdhNetwork<B: Backend> {
     board_projection: Linear<B>,
+    history_projection: Linear<B>,
     plan_projection: Linear<B>,
     core: BdhCore<B>,
     heads: OutputHeads<B>,
@@ -73,36 +85,33 @@ pub struct BdhNetwork<B: Backend> {
 }
 
 impl<B: Backend> BdhNetwork<B> {
-    pub fn forward(
-        &self,
-        board: Tensor<B, 3>,
-        board_mask: Tensor<B, 2>,
-        moves: Tensor<B, 3>,
-        plan: Tensor<B, 2>,
-    ) -> NetworkOutput<B> {
-        let mask = board_mask.clone().unsqueeze_dim::<3>(2);
-        let board_hidden = self.board_projection.forward(board) * mask.clone();
-        let plan_logits = self
-            .heads
-            .plan_logits(board_hidden.clone(), board_mask.clone());
-        let plan = self.plan_projection.forward(plan).unsqueeze_dim::<3>(1);
-        let mut hidden = (board_hidden + plan) * mask.clone();
+    pub fn forward(&self, input: NetworkInput<B>) -> NetworkOutput<B> {
+        let mask = input.board_mask.clone().unsqueeze_dim::<3>(2);
+        let history = pooled_history(&self.history_projection, input.history, input.history_mask);
+        let mut hidden = (self.board_projection.forward(input.board)
+            + history.unsqueeze_dim::<3>(1))
+            * mask.clone();
         for _ in 0..self.reasoning_steps {
             hidden = self.core.forward(hidden, mask.clone());
         }
-        self.heads.forward(hidden, board_mask, moves, plan_logits)
+        let global = self.heads.pooled(hidden.clone(), input.board_mask.clone());
+        let plan_logits = self.heads.plan_logits(global.clone());
+        let plan = self.plan_projection.forward(input.plan);
+        self.heads.forward(
+            hidden,
+            input.moves,
+            input.move_from,
+            input.move_to,
+            global,
+            plan,
+            plan_logits,
+        )
     }
 }
 
 impl<B: Backend> StrategyNetwork<B> for BdhNetwork<B> {
-    fn predict(
-        &self,
-        board: Tensor<B, 3>,
-        board_mask: Tensor<B, 2>,
-        moves: Tensor<B, 3>,
-        plan: Tensor<B, 2>,
-    ) -> NetworkOutput<B> {
-        self.forward(board, board_mask, moves, plan)
+    fn predict(&self, input: NetworkInput<B>) -> NetworkOutput<B> {
+        self.forward(input)
     }
 }
 
@@ -146,8 +155,9 @@ impl<B: Backend> BdhCore<B> {
         // Non-causal associative state: sparse positive activations retrieve a
         // weighted mixture of board-token values. Division keeps the recurrent
         // update stable across 16x16 and future 18x18 boards.
-        let tokens = input.dims()[1].max(1) as f64;
-        let retrieved = associative_retrieval(sparse.clone(), normalized, tokens) * mask.clone();
+        let token_count = mask.clone().sum_dim(1).clamp_min(1.0);
+        let retrieved =
+            associative_retrieval(sparse.clone(), normalized, token_count) * mask.clone();
         let retrieved_sparse = relu(self.value_encoder.forward(self.norm.forward(retrieved)));
         let update = self.decoder.forward(sparse * retrieved_sparse) * mask.clone();
         self.norm.forward(input + update) * mask
@@ -161,9 +171,9 @@ impl<B: Backend> BdhCore<B> {
 fn associative_retrieval<B: Backend>(
     sparse: Tensor<B, 3>,
     values: Tensor<B, 3>,
-    tokens: f64,
+    token_count: Tensor<B, 3>,
 ) -> Tensor<B, 3> {
-    let memory = sparse.clone().swap_dims(1, 2).matmul(values) / tokens;
+    let memory = sparse.clone().swap_dims(1, 2).matmul(values) / token_count;
     sparse.matmul(memory)
 }
 
@@ -185,6 +195,7 @@ impl ResidualConfig {
             .collect();
         ResidualNetwork {
             board_projection: LinearConfig::new(BOARD_FEATURES, self.width).init(device),
+            history_projection: LinearConfig::new(MOVE_FEATURES, self.width).init(device),
             plan_projection: LinearConfig::new(PlanKind::COUNT, self.width).init(device),
             blocks,
             heads: OutputHeadsConfig::new(self.width).init(device),
@@ -195,42 +206,40 @@ impl ResidualConfig {
 #[derive(Module, Debug)]
 pub struct ResidualNetwork<B: Backend> {
     board_projection: Linear<B>,
+    history_projection: Linear<B>,
     plan_projection: Linear<B>,
     blocks: Vec<ResidualBlock<B>>,
     heads: OutputHeads<B>,
 }
 
 impl<B: Backend> ResidualNetwork<B> {
-    pub fn forward(
-        &self,
-        board: Tensor<B, 3>,
-        board_mask: Tensor<B, 2>,
-        moves: Tensor<B, 3>,
-        plan: Tensor<B, 2>,
-    ) -> NetworkOutput<B> {
-        let mask = board_mask.clone().unsqueeze_dim::<3>(2);
-        let board_hidden = self.board_projection.forward(board) * mask.clone();
-        let plan_logits = self
-            .heads
-            .plan_logits(board_hidden.clone(), board_mask.clone());
-        let plan = self.plan_projection.forward(plan).unsqueeze_dim::<3>(1);
-        let mut hidden = (board_hidden + plan) * mask.clone();
+    pub fn forward(&self, input: NetworkInput<B>) -> NetworkOutput<B> {
+        let mask = input.board_mask.clone().unsqueeze_dim::<3>(2);
+        let history = pooled_history(&self.history_projection, input.history, input.history_mask);
+        let mut hidden = (self.board_projection.forward(input.board)
+            + history.unsqueeze_dim::<3>(1))
+            * mask.clone();
         for block in &self.blocks {
             hidden = block.forward(hidden, mask.clone());
         }
-        self.heads.forward(hidden, board_mask, moves, plan_logits)
+        let global = self.heads.pooled(hidden.clone(), input.board_mask.clone());
+        let plan_logits = self.heads.plan_logits(global.clone());
+        let plan = self.plan_projection.forward(input.plan);
+        self.heads.forward(
+            hidden,
+            input.moves,
+            input.move_from,
+            input.move_to,
+            global,
+            plan,
+            plan_logits,
+        )
     }
 }
 
 impl<B: Backend> StrategyNetwork<B> for ResidualNetwork<B> {
-    fn predict(
-        &self,
-        board: Tensor<B, 3>,
-        board_mask: Tensor<B, 2>,
-        moves: Tensor<B, 3>,
-        plan: Tensor<B, 2>,
-    ) -> NetworkOutput<B> {
-        self.forward(board, board_mask, moves, plan)
+    fn predict(&self, input: NetworkInput<B>) -> NetworkOutput<B> {
+        self.forward(input)
     }
 }
 
@@ -275,9 +284,14 @@ impl OutputHeadsConfig {
     fn init<B: Backend>(&self, device: &B::Device) -> OutputHeads<B> {
         OutputHeads {
             move_projection: LinearConfig::new(MOVE_FEATURES, self.width).init(device),
+            from_projection: LinearConfig::new(self.width, self.width).init(device),
+            to_projection: LinearConfig::new(self.width, self.width).init(device),
+            global_projection: LinearConfig::new(self.width, self.width).init(device),
+            pool_score: LinearConfig::new(self.width, 1).init(device),
             policy: LinearConfig::new(self.width, 1).init(device),
             tactical: LinearConfig::new(self.width, 1).init(device),
             wdl: LinearConfig::new(self.width, 3).init(device),
+            plan_hidden: LinearConfig::new(self.width, self.width).init(device),
             plan: LinearConfig::new(self.width, PlanKind::COUNT).init(device),
             score: LinearConfig::new(self.width, 1).init(device),
         }
@@ -287,39 +301,52 @@ impl OutputHeadsConfig {
 #[derive(Module, Debug)]
 struct OutputHeads<B: Backend> {
     move_projection: Linear<B>,
+    from_projection: Linear<B>,
+    to_projection: Linear<B>,
+    global_projection: Linear<B>,
+    pool_score: Linear<B>,
     policy: Linear<B>,
     tactical: Linear<B>,
     wdl: Linear<B>,
+    plan_hidden: Linear<B>,
     plan: Linear<B>,
     score: Linear<B>,
 }
 
 impl<B: Backend> OutputHeads<B> {
     fn pooled(&self, hidden: Tensor<B, 3>, board_mask: Tensor<B, 2>) -> Tensor<B, 2> {
-        let mask = board_mask.clone().unsqueeze_dim::<3>(2);
-        let summed = (hidden * mask).sum_dim(1).squeeze_dim::<2>(1);
-        let count = board_mask
-            .sum_dim(1)
-            .squeeze_dim::<1>(1)
-            .unsqueeze_dim::<2>(1)
-            + 1e-6;
-        summed / count
+        let attention = self.pool_score.forward(hidden.clone()).squeeze_dim::<2>(2)
+            + (board_mask - 1.0) * 1.0e9;
+        let attention = softmax(attention, 1).unsqueeze_dim::<3>(2);
+        (hidden * attention).sum_dim(1).squeeze_dim::<2>(1)
     }
 
-    fn plan_logits(&self, hidden: Tensor<B, 3>, board_mask: Tensor<B, 2>) -> Tensor<B, 2> {
-        self.plan.forward(self.pooled(hidden, board_mask))
+    fn plan_logits(&self, global: Tensor<B, 2>) -> Tensor<B, 2> {
+        self.plan.forward(gelu(self.plan_hidden.forward(global)))
     }
 
     fn forward(
         &self,
         hidden: Tensor<B, 3>,
-        board_mask: Tensor<B, 2>,
         moves: Tensor<B, 3>,
+        move_from: Tensor<B, 2, Int>,
+        move_to: Tensor<B, 2, Int>,
+        global: Tensor<B, 2>,
+        plan: Tensor<B, 2>,
         plan_logits: Tensor<B, 2>,
     ) -> NetworkOutput<B> {
-        let global = self.pooled(hidden, board_mask);
-        let move_hidden =
-            gelu(self.move_projection.forward(moves) + global.clone().unsqueeze_dim::<3>(1));
+        let from = gather_squares(hidden.clone(), move_from);
+        let to = gather_squares(hidden, move_to);
+        let move_hidden = gelu(
+            self.move_projection.forward(moves)
+                + self.from_projection.forward(from)
+                + self.to_projection.forward(to)
+                + self
+                    .global_projection
+                    .forward(global.clone())
+                    .unsqueeze_dim::<3>(1)
+                + plan.unsqueeze_dim::<3>(1),
+        );
         NetworkOutput {
             policy_logits: self.policy.forward(move_hidden.clone()).squeeze_dim::<2>(2),
             tactical_risk_logits: self.tactical.forward(move_hidden).squeeze_dim::<2>(2),
@@ -330,6 +357,28 @@ impl<B: Backend> OutputHeads<B> {
     }
 }
 
+fn pooled_history<B: Backend>(
+    projection: &Linear<B>,
+    history: Tensor<B, 3>,
+    history_mask: Tensor<B, 2>,
+) -> Tensor<B, 2> {
+    let mask = history_mask.clone().unsqueeze_dim::<3>(2);
+    let summed = (gelu(projection.forward(history)) * mask)
+        .sum_dim(1)
+        .squeeze_dim::<2>(1);
+    let count = history_mask
+        .sum_dim(1)
+        .squeeze_dim::<1>(1)
+        .unsqueeze_dim::<2>(1)
+        .clamp_min(1.0);
+    summed / count
+}
+
+fn gather_squares<B: Backend>(hidden: Tensor<B, 3>, indices: Tensor<B, 2, Int>) -> Tensor<B, 3> {
+    let width = hidden.dims()[2];
+    hidden.gather(1, indices.unsqueeze_dim::<3>(2).repeat_dim(2, width))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,39 +386,36 @@ mod tests {
 
     type TestBackend = Flex<f32>;
 
-    fn inputs(
-        device: &burn::backend::flex::FlexDevice,
-    ) -> (
-        Tensor<TestBackend, 3>,
-        Tensor<TestBackend, 2>,
-        Tensor<TestBackend, 3>,
-        Tensor<TestBackend, 2>,
-    ) {
-        (
-            Tensor::zeros([2, 324, BOARD_FEATURES], device),
-            Tensor::ones([2, 324], device),
-            Tensor::zeros([2, 96, MOVE_FEATURES], device),
-            Tensor::zeros([2, PlanKind::COUNT], device),
-        )
+    fn inputs(device: &burn::backend::flex::FlexDevice) -> NetworkInput<TestBackend> {
+        NetworkInput {
+            board: Tensor::zeros([2, 324, BOARD_FEATURES], device),
+            board_mask: Tensor::ones([2, 324], device),
+            history: Tensor::zeros([2, 8, MOVE_FEATURES], device),
+            history_mask: Tensor::zeros([2, 8], device),
+            moves: Tensor::zeros([2, 96, MOVE_FEATURES], device),
+            move_from: Tensor::zeros([2, 96], device),
+            move_to: Tensor::zeros([2, 96], device),
+            plan: Tensor::zeros([2, PlanKind::COUNT], device),
+        }
     }
 
     #[test]
     fn both_trunks_produce_identical_public_shapes() {
         let device = Default::default();
-        let (board, mask, moves, plan) = inputs(&device);
+        let input = inputs(&device);
         let bdh = BdhConfig::new()
             .with_width(32)
             .with_heads(2)
             .with_sparse_per_head(8)
             .with_reasoning_steps(2)
             .init(&device);
-        let bdh_output = bdh.forward(board.clone(), mask.clone(), moves.clone(), plan.clone());
+        let bdh_output = bdh.forward(input.clone());
         let residual = ResidualConfig::new()
             .with_width(32)
             .with_layers(2)
             .with_hidden(64)
             .init(&device);
-        let residual_output = residual.forward(board, mask, moves, plan);
+        let residual_output = residual.forward(input);
         assert_eq!(bdh_output.policy_logits.dims(), [2, 96]);
         assert_eq!(residual_output.policy_logits.dims(), [2, 96]);
         assert_eq!(bdh_output.wdl_logits.dims(), [2, 3]);
@@ -394,7 +440,8 @@ mod tests {
             .matmul(sparse.clone().swap_dims(1, 2))
             .matmul(values.clone())
             / 5.0;
-        let compact = associative_retrieval(sparse, values, 5.0);
+        let token_count = Tensor::<TestBackend, 3>::full([2, 1, 1], 5.0, &device);
+        let compact = associative_retrieval(sparse, values, token_count);
         let reference = reference.into_data().to_vec::<f32>().unwrap();
         let compact = compact.into_data().to_vec::<f32>().unwrap();
 
@@ -402,5 +449,25 @@ mod tests {
         for (reference, compact) in reference.into_iter().zip(compact) {
             assert!((reference - compact).abs() < 1.0e-5);
         }
+    }
+
+    #[test]
+    fn move_endpoint_gather_returns_contextual_square_tokens() {
+        let device = Default::default();
+        let hidden = Tensor::<TestBackend, 3>::from_data(
+            TensorData::new(vec![1.0, 10.0, 2.0, 20.0, 3.0, 30.0, 4.0, 40.0], [1, 4, 2]),
+            &device,
+        );
+        let indices = Tensor::<TestBackend, 2, Int>::from_data(
+            TensorData::new(vec![3_i64, 1_i64], [1, 2]),
+            &device,
+        );
+        assert_eq!(
+            gather_squares(hidden, indices)
+                .into_data()
+                .to_vec::<f32>()
+                .unwrap(),
+            vec![4.0, 40.0, 2.0, 20.0]
+        );
     }
 }
