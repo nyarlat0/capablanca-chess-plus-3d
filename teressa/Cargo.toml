@@ -28,6 +28,10 @@ name = "teressa-generate"
 path = "src/bin/teressa-generate.rs"
 
 [[bin]]
+name = "teressa-relabel"
+path = "src/bin/teressa-relabel.rs"
+
+[[bin]]
 name = "teressa-train"
 path = "src/bin/teressa-train.rs"
 

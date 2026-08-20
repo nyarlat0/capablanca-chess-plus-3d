@@ -133,13 +133,23 @@ impl NeuralAdvisor for VulkanAdvisor {
             return Err("symbolic planner supplied no candidates".to_owned());
         }
         let raw = self.infer(position, None)?;
+        let selected_kind = candidates
+            .iter()
+            .map(|candidate| candidate.kind)
+            .max_by(|left, right| {
+                plan_kind_score(*left, previous, &raw.plans)
+                    .total_cmp(&plan_kind_score(*right, previous, &raw.plans))
+            })
+            .expect("candidate set was checked");
         let mut selected = candidates
             .iter()
+            .filter(|candidate| candidate.kind == selected_kind)
             .max_by(|left, right| {
-                plan_score(left, previous, &raw.plans)
-                    .total_cmp(&plan_score(right, previous, &raw.plans))
+                left.confidence
+                    .total_cmp(&right.confidence)
+                    .then_with(|| left.progress.total_cmp(&right.progress))
             })
-            .expect("candidate set was checked")
+            .expect("selected plan kind came from the candidate set")
             .clone();
         selected.confidence = raw.plans[selected.kind.index()].clamp(0.0, 1.0);
         Ok(selected)
@@ -180,14 +190,9 @@ struct RawAdvice {
     plans: Vec<f32>,
 }
 
-fn plan_score(
-    plan: &StrategicPlan,
-    previous: Option<&StrategicPlan>,
-    probabilities: &[f32],
-) -> f32 {
-    probabilities[plan.kind.index()]
-        + plan.confidence * 0.12
-        + f32::from(previous.is_some_and(|previous| previous.kind == plan.kind)) * 0.08
+fn plan_kind_score(kind: PlanKind, previous: Option<&StrategicPlan>, probabilities: &[f32]) -> f32 {
+    probabilities[kind.index()]
+        + f32::from(previous.is_some_and(|previous| previous.kind == kind)) * 0.08
 }
 
 fn values<const D: usize>(tensor: Tensor<InferenceBackend, D>) -> Result<Vec<f32>, String> {

@@ -247,6 +247,108 @@ impl StrategicPlan {
         .clamp(0.0, 1.0)
     }
 
+    /// Score one observed move as evidence that this plan is being executed.
+    /// The score combines concrete actor/target/method agreement with a
+    /// plan-specific normalization of measured progress. Fixed plan-class
+    /// priorities are deliberately absent.
+    pub(crate) fn observe_own_move(
+        &mut self,
+        before: &Position,
+        chess_move: Move,
+        after: &Position,
+    ) -> f32 {
+        let moving_piece = before.board().piece_at(chess_move.from);
+        let actor_moved = self
+            .actor
+            .as_ref()
+            .is_some_and(|actor| actor.square.engine() == chess_move.from);
+        let before_progress = self.measured_progress(before);
+        let target_score = match &self.target {
+            PlanTarget::Square(square) => f32::from(chess_move.to == square.engine()),
+            PlanTarget::File(file) => f32::from(chess_move.to.file() == *file),
+            PlanTarget::Diagonal(_) => f32::from(
+                chess_move.from.file().abs_diff(chess_move.to.file())
+                    == chess_move.from.rank().abs_diff(chess_move.to.rank()),
+            ),
+            PlanTarget::Piece(target) => f32::from(chess_move.to == target.square.engine()),
+            PlanTarget::Region(BoardRegion::Center) => f32::from(
+                centrality(
+                    chess_move.to,
+                    before.board().size().files(),
+                    before.board().size().ranks(),
+                ) > centrality(
+                    chess_move.from,
+                    before.board().size().files(),
+                    before.board().size().ranks(),
+                ),
+            ),
+            PlanTarget::Region(_) => 0.0,
+        };
+        let is_capture = before.board().piece_at(chess_move.to).is_some()
+            || chess_move.kind == capablanca_chess_plus::MoveKind::EnPassant;
+        let method_score = match self.method {
+            PlanMethod::Activate => f32::from(actor_moved),
+            PlanMethod::Centralize => target_score,
+            PlanMethod::BuildPressure | PlanMethod::Reinforce => 0.0,
+            PlanMethod::AdvancePawn => {
+                f32::from(moving_piece.is_some_and(|piece| piece.kind == PieceKind::Pawn))
+            }
+            PlanMethod::OpenLine => f32::from(actor_moved),
+            PlanMethod::OccupySquare => target_score,
+            PlanMethod::ExchangeDefender => f32::from(is_capture),
+            PlanMethod::AvoidExchange => f32::from(!is_capture) * 0.15,
+        };
+        let kind_score = match self.kind {
+            PlanKind::DevelopPiece => f32::from(
+                actor_moved
+                    && relative_rank(
+                        chess_move.to,
+                        self.side.engine(),
+                        before.board().size().ranks(),
+                    ) > relative_rank(
+                        chess_move.from,
+                        self.side.engine(),
+                        before.board().size().ranks(),
+                    ),
+            ),
+            PlanKind::ImprovePiece => f32::from(actor_moved && target_score > 0.0),
+            PlanKind::PawnBreak => f32::from(
+                actor_moved
+                    && moving_piece.is_some_and(|piece| piece.kind == PieceKind::Pawn)
+                    && (is_capture || file_is_open(after, chess_move.from.file())),
+            ),
+            PlanKind::CreatePasser => f32::from(
+                actor_moved
+                    && moving_piece.is_some_and(|piece| piece.kind == PieceKind::Pawn)
+                    && is_passed_pawn(after, chess_move.to, self.side.engine()),
+            ),
+            PlanKind::AdvancePasser => f32::from(
+                actor_moved
+                    && moving_piece.is_some_and(|piece| piece.kind == PieceKind::Pawn)
+                    && is_passed_pawn(before, chess_move.from, self.side.engine()),
+            ),
+            PlanKind::OccupyOutpost => f32::from(actor_moved && target_score > 0.0),
+            PlanKind::UseOpenFile | PlanKind::UseDiagonal => f32::from(actor_moved),
+            _ => 0.0,
+        };
+
+        if actor_moved && let Some(actor) = &mut self.actor {
+            actor.square = chess_move.to.into();
+            if let Some(piece) = after.board().piece_at(chess_move.to) {
+                actor.piece = piece_name(piece.kind).to_owned();
+            }
+        }
+        let progress_gain = ((self.measured_progress(after) - before_progress)
+            / progress_step_scale(self.kind))
+        .clamp(-1.0, 1.0);
+        (0.42 * f32::from(actor_moved)
+            + 0.18 * target_score
+            + 0.16 * method_score
+            + 0.16 * kind_score
+            + 0.24 * progress_gain)
+            .clamp(-0.35, 1.0)
+    }
+
     #[must_use]
     pub fn text_ru(&self) -> String {
         render(self, Language::Russian)
@@ -378,7 +480,7 @@ pub fn generate_plan_candidates(position: &Position) -> Vec<StrategicPlan> {
         .pieces()
         .filter(|(_, piece)| piece.color == side)
         .collect::<Vec<_>>();
-    if let Some((square, piece)) = own_pieces.iter().copied().find(|(square, piece)| {
+    for (square, piece) in own_pieces.iter().copied().filter(|(square, piece)| {
         !matches!(piece.kind, PieceKind::Pawn | PieceKind::King)
             && relative_rank(*square, side, size.ranks()) <= 3
     }) {
@@ -390,20 +492,15 @@ pub fn generate_plan_candidates(position: &Position) -> Vec<StrategicPlan> {
             PlanMethod::Activate,
             PlanReason::UndevelopedPiece,
             3,
-            0.68,
+            (0.45 + 0.3 * (1.0 - centrality(square, size.files(), size.ranks()))).clamp(0.0, 1.0),
         ));
     }
-    if let Some((square, piece)) = own_pieces
+    for (square, piece) in own_pieces
         .iter()
         .copied()
         .filter(|(_, piece)| !matches!(piece.kind, PieceKind::Pawn | PieceKind::King))
-        .min_by(|(left, _), (right, _)| {
-            centrality(*left, size.files(), size.ranks()).total_cmp(&centrality(
-                *right,
-                size.files(),
-                size.ranks(),
-            ))
-        })
+        .filter(|(square, _)| centrality(*square, size.files(), size.ranks()) < 0.72)
+        .take(16)
     {
         candidates.push(plan(
             side,
@@ -413,13 +510,13 @@ pub fn generate_plan_candidates(position: &Position) -> Vec<StrategicPlan> {
             PlanMethod::Centralize,
             PlanReason::PoorlyPlacedPiece,
             3,
-            0.61,
+            (0.42 + 0.3 * (1.0 - centrality(square, size.files(), size.ranks()))).clamp(0.0, 1.0),
         ));
     }
-    if let Some((square, _)) = own_pieces
+    for (square, _) in own_pieces
         .iter()
         .copied()
-        .find(|(_, piece)| piece.kind == PieceKind::Pawn)
+        .filter(|(_, piece)| piece.kind == PieceKind::Pawn)
     {
         let target_rank = (i16::from(square.rank()) + i16::from(side.pawn_direction()))
             .clamp(0, i16::from(size.ranks() - 1)) as u8;
@@ -431,7 +528,7 @@ pub fn generate_plan_candidates(position: &Position) -> Vec<StrategicPlan> {
             PlanMethod::AdvancePawn,
             PlanReason::BlockedCenter,
             3,
-            0.57,
+            0.52,
         ));
         let passed = is_passed_pawn(position, square, side);
         candidates.push(plan(
@@ -450,10 +547,14 @@ pub fn generate_plan_candidates(position: &Position) -> Vec<StrategicPlan> {
                 PlanReason::PassedPawnPotential
             },
             5,
-            if passed { 0.72 } else { 0.54 },
+            if passed {
+                0.52 + 0.28 * passed_pawn_score(position, side)
+            } else {
+                0.5
+            },
         ));
     }
-    if let Some((square, piece)) = own_pieces.iter().copied().find(|(square, piece)| {
+    for (square, piece) in own_pieces.iter().copied().filter(|(square, piece)| {
         matches!(
             piece.kind,
             PieceKind::Rook | PieceKind::Chancellor | PieceKind::Admiral
@@ -467,10 +568,10 @@ pub fn generate_plan_candidates(position: &Position) -> Vec<StrategicPlan> {
             PlanMethod::OpenLine,
             PlanReason::OpenLine,
             4,
-            0.7,
+            0.5 + 0.25 * centrality(square, size.files(), size.ranks()),
         ));
     }
-    if let Some((square, piece)) = own_pieces.iter().copied().find(|(_, piece)| {
+    for (square, piece) in own_pieces.iter().copied().filter(|(_, piece)| {
         matches!(
             piece.kind,
             PieceKind::Bishop | PieceKind::Archbishop | PieceKind::Missionary
@@ -484,18 +585,28 @@ pub fn generate_plan_candidates(position: &Position) -> Vec<StrategicPlan> {
             PlanMethod::BuildPressure,
             PlanReason::OpenLine,
             4,
-            0.59,
+            0.48 + 0.2 * centrality(square, size.files(), size.ranks()),
         ));
     }
-    if let Some(chess_move) = position.legal_moves().into_iter().find(|chess_move| {
-        position
-            .board()
-            .piece_at(chess_move.from)
-            .is_some_and(|piece| piece.kind != PieceKind::Pawn && piece.kind != PieceKind::King)
-            && position.board().piece_at(chess_move.to).is_none()
-            && centrality(chess_move.to, size.files(), size.ranks()) >= 0.62
-            && relative_rank(chess_move.to, side, size.ranks()) >= size.ranks() / 2
-    }) {
+    let mut outposts = position
+        .legal_moves()
+        .into_iter()
+        .filter(|chess_move| {
+            position
+                .board()
+                .piece_at(chess_move.from)
+                .is_some_and(|piece| piece.kind != PieceKind::Pawn && piece.kind != PieceKind::King)
+                && position.board().piece_at(chess_move.to).is_none()
+                && centrality(chess_move.to, size.files(), size.ranks()) >= 0.62
+                && relative_rank(chess_move.to, side, size.ranks()) >= size.ranks() / 2
+        })
+        .collect::<Vec<_>>();
+    outposts.sort_unstable_by(|left, right| {
+        centrality(right.to, size.files(), size.ranks())
+            .total_cmp(&centrality(left.to, size.files(), size.ranks()))
+            .then_with(|| left.to_uci().cmp(&right.to_uci()))
+    });
+    for chess_move in outposts.into_iter().take(12) {
         let piece = position
             .board()
             .piece_at(chess_move.from)
@@ -508,7 +619,7 @@ pub fn generate_plan_candidates(position: &Position) -> Vec<StrategicPlan> {
             PlanMethod::OccupySquare,
             PlanReason::WeakSquare,
             3,
-            0.6,
+            0.5 + 0.25 * centrality(chess_move.to, size.files(), size.ranks()),
         ));
     }
     if let Some((square, piece)) = position
@@ -608,6 +719,23 @@ fn centrality(square: Square, files: u8, ranks: u8) -> f32 {
     let distance =
         (square.file() as f32 - file_center).abs() + (square.rank() as f32 - rank_center).abs();
     1.0 - distance / (file_center + rank_center).max(1.0)
+}
+
+const fn progress_step_scale(kind: PlanKind) -> f32 {
+    match kind {
+        PlanKind::DevelopPiece
+        | PlanKind::ImprovePiece
+        | PlanKind::UseOpenFile
+        | PlanKind::UseDiagonal
+        | PlanKind::OccupyOutpost => 0.12,
+        PlanKind::KingAttack | PlanKind::KingSafety => 0.10,
+        PlanKind::GainSpace => 0.08,
+        PlanKind::PawnBreak => 0.025,
+        PlanKind::CreatePasser | PlanKind::AdvancePasser => 0.12,
+        PlanKind::RestrictPiece => 0.08,
+        PlanKind::Trade => 0.04,
+        PlanKind::PreserveMaterial => 0.04,
+    }
 }
 
 fn king_zone_pressure(position: &Position, attacking: Color) -> f32 {

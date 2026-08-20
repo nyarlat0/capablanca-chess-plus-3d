@@ -7,8 +7,9 @@ TeraStockfish rejects tactically unsound choices.
 
 This crate is a working research pipeline, not a pretrained strong engine. A
 checkpoint must first be produced from generated or imported games. The
-initial teacher data imitates TeraStockfish and uses deterministic strategic
-heuristics as bootstrap plan labels; human games and later self-play are what
+initial teacher data imitates TeraStockfish. Strategic labels are inferred
+from the following two to six moves of each side and stored as a soft
+distribution over applicable plans. Human games and later self-play are what
 can make its style genuinely less mechanical.
 
 ## Design
@@ -67,10 +68,11 @@ this first version; it is not linked into the Bevy WebAssembly bundle.
 
 ## Dataset format and reproducibility
 
-`teressa-generate` writes zstd-compressed JSON Lines. Each shard begins with a
-format-version header and contains FEN, recent UCI history, the complete legal
-move set, a temperature-normalized teacher policy with root scores, WDL,
-teacher score, and the structured plan label.
+`teressa-generate` writes zstd-compressed JSON Lines. Each V2 shard begins with
+a format-version header and contains FEN, recent UCI history, the complete
+legal move set, a temperature-normalized teacher policy with root scores, WDL,
+teacher score, a trajectory-derived soft plan policy, and the concrete
+persistent plan used to condition move prediction.
 
 Shards are first written as hidden `.part` files, flushed and synced, then
 renamed atomically. Restarting the same command reuses completed shards and
@@ -99,7 +101,7 @@ the transposition tables rather than 128 GiB:
 
 ```sh
 cargo run --release -p teressa --bin teressa-generate -- \
-  --output target/teressa-data-v1 \
+  --output target/teressa-data-v2-fresh \
   --games 1024 --games-per-shard 8 \
   --jobs 12 --hash 128 --nodes 20000 \
   --opening-plies 10 --max-plies 600 --temperature 120 \
@@ -110,6 +112,34 @@ The hour limit stops assigning new shards; it does not corrupt or cut a game
 that is already being written. Increasing `jobs` to 24 usually oversubscribes
 the 12 physical cores and duplicates search memory, so it should be justified
 by a measured throughput gain rather than the logical CPU count alone.
+
+## Relabeling the existing V1 corpus
+
+The original V1 plan labels used the largest hard-coded candidate confidence.
+On the pilot corpus this made `develop_piece` 59.4% of all labels and left six
+plan kinds completely unrepresented. V1 remains readable solely so the costly
+teacher games can be reused, but training now rejects it until relabeled.
+
+Relabel into a separate directory; the source shards are never modified:
+
+```sh
+cargo build --release -p teressa --bin teressa-relabel
+./target/release/teressa-relabel \
+  --input target/teressa-data-v1 \
+  --output target/teressa-data-v2 \
+  --jobs 12
+```
+
+The relabeler works one shard per worker, resumes completed output shards, and
+prints selected frequency plus total probability mass for every plan kind. It
+follows the actual game trajectory, scores actor/target/method agreement and
+normalized progress over the plan horizon, keeps the best concrete candidate
+per kind, and applies a softmax across kinds. Candidate count therefore cannot
+inflate a class, and no target distribution is artificially forced to be
+uniform. Newly generated datasets already use the same trajectory labeler.
+The model format is also V2: the old `bdh-pilot-368g` remains useful as an
+experiment record but is intentionally rejected for play because its plan head
+has the obsolete hard-label meaning.
 
 ## Choosing a safe GPU batch
 
@@ -149,8 +179,8 @@ at the first epoch boundary, before the first epoch log line. Validation was
 running through the autodiff backend, retaining graphs that were never passed
 to `backward`, and copied six complete output/target arrays plus loss back to
 the host for every batch. Validation now uses `model.valid()`, computes all
-three accuracies on the GPU, and transfers one four-float metric vector per
-batch. Training no longer reads loss back on every optimizer step; it reports
+the validation metrics on the GPU, and transfers one small aggregate vector
+per batch. Training no longer reads loss back on every optimizer step; it reports
 `train_probe_loss` from 512 positions after the epoch. Fixed legal-move padding,
 periodic synchronization, and explicit WGPU pool cleanup keep long-running
 upload/intermediate allocation bounded.
@@ -161,10 +191,10 @@ Train the BDH candidate:
 
 ```sh
 cargo run --release -p teressa --bin teressa-train -- \
-  --input target/teressa-data-v1 \
-  --output target/teressa/bdh-v1 \
+  --input target/teressa-data-v2 \
+  --output target/teressa/bdh-trajectory-v2 \
   --architecture bdh \
-  --epochs 20 --batch-size 16 --learning-rate 0.0003 \
+  --epochs 3 --batch-size 64 --learning-rate 0.0003 \
   --width 192 --steps 4 --heads 4 --sparse-per-head 48 \
   --seed 0x5445524553534132
 ```
@@ -173,10 +203,10 @@ Train the control with the same input, split seed, width, epochs, and batch:
 
 ```sh
 cargo run --release -p teressa --bin teressa-train -- \
-  --input target/teressa-data-v1 \
-  --output target/teressa/residual-v1 \
+  --input target/teressa-data-v2 \
+  --output target/teressa/residual-trajectory-v2 \
   --architecture residual \
-  --epochs 20 --batch-size 16 --learning-rate 0.0003 \
+  --epochs 3 --batch-size 64 --learning-rate 0.0003 \
   --width 192 --steps 4 \
   --seed 0x5445524553534132
 ```
@@ -185,15 +215,17 @@ Check untouched test positions:
 
 ```sh
 cargo run --release -p teressa --bin teressa-eval -- \
-  --model target/teressa/bdh-v1 \
-  --input target/teressa-data-v1 --batch-size 32 \
+  --model target/teressa/bdh-trajectory-v2 \
+  --input target/teressa-data-v2 --batch-size 64 \
   --seed 0x5445524553534132
 ```
 
-The report currently contains the combined loss, teacher-policy top-1 match,
-WDL accuracy, and plan accuracy. These are necessary smoke metrics, but they do
-not prove human-like strategy. A research candidate should additionally be
-accepted only after fixed-sample, color-swapped matches report:
+The report includes combined loss, policy cross-entropy, target entropy, KL,
+gain over the uniform legal-move policy, top-1, WDL accuracy, ordinary plan
+accuracy, macro recall, and recall for every plan kind. Macro recall prevents a
+dominant plan class from making the model look successful. These remain smoke
+metrics, not proof of human-like strategy. A research candidate should
+additionally be accepted only after fixed-sample, color-swapped matches report:
 
 - score and confidence interval versus both residual and TeraStockfish;
 - tactical veto and blunder rates at the same safety-node budget;

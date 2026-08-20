@@ -15,11 +15,14 @@ pub mod generate;
 pub mod hybrid;
 pub mod model;
 pub mod plan;
+pub mod relabel;
 pub mod training;
 pub mod uci;
 
 pub use advisor::VulkanAdvisor;
-pub use dataset::{DatasetRecord, DatasetShardReader, DatasetShardWriter, PolicyTarget};
+pub use dataset::{
+    DatasetRecord, DatasetShardReader, DatasetShardWriter, PlanPolicyTarget, PolicyTarget,
+};
 pub use encode::{EncodedMove, EncodedPosition, encode_position, encode_position_uci_history};
 pub use generate::{GenerationOptions, GenerationSummary, generate_dataset};
 pub use hybrid::{
@@ -32,10 +35,12 @@ pub use plan::{
     BoardRegion, CancelCondition, PlanActor, PlanKind, PlanMethod, PlanReason, PlanState,
     PlanTarget, StrategicPlan, generate_plan_candidates,
 };
+pub use relabel::{RelabelOptions, RelabelSummary, relabel_dataset, relabel_game_records};
 pub use training::{
     Architecture, EpochMetrics, ModelManifest, TrainingOptions, evaluate_model, load_records,
     make_batch, split_records, train_vulkan,
 };
 
-pub const MODEL_FORMAT_VERSION: &str = "TERESSA_MODEL_V1";
-pub const DATASET_FORMAT_VERSION: &str = "TERESSA_DATASET_V1";
+pub const MODEL_FORMAT_VERSION: &str = "TERESSA_MODEL_V2";
+pub const DATASET_FORMAT_VERSION: &str = "TERESSA_DATASET_V2";
+pub const LEGACY_DATASET_FORMAT_VERSION: &str = "TERESSA_DATASET_V1";

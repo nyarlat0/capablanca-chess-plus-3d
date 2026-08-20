@@ -1,5 +1,6 @@
 use crate::dataset::{DatasetRecord, DatasetShardWriter, policy_targets};
 use crate::plan::generate_plan_candidates;
+use crate::relabel::relabel_game_records;
 use capablanca_chess_plus::{Color, Game, GameOutcome, Variant};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -180,7 +181,7 @@ fn generate_game(
     for ply in 0..options.maximum_plies {
         match game.outcome() {
             GameOutcome::Ongoing | GameOutcome::Check => {}
-            outcome => return Ok(finalize(pending, outcome)),
+            outcome => return finalize(pending, outcome),
         }
         let position = game.position();
         let analysis = searcher.analyze_with_history(
@@ -233,6 +234,7 @@ fn generate_game(
                 policy: policy.clone(),
                 wdl: [0.0, 1.0, 0.0],
                 teacher_score: analysis.score,
+                plan_policy: Vec::new(),
                 plan,
             },
         });
@@ -249,10 +251,10 @@ fn generate_game(
     // A cap is a data-production safeguard, not a chess result. Treating it as
     // a neutral target avoids inventing a winner when an exceptionally long
     // game reaches the configured storage budget.
-    Ok(finalize(
+    finalize(
         pending,
         GameOutcome::Draw(capablanca_chess_plus::DrawReason::Stalemate),
-    ))
+    )
 }
 
 fn sample_policy(
@@ -272,8 +274,11 @@ fn sample_policy(
         .and_then(|target| position.parse_uci_move(&target.uci).ok())
 }
 
-fn finalize(pending: Vec<PendingPosition>, outcome: GameOutcome) -> Vec<DatasetRecord> {
-    pending
+fn finalize(
+    pending: Vec<PendingPosition>,
+    outcome: GameOutcome,
+) -> Result<Vec<DatasetRecord>, String> {
+    let mut records = pending
         .into_iter()
         .map(|mut pending| {
             pending.record.wdl = match outcome {
@@ -283,7 +288,9 @@ fn finalize(pending: Vec<PendingPosition>, outcome: GameOutcome) -> Vec<DatasetR
             };
             pending.record
         })
-        .collect()
+        .collect::<Vec<_>>();
+    relabel_game_records(&mut records)?;
+    Ok(records)
 }
 
 fn splitmix64(mut value: u64) -> u64 {

@@ -1,6 +1,7 @@
-use crate::DATASET_FORMAT_VERSION;
-use crate::plan::StrategicPlan;
+use crate::plan::{PlanKind, StrategicPlan};
+use crate::{DATASET_FORMAT_VERSION, LEGACY_DATASET_FORMAT_VERSION};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -11,6 +12,12 @@ pub struct PolicyTarget {
     pub uci: String,
     pub probability: f32,
     pub teacher_score: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlanPolicyTarget {
+    pub kind: PlanKind,
+    pub probability: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -24,6 +31,11 @@ pub struct DatasetRecord {
     /// Win/draw/loss target from the side-to-move's point of view.
     pub wdl: [f32; 3],
     pub teacher_score: i32,
+    /// Soft trajectory-derived distribution over applicable strategic ideas.
+    /// Empty only while reading a legacy V1 shard before offline relabeling.
+    #[serde(default)]
+    pub plan_policy: Vec<PlanPolicyTarget>,
+    /// Concrete persistent plan used to condition the move-policy head.
     pub plan: StrategicPlan,
 }
 
@@ -106,6 +118,7 @@ impl DatasetShardWriter {
 }
 
 pub struct DatasetShardReader {
+    format: String,
     records: std::vec::IntoIter<DatasetRecord>,
 }
 
@@ -126,25 +139,34 @@ impl DatasetShardReader {
                 .ok_or_else(|| "dataset shard is empty".to_owned())?,
         )
         .map_err(|error| format!("cannot decode dataset header: {error}"))?;
-        if header.format != DATASET_FORMAT_VERSION {
+        if header.format != DATASET_FORMAT_VERSION && header.format != LEGACY_DATASET_FORMAT_VERSION
+        {
             return Err(format!(
-                "unsupported dataset format `{}`; expected `{DATASET_FORMAT_VERSION}`",
+                "unsupported dataset format `{}`; expected `{DATASET_FORMAT_VERSION}` or `{LEGACY_DATASET_FORMAT_VERSION}`",
                 header.format
             ));
         }
+        let require_plan_policy = header.format == DATASET_FORMAT_VERSION;
+        let format = header.format;
         let records = lines
             .enumerate()
             .map(|(index, line)| {
                 let record: DatasetRecord = serde_json::from_str(line).map_err(|error| {
                     format!("cannot decode dataset record {}: {error}", index + 1)
                 })?;
-                validate_record(&record)?;
+                validate_record_with_plan_policy(&record, require_plan_policy)?;
                 Ok(record)
             })
             .collect::<Result<Vec<_>, String>>()?;
         Ok(Self {
+            format,
             records: records.into_iter(),
         })
+    }
+
+    #[must_use]
+    pub fn format(&self) -> &str {
+        &self.format
     }
 }
 
@@ -184,6 +206,13 @@ pub fn policy_targets(candidates: &[RootCandidate], temperature_cp: f32) -> Vec<
 }
 
 fn validate_record(record: &DatasetRecord) -> Result<(), String> {
+    validate_record_with_plan_policy(record, true)
+}
+
+fn validate_record_with_plan_policy(
+    record: &DatasetRecord,
+    require_plan_policy: bool,
+) -> Result<(), String> {
     if record.position_fen.is_empty() || record.legal_moves.is_empty() {
         return Err("dataset records require a position and legal moves".to_owned());
     }
@@ -210,6 +239,32 @@ fn validate_record(record: &DatasetRecord) -> Result<(), String> {
     let wdl = record.wdl.iter().sum::<f32>();
     if !wdl.is_finite() || (wdl - 1.0).abs() > 1e-3 {
         return Err("WDL target probabilities must sum to one".to_owned());
+    }
+    if require_plan_policy && record.plan_policy.is_empty() {
+        return Err(
+            "V2 dataset records require a non-empty plan policy; relabel legacy shards first"
+                .to_owned(),
+        );
+    }
+    if !record.plan_policy.is_empty() {
+        let mut kinds = HashSet::new();
+        let probability = record
+            .plan_policy
+            .iter()
+            .map(|target| target.probability)
+            .sum::<f32>();
+        if !probability.is_finite() || (probability - 1.0).abs() > 1e-3 {
+            return Err(format!(
+                "plan-policy probabilities must sum to one, found {probability}"
+            ));
+        }
+        if record.plan_policy.iter().any(|target| {
+            !target.probability.is_finite()
+                || target.probability < 0.0
+                || !kinds.insert(target.kind)
+        }) {
+            return Err("plan policy contains invalid probabilities or duplicate kinds".to_owned());
+        }
     }
     Ok(())
 }
@@ -263,6 +318,10 @@ mod tests {
             legal_moves,
             wdl: [0.0, 1.0, 0.0],
             teacher_score: 0,
+            plan_policy: vec![PlanPolicyTarget {
+                kind: PlanKind::DevelopPiece,
+                probability: 1.0,
+            }],
             plan: generate_plan_candidates(&position).remove(0),
         };
         let mut writer = DatasetShardWriter::create(&path).unwrap();
@@ -270,5 +329,48 @@ mod tests {
         assert_eq!(writer.finish().unwrap(), 1);
         let decoded = DatasetShardReader::open(path).unwrap().collect::<Vec<_>>();
         assert_eq!(decoded, vec![record]);
+    }
+
+    #[test]
+    fn legacy_v1_shard_without_plan_policy_is_readable_for_relabeling() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("legacy.jsonl.zst");
+        let position = Variant::TerachessII.starting_position();
+        let legal_moves = position
+            .legal_moves()
+            .into_iter()
+            .map(|chess_move| chess_move.to_uci())
+            .collect::<Vec<_>>();
+        let record = DatasetRecord {
+            game_id: 9,
+            ply: 0,
+            position_fen: position.to_fen(),
+            history: Vec::new(),
+            policy: vec![PolicyTarget {
+                uci: legal_moves[0].clone(),
+                probability: 1.0,
+                teacher_score: 0,
+            }],
+            legal_moves,
+            wdl: [0.0, 1.0, 0.0],
+            teacher_score: 0,
+            plan_policy: Vec::new(),
+            plan: generate_plan_candidates(&position).remove(0),
+        };
+        let mut legacy_record = serde_json::to_value(record).unwrap();
+        legacy_record.as_object_mut().unwrap().remove("plan_policy");
+        let contents = format!(
+            "{}\n{}\n",
+            serde_json::json!({ "format": LEGACY_DATASET_FORMAT_VERSION }),
+            legacy_record
+        );
+        let compressed = zstd::stream::encode_all(contents.as_bytes(), 1).unwrap();
+        fs::write(&path, compressed).unwrap();
+
+        let reader = DatasetShardReader::open(path).unwrap();
+        assert_eq!(reader.format(), LEGACY_DATASET_FORMAT_VERSION);
+        let decoded = reader.collect::<Vec<_>>();
+        assert_eq!(decoded.len(), 1);
+        assert!(decoded[0].plan_policy.is_empty());
     }
 }

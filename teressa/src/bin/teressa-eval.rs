@@ -80,13 +80,23 @@ fn run() -> Result<(), String> {
         }
     };
     println!(
-        "holdout_positions={} loss={:.6} policy_top1={:.4} wdl_accuracy={:.4} plan_accuracy={:.4}",
+        "holdout_positions={} loss={:.6} policy_ce={:.6} policy_entropy={:.6} policy_kl={:.6} policy_uniform_ce={:.6} policy_gain_vs_uniform={:.6} policy_top1={:.4} wdl_accuracy={:.4} plan_accuracy={:.4} plan_macro_recall={:.4}",
         metrics.samples,
         metrics.loss,
+        metrics.policy_cross_entropy,
+        metrics.policy_target_entropy,
+        metrics.policy_cross_entropy - metrics.policy_target_entropy,
+        metrics.policy_uniform_cross_entropy,
+        metrics.policy_uniform_cross_entropy - metrics.policy_cross_entropy,
         metrics.policy_top1,
         metrics.wdl_accuracy,
-        metrics.plan_accuracy
+        metrics.plan_accuracy,
+        metrics.plan_macro_recall,
     );
+    println!("plan,recall");
+    for kind in teressa::PlanKind::ALL {
+        println!("{:?},{:.6}", kind, metrics.plan_recall[kind.index()]);
+    }
     Ok(())
 }
 

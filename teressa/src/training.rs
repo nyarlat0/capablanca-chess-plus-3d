@@ -118,9 +118,14 @@ impl Default for TrainingOptions {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EpochMetrics {
     pub loss: f32,
+    pub policy_cross_entropy: f32,
+    pub policy_target_entropy: f32,
+    pub policy_uniform_cross_entropy: f32,
     pub policy_top1: f32,
     pub wdl_accuracy: f32,
     pub plan_accuracy: f32,
+    pub plan_macro_recall: f32,
+    pub plan_recall: [f32; PlanKind::COUNT],
     pub samples: usize,
 }
 
@@ -159,6 +164,12 @@ pub fn train_vulkan(options: &TrainingOptions) -> Result<ModelManifest, String> 
         return Err("epochs, batch-size, and width must be positive".to_owned());
     }
     let records = load_records(&options.inputs)?;
+    if records.iter().any(|record| record.plan_policy.is_empty()) {
+        return Err(
+            "legacy dataset has no trajectory plan policy; run teressa-relabel into a separate V2 directory before training"
+                .to_owned(),
+        );
+    }
     let (mut train, validation, _) = split_records(records, options.seed);
     if train.is_empty() || validation.is_empty() {
         return Err(
@@ -265,14 +276,18 @@ where
         drop(validation_model);
         maintain_gpu::<B>(device, "after validation")?;
         println!(
-            "epoch={}/{} train_probe_loss={:.6} validation_loss={:.6} policy_top1={:.4} wdl_accuracy={:.4} plan_accuracy={:.4}",
+            "epoch={}/{} train_probe_loss={:.6} validation_loss={:.6} policy_ce={:.6} policy_kl={:.6} policy_gain_vs_uniform={:.6} policy_top1={:.4} wdl_accuracy={:.4} plan_accuracy={:.4} plan_macro_recall={:.4}",
             epoch + 1,
             options.epochs,
             training_probe.loss,
             metrics.loss,
+            metrics.policy_cross_entropy,
+            metrics.policy_cross_entropy - metrics.policy_target_entropy,
+            metrics.policy_uniform_cross_entropy - metrics.policy_cross_entropy,
             metrics.policy_top1,
             metrics.wdl_accuracy,
             metrics.plan_accuracy,
+            metrics.plan_macro_recall,
         );
     }
     if let Some(parent) = options.output_prefix.parent() {
@@ -308,6 +323,8 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
     device: &B::Device,
 ) -> Result<EpochMetrics, String> {
     let mut aggregate = EpochMetrics::default();
+    let mut plan_correct_by_kind = [0.0_f32; PlanKind::COUNT];
+    let mut plan_total_by_kind = [0.0_f32; PlanKind::COUNT];
     for (batch_index, records) in records.chunks(batch_size.max(1)).enumerate() {
         let batch = make_batch_padded(records, max_moves, device)?;
         let output = model.predict(
@@ -317,7 +334,21 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
             batch.plan_input.clone(),
         );
         let loss = training_loss(output.clone(), &batch);
-        let policy_correct = masked_logits(output.policy_logits, batch.move_mask.clone())
+        let policy_logits = masked_logits(output.policy_logits, batch.move_mask.clone());
+        let policy_cross_entropy =
+            cross_entropy_with_logits(policy_logits.clone(), batch.policy_target.clone());
+        let policy_target_entropy = -(batch.policy_target.clone()
+            * batch.policy_target.clone().clamp_min(1.0e-12).log())
+        .sum()
+            / records.len() as f64;
+        let policy_uniform_cross_entropy = batch
+            .move_mask
+            .clone()
+            .sum_dim(1)
+            .clamp_min(1.0)
+            .log()
+            .mean();
+        let policy_correct = policy_logits
             .argmax(1)
             .equal(batch.policy_target.clone().argmax(1))
             .float()
@@ -328,22 +359,41 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
             .equal(batch.wdl_target.clone().argmax(1))
             .float()
             .sum();
-        let plan_correct = output
-            .plan_logits
-            .argmax(1)
-            .equal(batch.plan_target.clone().argmax(1))
-            .float()
-            .sum();
-        // One four-float transfer replaces seven separate transfers of full
+        let predicted_plan = output.plan_logits.argmax(1);
+        let target_plan = batch.plan_target.clone().argmax(1);
+        let plan_correct_mask = predicted_plan.clone().equal(target_plan.clone()).float();
+        let plan_correct = plan_correct_mask.clone().sum();
+        let mut metric_tensors = vec![
+            loss,
+            policy_cross_entropy,
+            policy_target_entropy,
+            policy_uniform_cross_entropy,
+            policy_correct,
+            wdl_correct,
+            plan_correct,
+        ];
+        for kind in PlanKind::ALL {
+            let target_mask = target_plan.clone().equal_elem(kind.index() as i64).float();
+            metric_tensors.push((plan_correct_mask.clone() * target_mask.clone()).sum());
+            metric_tensors.push(target_mask.sum());
+        }
+        // A single small transfer replaces separate transfers of full
         // prediction and target arrays for every validation batch.
-        let values = Tensor::cat(vec![loss, policy_correct, wdl_correct, plan_correct], 0)
+        let values = Tensor::cat(metric_tensors, 0)
             .into_data()
             .to_vec::<f32>()
             .map_err(|error| format!("cannot read validation metrics: {error}"))?;
         aggregate.loss += values[0] * records.len() as f32;
-        aggregate.policy_top1 += values[1];
-        aggregate.wdl_accuracy += values[2];
-        aggregate.plan_accuracy += values[3];
+        aggregate.policy_cross_entropy += values[1] * records.len() as f32;
+        aggregate.policy_target_entropy += values[2] * records.len() as f32;
+        aggregate.policy_uniform_cross_entropy += values[3] * records.len() as f32;
+        aggregate.policy_top1 += values[4];
+        aggregate.wdl_accuracy += values[5];
+        aggregate.plan_accuracy += values[6];
+        for kind in PlanKind::ALL {
+            plan_correct_by_kind[kind.index()] += values[7 + kind.index() * 2];
+            plan_total_by_kind[kind.index()] += values[8 + kind.index() * 2];
+        }
         aggregate.samples += records.len();
         drop(batch);
         if (batch_index + 1) % GPU_MAINTENANCE_INTERVAL == 0 {
@@ -352,9 +402,22 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
     }
     let count = aggregate.samples.max(1) as f32;
     aggregate.loss /= count;
+    aggregate.policy_cross_entropy /= count;
+    aggregate.policy_target_entropy /= count;
+    aggregate.policy_uniform_cross_entropy /= count;
     aggregate.policy_top1 /= count;
     aggregate.wdl_accuracy /= count;
     aggregate.plan_accuracy /= count;
+    let mut represented = 0_usize;
+    for kind in PlanKind::ALL {
+        if plan_total_by_kind[kind.index()] > 0.0 {
+            aggregate.plan_recall[kind.index()] =
+                plan_correct_by_kind[kind.index()] / plan_total_by_kind[kind.index()];
+            aggregate.plan_macro_recall += aggregate.plan_recall[kind.index()];
+            represented += 1;
+        }
+    }
+    aggregate.plan_macro_recall /= represented.max(1) as f32;
     Ok(aggregate)
 }
 
@@ -468,7 +531,9 @@ fn make_batch_padded<B: Backend>(
         }
         let plan_index = record.plan.kind.index();
         plan_inputs[sample * PlanKind::COUNT + plan_index] = 1.0;
-        plan_targets[sample * PlanKind::COUNT + plan_index] = 1.0;
+        for target in &record.plan_policy {
+            plan_targets[sample * PlanKind::COUNT + target.kind.index()] = target.probability;
+        }
         wdl_targets.extend(record.wdl);
         score_targets.push((record.teacher_score as f32 / 2_000.0).clamp(-1.0, 1.0));
     }
@@ -582,7 +647,7 @@ fn splitmix64(mut value: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dataset::PolicyTarget;
+    use crate::dataset::{PlanPolicyTarget, PolicyTarget};
     use crate::plan::generate_plan_candidates;
     use burn::backend::Flex;
     use capablanca_chess_plus::Variant;
@@ -609,11 +674,24 @@ mod tests {
             legal_moves: legal,
             wdl: [0.0, 1.0, 0.0],
             teacher_score: 10,
+            plan_policy: vec![
+                PlanPolicyTarget {
+                    kind: PlanKind::DevelopPiece,
+                    probability: 0.7,
+                },
+                PlanPolicyTarget {
+                    kind: PlanKind::KingSafety,
+                    probability: 0.3,
+                },
+            ],
             plan: generate_plan_candidates(&position).remove(0),
         };
         let device = Default::default();
         let batch = make_batch::<Flex>(&[record.clone()], &device).unwrap();
         assert_eq!(batch.board.dims(), [1, BOARD_TOKENS, BOARD_FEATURES]);
+        let plan_target = batch.plan_target.to_data().to_vec::<f32>().unwrap();
+        assert!((plan_target[PlanKind::DevelopPiece.index()] - 0.7).abs() < 1.0e-6);
+        assert!((plan_target[PlanKind::KingSafety.index()] - 0.3).abs() < 1.0e-6);
         assert_eq!(
             batch
                 .policy_target
@@ -648,6 +726,10 @@ mod tests {
             }],
             wdl: [0.0, 1.0, 0.0],
             teacher_score: 0,
+            plan_policy: vec![PlanPolicyTarget {
+                kind: PlanKind::DevelopPiece,
+                probability: 1.0,
+            }],
             plan: generate_plan_candidates(&position).remove(0),
         };
         let mut second = base.clone();
