@@ -113,21 +113,47 @@ by a measured throughput gain rather than the logical CPU count alone.
 
 ## Choosing a safe GPU batch
 
-Benchmark after a release build. The first iteration compiles Vulkan kernels
-and is intentionally excluded from timing:
+The benchmark has separate inference and training modes. Inference reuses its
+inputs and is useful for deployment throughput:
 
 ```sh
 cargo run --release -p teressa --bin teressa-benchmark -- \
-  --architecture bdh --batch-size 8 --moves 160 --iterations 30
-cargo run --release -p teressa --bin teressa-benchmark -- \
-  --architecture bdh --batch-size 16 --moves 160 --iterations 30
-cargo run --release -p teressa --bin teressa-benchmark -- \
-  --architecture bdh --batch-size 32 --moves 160 --iterations 30
+  --mode inference --architecture bdh \
+  --batch-size 64 --moves 328 --iterations 100 \
+  --width 192 --steps 4 --heads 4 --sparse-per-head 48
 ```
 
-Use the largest batch that completes comfortably and does not cause desktop
-latency or swapping. Throughput, not allocated VRAM by itself, is the deciding
-metric.
+Training mode deliberately constructs and uploads a fresh complete batch on
+every step, executes the real multi-head loss and AdamW update, then runs a
+non-autodiff validation phase. It therefore tests the allocator lifecycle that
+a short inference benchmark cannot exercise. For a full-epoch-equivalent soak
+on the current 174,717-position corpus:
+
+```sh
+cargo run --release -p teressa --bin teressa-benchmark -- \
+  --mode training --architecture bdh \
+  --batch-size 64 --moves 328 \
+  --iterations 2200 --validation-iterations 300 \
+  --width 192 --steps 4 --heads 4 --sparse-per-head 48
+```
+
+On 2026-08-20 this completed on the project Radeon RX 6700 XT with a measured
+peak of 2165.5 MiB total VRAM use, including 505.4 MiB already in use before
+the process. This is a regression measurement for that machine and driver, not
+a universal memory guarantee. Use the largest batch that completes comfortably
+without desktop latency; throughput, not allocated VRAM by itself, is the
+deciding metric.
+
+The original sudden jump from roughly 1.4 GiB to the complete 12 GiB heap was
+at the first epoch boundary, before the first epoch log line. Validation was
+running through the autodiff backend, retaining graphs that were never passed
+to `backward`, and copied six complete output/target arrays plus loss back to
+the host for every batch. Validation now uses `model.valid()`, computes all
+three accuracies on the GPU, and transfers one four-float metric vector per
+batch. Training no longer reads loss back on every optimizer step; it reports
+`train_probe_loss` from 512 positions after the epoch. Fixed legal-move padding,
+periodic synchronization, and explicit WGPU pool cleanup keep long-running
+upload/intermediate allocation bounded.
 
 ## Training and evaluation
 
@@ -207,4 +233,3 @@ its data. The next research stages should be carried out one at a time:
    test corpus.
 4. Only then test BDH-CQ or a larger trunk, because architecture scale cannot
    repair biased targets or a leaky evaluation.
-

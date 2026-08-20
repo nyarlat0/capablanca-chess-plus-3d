@@ -147,12 +147,24 @@ impl<B: Backend> BdhCore<B> {
         // weighted mixture of board-token values. Division keeps the recurrent
         // update stable across 16x16 and future 18x18 boards.
         let tokens = input.dims()[1].max(1) as f64;
-        let association = sparse.clone().matmul(sparse.clone().swap_dims(1, 2)) / tokens;
-        let retrieved = association.matmul(normalized) * mask.clone();
+        let retrieved = associative_retrieval(sparse.clone(), normalized, tokens) * mask.clone();
         let retrieved_sparse = relu(self.value_encoder.forward(self.norm.forward(retrieved)));
         let update = self.decoder.forward(sparse * retrieved_sparse) * mask.clone();
         self.norm.forward(input + update) * mask
     }
+}
+
+/// Evaluate `(Q Q^T) V` as `Q (Q^T V)`. Matrix multiplication is associative,
+/// but the latter order avoids materializing a token-by-token matrix. For the
+/// production shape this replaces `[batch, 324, 324]` with
+/// `[batch, sparse, width]`, reducing both matmul work and autodiff storage.
+fn associative_retrieval<B: Backend>(
+    sparse: Tensor<B, 3>,
+    values: Tensor<B, 3>,
+    tokens: f64,
+) -> Tensor<B, 3> {
+    let memory = sparse.clone().swap_dims(1, 2).matmul(values) / tokens;
+    sparse.matmul(memory)
 }
 
 #[derive(Config, Debug)]
@@ -362,5 +374,33 @@ mod tests {
         assert_eq!(residual_output.policy_logits.dims(), [2, 96]);
         assert_eq!(bdh_output.wdl_logits.dims(), [2, 3]);
         assert_eq!(residual_output.plan_logits.dims(), [2, PlanKind::COUNT]);
+    }
+
+    #[test]
+    fn compact_associative_retrieval_matches_token_matrix_reference() {
+        let device = Default::default();
+        let sparse_values = (0..30)
+            .map(|index| (index % 7) as f32 / 7.0)
+            .collect::<Vec<_>>();
+        let value_values = (0..40)
+            .map(|index| ((index * 3) % 11) as f32 / 11.0)
+            .collect::<Vec<_>>();
+        let sparse =
+            Tensor::<TestBackend, 3>::from_data(TensorData::new(sparse_values, [2, 5, 3]), &device);
+        let values =
+            Tensor::<TestBackend, 3>::from_data(TensorData::new(value_values, [2, 5, 4]), &device);
+        let reference = sparse
+            .clone()
+            .matmul(sparse.clone().swap_dims(1, 2))
+            .matmul(values.clone())
+            / 5.0;
+        let compact = associative_retrieval(sparse, values, 5.0);
+        let reference = reference.into_data().to_vec::<f32>().unwrap();
+        let compact = compact.into_data().to_vec::<f32>().unwrap();
+
+        assert_eq!(reference.len(), compact.len());
+        for (reference, compact) in reference.into_iter().zip(compact) {
+            assert!((reference - compact).abs() < 1.0e-5);
+        }
     }
 }

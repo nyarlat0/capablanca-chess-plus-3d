@@ -7,7 +7,6 @@ use burn::module::AutodiffModule;
 use burn::optim::{AdamWConfig, GradientsParams, Optimizer};
 use burn::prelude::*;
 use burn::record::CompactRecorder;
-use burn::tensor::activation::softmax;
 use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::loss::cross_entropy_with_logits;
 use rand::SeedableRng;
@@ -140,9 +139,17 @@ pub struct TrainingBatch<B: Backend> {
 
 pub fn initialize_vulkan() -> burn::backend::wgpu::WgpuDevice {
     let device = burn::backend::wgpu::WgpuDevice::DiscreteGpu(0);
+    // Training continuously creates upload and intermediate buffers. Exclusive
+    // pages make the explicit cleanup below predictable, while a shorter task
+    // queue limits how many submitted batches can retain buffers at once. The
+    // main first-epoch VRAM spike was validation accidentally using autodiff;
+    // these settings provide an additional bound instead of hiding that bug.
     burn::backend::wgpu::init_setup::<burn::backend::wgpu::graphics::Vulkan>(
         &device,
-        Default::default(),
+        burn::backend::wgpu::RuntimeOptions {
+            tasks_max: 8,
+            memory_config: burn::backend::wgpu::MemoryConfiguration::ExclusivePages,
+        },
     );
     device
 }
@@ -205,33 +212,63 @@ fn train_model<B, M>(
 where
     B: AutodiffBackend,
     M: StrategyNetwork<B> + AutodiffModule<B>,
+    M::InnerModule: StrategyNetwork<B::InnerBackend>,
 {
     let mut optimizer = AdamWConfig::new().init::<B, M>();
     let mut rng = StdRng::seed_from_u64(options.seed);
+    let training_max_moves = maximum_legal_moves(train);
+    let validation_max_moves = maximum_legal_moves(validation);
+    println!(
+        "tensor_shapes training_max_moves={} validation_max_moves={}",
+        training_max_moves, validation_max_moves
+    );
     for epoch in 0..options.epochs {
         train.shuffle(&mut rng);
-        let mut loss_sum = 0.0_f64;
-        let mut batches = 0_usize;
-        for records in train.chunks(options.batch_size) {
-            let batch = make_batch(records, device)?;
+        for (batch_index, records) in train.chunks(options.batch_size).enumerate() {
+            let batch = make_batch_padded(records, training_max_moves, device)?;
             let output = model.predict(
                 batch.board.clone(),
                 batch.board_mask.clone(),
                 batch.moves.clone(),
                 batch.plan_input.clone(),
             );
-            let loss = combined_loss(output, &batch);
-            loss_sum += scalar(&loss)? as f64;
+            let loss = training_loss(output, &batch);
             let gradients = GradientsParams::from_grads(loss.backward(), &model);
             model = optimizer.step(options.learning_rate, model, gradients);
-            batches += 1;
+            // Drop all per-batch upload tensors before asking CubeCL to release
+            // unused pages. Keeping this batch alive made cleanup ineffective.
+            drop(batch);
+            if (batch_index + 1) % GPU_MAINTENANCE_INTERVAL == 0 {
+                maintain_gpu::<B>(device, "training")?;
+            }
         }
-        let metrics = evaluate_model(&model, validation, options.batch_size, device)?;
+
+        // Validation must run on the inner backend. Running it on `B` creates
+        // autodiff graphs that are never consumed by backward(), and used to
+        // provoke a heap-sized WGPU allocation at the first epoch boundary.
+        maintain_gpu::<B>(device, "before validation")?;
+        let validation_model = model.valid();
+        let training_probe = evaluate_model_padded(
+            &validation_model,
+            &train[..train.len().min(TRAINING_PROBE_POSITIONS)],
+            options.batch_size,
+            training_max_moves,
+            device,
+        )?;
+        let metrics = evaluate_model_padded(
+            &validation_model,
+            validation,
+            options.batch_size,
+            validation_max_moves,
+            device,
+        )?;
+        drop(validation_model);
+        maintain_gpu::<B>(device, "after validation")?;
         println!(
-            "epoch={}/{} train_loss={:.6} validation_loss={:.6} policy_top1={:.4} wdl_accuracy={:.4} plan_accuracy={:.4}",
+            "epoch={}/{} train_probe_loss={:.6} validation_loss={:.6} policy_top1={:.4} wdl_accuracy={:.4} plan_accuracy={:.4}",
             epoch + 1,
             options.epochs,
-            loss_sum / batches.max(1) as f64,
+            training_probe.loss,
             metrics.loss,
             metrics.policy_top1,
             metrics.wdl_accuracy,
@@ -254,67 +291,64 @@ pub fn evaluate_model<B: Backend, M: StrategyNetwork<B>>(
     batch_size: usize,
     device: &B::Device,
 ) -> Result<EpochMetrics, String> {
+    evaluate_model_padded(
+        model,
+        records,
+        batch_size,
+        maximum_legal_moves(records),
+        device,
+    )
+}
+
+fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
+    model: &M,
+    records: &[DatasetRecord],
+    batch_size: usize,
+    max_moves: usize,
+    device: &B::Device,
+) -> Result<EpochMetrics, String> {
     let mut aggregate = EpochMetrics::default();
-    for records in records.chunks(batch_size.max(1)) {
-        let batch = make_batch(records, device)?;
+    for (batch_index, records) in records.chunks(batch_size.max(1)).enumerate() {
+        let batch = make_batch_padded(records, max_moves, device)?;
         let output = model.predict(
             batch.board.clone(),
             batch.board_mask.clone(),
             batch.moves.clone(),
             batch.plan_input.clone(),
         );
-        let loss = scalar(&combined_loss(output.clone(), &batch))?;
-        let policy = softmax(
-            masked_logits(output.policy_logits, batch.move_mask.clone()),
-            1,
-        )
-        .into_data()
-        .to_vec::<f32>()
-        .map_err(|error| format!("cannot read policy predictions: {error}"))?;
-        let policy_target = batch
-            .policy_target
-            .into_data()
-            .to_vec::<f32>()
-            .map_err(|error| format!("cannot read policy targets: {error}"))?;
-        let wdl = output
+        let loss = training_loss(output.clone(), &batch);
+        let policy_correct = masked_logits(output.policy_logits, batch.move_mask.clone())
+            .argmax(1)
+            .equal(batch.policy_target.clone().argmax(1))
+            .float()
+            .sum();
+        let wdl_correct = output
             .wdl_logits
-            .into_data()
-            .to_vec::<f32>()
-            .map_err(|error| format!("cannot read WDL predictions: {error}"))?;
-        let wdl_target = batch
-            .wdl_target
-            .into_data()
-            .to_vec::<f32>()
-            .map_err(|error| format!("cannot read WDL targets: {error}"))?;
-        let plans = output
+            .argmax(1)
+            .equal(batch.wdl_target.clone().argmax(1))
+            .float()
+            .sum();
+        let plan_correct = output
             .plan_logits
+            .argmax(1)
+            .equal(batch.plan_target.clone().argmax(1))
+            .float()
+            .sum();
+        // One four-float transfer replaces seven separate transfers of full
+        // prediction and target arrays for every validation batch.
+        let values = Tensor::cat(vec![loss, policy_correct, wdl_correct, plan_correct], 0)
             .into_data()
             .to_vec::<f32>()
-            .map_err(|error| format!("cannot read plan predictions: {error}"))?;
-        let plan_target = batch
-            .plan_target
-            .into_data()
-            .to_vec::<f32>()
-            .map_err(|error| format!("cannot read plan targets: {error}"))?;
-        let max_moves = policy.len() / records.len();
-        for sample in 0..records.len() {
-            aggregate.policy_top1 += f32::from(
-                argmax(&policy[sample * max_moves..(sample + 1) * max_moves])
-                    == argmax(&policy_target[sample * max_moves..(sample + 1) * max_moves]),
-            );
-            aggregate.wdl_accuracy += f32::from(
-                argmax(&wdl[sample * 3..sample * 3 + 3])
-                    == argmax(&wdl_target[sample * 3..sample * 3 + 3]),
-            );
-            aggregate.plan_accuracy += f32::from(
-                argmax(&plans[sample * PlanKind::COUNT..(sample + 1) * PlanKind::COUNT])
-                    == argmax(
-                        &plan_target[sample * PlanKind::COUNT..(sample + 1) * PlanKind::COUNT],
-                    ),
-            );
-        }
-        aggregate.loss += loss * records.len() as f32;
+            .map_err(|error| format!("cannot read validation metrics: {error}"))?;
+        aggregate.loss += values[0] * records.len() as f32;
+        aggregate.policy_top1 += values[1];
+        aggregate.wdl_accuracy += values[2];
+        aggregate.plan_accuracy += values[3];
         aggregate.samples += records.len();
+        drop(batch);
+        if (batch_index + 1) % GPU_MAINTENANCE_INTERVAL == 0 {
+            maintain_gpu::<B>(device, "validation")?;
+        }
     }
     let count = aggregate.samples.max(1) as f32;
     aggregate.loss /= count;
@@ -324,7 +358,21 @@ pub fn evaluate_model<B: Backend, M: StrategyNetwork<B>>(
     Ok(aggregate)
 }
 
-fn combined_loss<B: Backend>(
+const GPU_MAINTENANCE_INTERVAL: usize = 64;
+const TRAINING_PROBE_POSITIONS: usize = 512;
+
+fn maintain_gpu<B: Backend>(device: &B::Device, stage: &str) -> Result<(), String> {
+    B::sync(device)
+        .map_err(|error| format!("GPU synchronization failed during {stage}: {error}"))?;
+    B::memory_cleanup(device);
+    Ok(())
+}
+
+/// Computes the complete multi-head training objective.
+///
+/// This is public so the GPU lifecycle benchmark can exercise the exact same
+/// graph as the real trainer instead of a smaller synthetic approximation.
+pub fn training_loss<B: Backend>(
     output: crate::model::NetworkOutput<B>,
     batch: &TrainingBatch<B>,
 ) -> Tensor<B, 1> {
@@ -352,12 +400,24 @@ pub fn make_batch<B: Backend>(
     if records.is_empty() {
         return Err("cannot create an empty batch".to_owned());
     }
-    let max_moves = records
-        .iter()
-        .map(|record| record.legal_moves.len())
-        .max()
-        .unwrap_or(1)
-        .max(1);
+    make_batch_padded(records, maximum_legal_moves(records), device)
+}
+
+fn make_batch_padded<B: Backend>(
+    records: &[DatasetRecord],
+    max_moves: usize,
+    device: &B::Device,
+) -> Result<TrainingBatch<B>, String> {
+    if records.is_empty() {
+        return Err("cannot create an empty batch".to_owned());
+    }
+    let required_moves = maximum_legal_moves(records);
+    if required_moves > max_moves {
+        return Err(format!(
+            "batch requires {required_moves} legal-move slots but fixed padding provides {max_moves}"
+        ));
+    }
+    let max_moves = max_moves.max(1);
     let batch = records.len();
     let mut boards = Vec::with_capacity(batch * BOARD_TOKENS * BOARD_FEATURES);
     let mut board_masks = Vec::with_capacity(batch * BOARD_TOKENS);
@@ -441,6 +501,15 @@ pub fn make_batch<B: Backend>(
     })
 }
 
+fn maximum_legal_moves(records: &[DatasetRecord]) -> usize {
+    records
+        .iter()
+        .map(|record| record.legal_moves.len())
+        .max()
+        .unwrap_or(1)
+        .max(1)
+}
+
 pub fn load_records(inputs: &[PathBuf]) -> Result<Vec<DatasetRecord>, String> {
     let mut paths = Vec::new();
     for input in inputs {
@@ -499,24 +568,6 @@ fn collect_shards(path: &Path, output: &mut Vec<PathBuf>) -> Result<(), String> 
     Ok(())
 }
 
-fn scalar<B: Backend>(tensor: &Tensor<B, 1>) -> Result<f32, String> {
-    tensor
-        .to_data()
-        .to_vec::<f32>()
-        .map_err(|error| format!("cannot read scalar tensor: {error}"))?
-        .into_iter()
-        .next()
-        .ok_or_else(|| "loss tensor was empty".to_owned())
-}
-
-fn argmax(values: &[f32]) -> usize {
-    values
-        .iter()
-        .enumerate()
-        .max_by(|left, right| left.1.total_cmp(right.1))
-        .map_or(0, |(index, _)| index)
-}
-
 fn manifest_path(prefix: &Path) -> PathBuf {
     prefix.with_extension("json")
 }
@@ -561,7 +612,7 @@ mod tests {
             plan: generate_plan_candidates(&position).remove(0),
         };
         let device = Default::default();
-        let batch = make_batch::<Flex>(&[record], &device).unwrap();
+        let batch = make_batch::<Flex>(&[record.clone()], &device).unwrap();
         assert_eq!(batch.board.dims(), [1, BOARD_TOKENS, BOARD_FEATURES]);
         assert_eq!(
             batch
@@ -573,6 +624,11 @@ mod tests {
                 .sum::<f32>(),
             1.0
         );
+
+        let padded_moves = batch.policy_target.dims()[1] + 17;
+        let padded = make_batch_padded::<Flex>(&[record], padded_moves, &device).unwrap();
+        assert_eq!(padded.policy_target.dims(), [1, padded_moves]);
+        assert_eq!(padded.move_mask.dims(), [1, padded_moves]);
     }
 
     #[test]
