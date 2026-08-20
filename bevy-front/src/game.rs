@@ -32,6 +32,7 @@ pub(crate) struct ChessMatch {
     pub(crate) pending_promotion: Option<PendingPromotion>,
     pub(crate) last_move: Option<Move>,
     pub(crate) animate_last_move: bool,
+    pub(crate) move_history: Vec<String>,
     pub(crate) captured_pieces: Vec<CapturedPiece>,
     pub(crate) status: String,
     pub(crate) generation: u64,
@@ -49,6 +50,7 @@ impl Default for ChessMatch {
             pending_promotion: None,
             last_move: None,
             animate_last_move: false,
+            move_history: Vec::new(),
             captured_pieces: Vec::new(),
             status: "White to move.".to_owned(),
             generation: 0,
@@ -86,6 +88,7 @@ pub(crate) fn restart_match(chess_match: &mut ChessMatch, variant: Variant) {
     chess_match.pending_promotion = None;
     chess_match.last_move = None;
     chess_match.animate_last_move = false;
+    chess_match.move_history.clear();
     chess_match.captured_pieces.clear();
     chess_match.next_capture_id = 0;
     chess_match.status = format!("New {} game. White to move.", variant.rules().name());
@@ -193,6 +196,7 @@ pub(crate) fn apply_move(
         .game
         .play(chess_move)
         .expect("only engine-provided legal moves are applied");
+    chess_match.move_history.push(chess_move.to_uci());
     chess_match.selected = None;
     chess_match.pending_promotion = None;
     chess_match.last_move = Some(chess_move);
@@ -373,6 +377,25 @@ mod tests {
         assert_eq!(captured.from, Square::new(1, 1));
         assert_eq!(captured.tray_slot, 0);
         assert_eq!(captured.generation, chess_match.generation);
+        assert_eq!(chess_match.move_history, ["b1b2"]);
+    }
+
+    #[test]
+    fn restarting_a_match_clears_the_move_history() {
+        let mut chess_match = ChessMatch::default();
+        let chess_move = chess_match
+            .game
+            .position()
+            .legal_moves()
+            .into_iter()
+            .next()
+            .expect("the starting position has a legal move");
+        apply_move(&mut chess_match, chess_move, None);
+        assert_eq!(chess_match.move_history.len(), 1);
+
+        restart_match(&mut chess_match, Variant::TerachessII);
+
+        assert!(chess_match.move_history.is_empty());
     }
 
     #[test]

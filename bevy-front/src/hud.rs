@@ -30,6 +30,7 @@ impl Plugin for HudPlugin {
                 (
                     handle_hud_toggle,
                     handle_copy_game_id,
+                    handle_copy_move_history,
                     handle_fullscreen_button,
                     handle_open_menu,
                     open_hud_on_room_created,
@@ -44,6 +45,7 @@ impl Plugin for HudPlugin {
                     style_hud_toggle,
                     style_fullscreen_button,
                     style_copy_game_id_button,
+                    style_copy_move_history_button,
                 )
                     .chain()
                     .in_set(FrontendSet::Hud),
@@ -55,7 +57,8 @@ impl Plugin for HudPlugin {
 struct HudState {
     expanded: bool,
     last_outcome: GameOutcome,
-    copy_feedback: Option<(CopyFeedback, Timer)>,
+    game_id_copy_feedback: Option<(CopyFeedback, Timer)>,
+    history_copy_feedback: Option<(CopyFeedback, Timer)>,
     hosting_room: bool,
     last_opponent_connected: bool,
     second_player_notice: Option<SecondPlayerNotice>,
@@ -66,7 +69,8 @@ impl Default for HudState {
         Self {
             expanded: false,
             last_outcome: GameOutcome::Ongoing,
-            copy_feedback: None,
+            game_id_copy_feedback: None,
+            history_copy_feedback: None,
             hosting_room: false,
             last_opponent_connected: false,
             second_player_notice: None,
@@ -108,6 +112,12 @@ struct CopyGameIdButton;
 
 #[derive(Component)]
 struct CopyGameIdButtonLabel;
+
+#[derive(Component)]
+struct CopyMoveHistoryButton;
+
+#[derive(Component)]
+struct CopyMoveHistoryButtonLabel;
 
 #[derive(Component)]
 struct OpenMenuButton;
@@ -260,6 +270,34 @@ fn setup_hud(mut commands: Commands, asset_server: Res<AssetServer>) {
                     Pickable::IGNORE,
                     SecondPlayerConnectedText,
                 ));
+                panel
+                    .spawn((
+                        Button,
+                        Node {
+                            width: percent(100),
+                            height: px(36),
+                            border: UiRect::all(px(1)),
+                            border_radius: BorderRadius::all(px(10)),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.12, 0.09, 0.16, 0.76)),
+                        BorderColor::all(Color::srgba(1.0, 0.38, 0.65, 0.72)),
+                        CopyMoveHistoryButton,
+                        Name::new("Copy move history"),
+                    ))
+                    .with_child((
+                        Text::new("COPY MOVE HISTORY"),
+                        TextFont {
+                            font: font.clone().into(),
+                            font_size: FontSize::Px(11.0),
+                            ..default()
+                        },
+                        TextColor(Color::srgb(1.0, 0.74, 0.86)),
+                        Pickable::IGNORE,
+                        CopyMoveHistoryButtonLabel,
+                    ));
                 panel
                     .spawn((
                         Button,
@@ -426,7 +464,44 @@ fn handle_copy_game_id(
     } else {
         CopyFeedback::Copied
     };
-    hud.copy_feedback = Some((result, Timer::from_seconds(1.6, TimerMode::Once)));
+    hud.game_id_copy_feedback = Some((result, Timer::from_seconds(1.6, TimerMode::Once)));
+}
+
+fn handle_copy_move_history(
+    buttons: Query<&Interaction, (Changed<Interaction>, With<CopyMoveHistoryButton>)>,
+    chess_match: Res<ChessMatch>,
+    mut clipboard: ResMut<Clipboard>,
+    mut hud: ResMut<HudState>,
+) {
+    if !buttons
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        return;
+    }
+
+    let history = exported_move_history(&chess_match);
+    let result = if let Err(error) = clipboard.set_text(&history) {
+        warn!("Could not copy move history: {error}");
+        CopyFeedback::Failed
+    } else {
+        CopyFeedback::Copied
+    };
+    hud.history_copy_feedback = Some((result, Timer::from_seconds(1.6, TimerMode::Once)));
+}
+
+fn exported_move_history(chess_match: &ChessMatch) -> String {
+    let moves = chess_match.move_history.join(" ");
+    let position = if moves.is_empty() {
+        "position startpos".to_owned()
+    } else {
+        format!("position startpos moves {moves}")
+    };
+    format!(
+        "variant={}\n{position}\nfen={}",
+        chess_match.variant.rules().name(),
+        chess_match.game.position().to_fen(),
+    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -707,22 +782,41 @@ fn hud_text(game_type: &str, mode: GameMode, outcome: GameOutcome) -> String {
 fn update_copy_feedback(
     time: Res<Time>,
     mut hud: ResMut<HudState>,
-    mut labels: Query<&mut Text, With<CopyGameIdButtonLabel>>,
+    mut labels: ParamSet<(
+        Query<&mut Text, With<CopyGameIdButtonLabel>>,
+        Query<&mut Text, With<CopyMoveHistoryButtonLabel>>,
+    )>,
 ) {
-    if let Some((_, timer)) = hud.copy_feedback.as_mut() {
+    if let Some((_, timer)) = hud.game_id_copy_feedback.as_mut() {
         timer.tick(time.delta());
         if timer.is_finished() {
-            hud.copy_feedback = None;
+            hud.game_id_copy_feedback = None;
         }
     }
-    let value = match hud.copy_feedback.as_ref().map(|(result, _)| result) {
+    if let Some((_, timer)) = hud.history_copy_feedback.as_mut() {
+        timer.tick(time.delta());
+        if timer.is_finished() {
+            hud.history_copy_feedback = None;
+        }
+    }
+    let game_id_value = match hud.game_id_copy_feedback.as_ref().map(|(result, _)| result) {
         Some(CopyFeedback::Copied) => "COPIED",
         Some(CopyFeedback::Failed) => "FAILED",
         None => "COPY ID",
     };
-    for mut label in &mut labels {
-        if label.as_str() != value {
-            **label = value.to_owned();
+    for mut label in &mut labels.p0() {
+        if label.as_str() != game_id_value {
+            **label = game_id_value.to_owned();
+        }
+    }
+    let history_value = match hud.history_copy_feedback.as_ref().map(|(result, _)| result) {
+        Some(CopyFeedback::Copied) => "COPIED",
+        Some(CopyFeedback::Failed) => "FAILED",
+        None => "COPY MOVE HISTORY",
+    };
+    for mut label in &mut labels.p1() {
+        if label.as_str() != history_value {
+            **label = history_value.to_owned();
         }
     }
 }
@@ -807,6 +901,30 @@ fn style_copy_game_id_button(
     }
 }
 
+fn style_copy_move_history_button(
+    mut buttons: Query<
+        (&Interaction, &mut BackgroundColor, &mut BorderColor),
+        With<CopyMoveHistoryButton>,
+    >,
+) {
+    for (interaction, mut background, mut border) in &mut buttons {
+        let (background_color, border_color) = copy_button_colors(*interaction);
+        background.0 = background_color;
+        *border = BorderColor::all(border_color);
+    }
+}
+
+fn copy_button_colors(interaction: Interaction) -> (Color, Color) {
+    match interaction {
+        Interaction::None => (
+            Color::srgba(0.12, 0.09, 0.16, 0.76),
+            Color::srgba(1.0, 0.38, 0.65, 0.72),
+        ),
+        Interaction::Hovered => (Color::srgba(0.31, 0.11, 0.22, 0.9), ACCENT_HOVER),
+        Interaction::Pressed => (Color::srgba(0.5, 0.07, 0.24, 0.96), Color::WHITE),
+    }
+}
+
 fn corner_button_colors(interaction: Interaction) -> (Color, Color) {
     match interaction {
         Interaction::None => (Color::srgba(0.12, 0.12, 0.15, 0.3), TOGGLE_GRAY),
@@ -820,6 +938,7 @@ mod tests {
     use capablanca_chess_plus::{Color as Side, DrawReason, Game, Position, Variant};
 
     use super::*;
+    use crate::game::apply_move;
 
     #[test]
     fn active_game_hud_contains_only_its_mode() {
@@ -861,6 +980,24 @@ mod tests {
             hud_text("Gothic Chess", GameMode::Multiplayer, GameOutcome::Ongoing,),
             "Gothic Chess\nMultiplayer · online"
         );
+    }
+
+    #[test]
+    fn copied_history_is_directly_replayable_by_the_uci_engine() {
+        let mut chess_match = ChessMatch::default();
+        chess_match.variant = Variant::TerachessII;
+        chess_match.game = Game::new(Variant::TerachessII.starting_position());
+        let chess_move = chess_match
+            .game
+            .position()
+            .parse_uci_move("d2g5")
+            .expect("the reference move is legal");
+        apply_move(&mut chess_match, chess_move, None);
+
+        let exported = exported_move_history(&chess_match);
+
+        assert!(exported.starts_with("variant=Terachess II\nposition startpos moves d2g5\n"));
+        assert!(exported.contains(&format!("fen={}", chess_match.game.position().to_fen())));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
