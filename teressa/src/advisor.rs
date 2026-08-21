@@ -127,7 +127,7 @@ impl VulkanAdvisor {
             policy: values(softmax(output.policy_logits, 1))?,
             risk: values(sigmoid(output.tactical_risk_logits))?,
             wdl: values(softmax(output.wdl_logits, 1))?,
-            plans: values(softmax(output.plan_logits, 1))?,
+            plan_logits: values(output.plan_logits)?,
         })
     }
 }
@@ -155,14 +155,16 @@ impl NeuralAdvisor for VulkanAdvisor {
             return Err("symbolic planner supplied no candidates".to_owned());
         }
         let raw = self.infer(position, None)?;
-        let selected_kind = candidates
-            .iter()
-            .map(|candidate| candidate.kind)
-            .max_by(|left, right| {
-                plan_kind_score(*left, previous, &raw.plans)
-                    .total_cmp(&plan_kind_score(*right, previous, &raw.plans))
-            })
-            .expect("candidate set was checked");
+        let plan_probabilities = candidate_plan_probabilities(candidates, &raw.plan_logits)?;
+        let selected_kind =
+            candidates
+                .iter()
+                .map(|candidate| candidate.kind)
+                .max_by(|left, right| {
+                    plan_kind_score(*left, previous, &plan_probabilities)
+                        .total_cmp(&plan_kind_score(*right, previous, &plan_probabilities))
+                })
+                .expect("candidate set was checked");
         let mut selected = candidates
             .iter()
             .filter(|candidate| candidate.kind == selected_kind)
@@ -173,7 +175,7 @@ impl NeuralAdvisor for VulkanAdvisor {
             })
             .expect("selected plan kind came from the candidate set")
             .clone();
-        selected.confidence = raw.plans[selected.kind.index()].clamp(0.0, 1.0);
+        selected.confidence = plan_probabilities[selected.kind.index()];
         Ok(selected)
     }
 
@@ -209,7 +211,42 @@ struct RawAdvice {
     policy: Vec<f32>,
     risk: Vec<f32>,
     wdl: Vec<f32>,
-    plans: Vec<f32>,
+    plan_logits: Vec<f32>,
+}
+
+fn candidate_plan_probabilities(
+    candidates: &[StrategicPlan],
+    logits: &[f32],
+) -> Result<[f32; PlanKind::COUNT], String> {
+    if logits.len() != PlanKind::COUNT {
+        return Err("checkpoint plan output has the wrong size".to_owned());
+    }
+    let mut available = [false; PlanKind::COUNT];
+    for candidate in candidates {
+        available[candidate.kind.index()] = true;
+    }
+    let maximum = PlanKind::ALL
+        .into_iter()
+        .filter(|kind| available[kind.index()])
+        .map(|kind| logits[kind.index()])
+        .reduce(f32::max)
+        .ok_or_else(|| "symbolic planner supplied no candidate kinds".to_owned())?;
+    let mut probabilities = [0.0_f32; PlanKind::COUNT];
+    let mut total = 0.0_f32;
+    for kind in PlanKind::ALL {
+        if available[kind.index()] {
+            let probability = (logits[kind.index()] - maximum).exp();
+            probabilities[kind.index()] = probability;
+            total += probability;
+        }
+    }
+    if !total.is_finite() || total <= 0.0 {
+        return Err("checkpoint produced invalid plan logits".to_owned());
+    }
+    for probability in &mut probabilities {
+        *probability /= total;
+    }
+    Ok(probabilities)
 }
 
 fn plan_kind_score(kind: PlanKind, previous: Option<&StrategicPlan>, probabilities: &[f32]) -> f32 {
@@ -222,4 +259,28 @@ fn values<const D: usize>(tensor: Tensor<InferenceBackend, D>) -> Result<Vec<f32
         .into_data()
         .to_vec::<f32>()
         .map_err(|error| format!("cannot read Vulkan inference result: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::generate_plan_candidates;
+    use capablanca_chess_plus::Variant;
+
+    #[test]
+    fn plan_probabilities_are_normalized_only_over_applicable_kinds() {
+        let candidates = generate_plan_candidates(&Variant::TerachessII.starting_position());
+        let logits = (0..PlanKind::COUNT)
+            .map(|index| index as f32 * 0.1)
+            .collect::<Vec<_>>();
+        let probabilities = candidate_plan_probabilities(&candidates, &logits).unwrap();
+        let mut available = [false; PlanKind::COUNT];
+        for candidate in candidates {
+            available[candidate.kind.index()] = true;
+        }
+        assert!((probabilities.iter().sum::<f32>() - 1.0).abs() < 1.0e-6);
+        for kind in PlanKind::ALL {
+            assert_eq!(probabilities[kind.index()] > 0.0, available[kind.index()]);
+        }
+    }
 }

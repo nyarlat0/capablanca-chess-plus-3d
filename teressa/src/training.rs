@@ -51,6 +51,12 @@ pub struct ModelManifest {
     pub sparse_per_head: usize,
     pub heads: usize,
     pub trained_epochs: usize,
+    /// Epoch exported to the compact play checkpoint. Older V3 manifests did
+    /// not record selection metadata, so both fields remain optional.
+    #[serde(default)]
+    pub selected_epoch: Option<usize>,
+    #[serde(default)]
+    pub validation_selection_loss: Option<f32>,
     pub training_positions: usize,
     pub validation_positions: usize,
 }
@@ -144,6 +150,10 @@ struct TrainingState {
     /// state file is published last and therefore always points at a complete
     /// model/optimizer pair, even if the next save is interrupted.
     checkpoint_slot: usize,
+    #[serde(default)]
+    best_epoch: Option<usize>,
+    #[serde(default)]
+    best_selection_loss: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -153,6 +163,15 @@ pub struct EpochMetrics {
     pub policy_target_entropy: f32,
     pub policy_uniform_cross_entropy: f32,
     pub policy_top1: f32,
+    pub policy_top3: f32,
+    pub policy_top8: f32,
+    pub policy_target_mass_top1: f32,
+    pub policy_target_mass_top3: f32,
+    pub policy_target_mass_top8: f32,
+    pub policy_regret_cp_top1: f32,
+    pub policy_regret_cp_top3: f32,
+    pub policy_regret_cp_top8: f32,
+    pub wdl_cross_entropy: f32,
     pub plan_cross_entropy: f32,
     pub plan_target_entropy: f32,
     pub plan_prior_cross_entropy: f32,
@@ -162,11 +181,27 @@ pub struct EpochMetrics {
     pub wdl_recall: [f32; 3],
     pub wdl_target_fraction: [f32; 3],
     pub plan_accuracy: f32,
+    pub plan_top2: f32,
+    pub plan_top3: f32,
     pub plan_macro_recall: f32,
     pub plan_recall: [f32; PlanKind::COUNT],
     pub plan_target_mass: [f32; PlanKind::COUNT],
     pub plan_predicted_mass: [f32; PlanKind::COUNT],
+    pub score_mean_squared_error: f32,
+    pub tactical_risk_mean_squared_error: f32,
     pub samples: usize,
+}
+
+impl EpochMetrics {
+    /// Lower is better. Entropy constants are removed from policy and plan so
+    /// checkpoint selection tracks learnable signal instead of label softness;
+    /// WDL is retained at a smaller weight because it gates expressive plans.
+    #[must_use]
+    pub fn strategic_selection_loss(&self) -> f32 {
+        (self.policy_cross_entropy - self.policy_target_entropy)
+            + (self.plan_cross_entropy - self.plan_target_entropy)
+            + 0.25 * self.wdl_cross_entropy
+    }
 }
 
 pub struct TrainingBatch<B: Backend> {
@@ -178,7 +213,10 @@ pub struct TrainingBatch<B: Backend> {
     pub move_from: Tensor<B, 2, Int>,
     pub move_to: Tensor<B, 2, Int>,
     pub move_mask: Tensor<B, 2>,
+    pub teacher_score: Tensor<B, 2>,
+    pub teacher_score_mask: Tensor<B, 2>,
     pub plan_input: Tensor<B, 2>,
+    pub plan_mask: Tensor<B, 2>,
     pub policy_target: Tensor<B, 2>,
     pub wdl_target: Tensor<B, 2>,
     pub plan_target: Tensor<B, 2>,
@@ -269,7 +307,7 @@ pub fn train_vulkan(options: &TrainingOptions) -> Result<ModelManifest, String> 
     let device = initialize_vulkan();
     type Base = burn::backend::Wgpu;
     type Train = burn::backend::Autodiff<Base>;
-    let trained_epochs = match options.architecture {
+    let training_result = match options.architecture {
         Architecture::Bdh => {
             let model = BdhConfig::new()
                 .with_width(options.width)
@@ -288,19 +326,37 @@ pub fn train_vulkan(options: &TrainingOptions) -> Result<ModelManifest, String> 
             train_model(model, &mut train, &validation, options, &device)?
         }
     };
-    let manifest = ModelManifest {
+    let manifest = training_manifest(options, training_result, train.len(), validation.len());
+    manifest.save(&options.output_prefix)?;
+    Ok(manifest)
+}
+
+fn training_manifest(
+    options: &TrainingOptions,
+    result: TrainingResult,
+    training_positions: usize,
+    validation_positions: usize,
+) -> ModelManifest {
+    ModelManifest {
         format: MODEL_FORMAT_VERSION.to_owned(),
         architecture: options.architecture,
         width: options.width,
         layers_or_steps: options.layers_or_steps,
         sparse_per_head: options.sparse_per_head,
         heads: options.heads,
-        trained_epochs,
-        training_positions: train.len(),
-        validation_positions: validation.len(),
-    };
-    manifest.save(&options.output_prefix)?;
-    Ok(manifest)
+        trained_epochs: result.trained_epochs,
+        selected_epoch: Some(result.best_epoch),
+        validation_selection_loss: Some(result.best_selection_loss),
+        training_positions,
+        validation_positions,
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TrainingResult {
+    trained_epochs: usize,
+    best_epoch: usize,
+    best_selection_loss: f32,
 }
 
 fn train_model<B, M>(
@@ -309,14 +365,16 @@ fn train_model<B, M>(
     validation: &[DatasetRecord],
     options: &TrainingOptions,
     device: &B::Device,
-) -> Result<usize, String>
+) -> Result<TrainingResult, String>
 where
     B: AutodiffBackend,
     M: StrategyNetwork<B> + AutodiffModule<B>,
     M::InnerModule: StrategyNetwork<B::InnerBackend>,
 {
     let mut optimizer = AdamWConfig::new().init::<B, M>();
-    let (completed_epochs, previous_steps) = if options.resume {
+    let (completed_epochs, previous_steps, mut best_epoch, mut best_selection_loss) = if options
+        .resume
+    {
         let state = load_training_state(&options.output_prefix)?;
         validate_training_state(&state, options)?;
         model = model
@@ -334,12 +392,30 @@ where
             .map_err(|error| format!("cannot resume AdamW state: {error}"))?;
         optimizer = optimizer.load_record(optimizer_record);
         println!(
-            "resume completed_epochs={} optimizer_steps={}",
-            state.completed_epochs, state.optimizer_steps
+            "resume completed_epochs={} optimizer_steps={} best_epoch={} best_selection_loss={}",
+            state.completed_epochs,
+            state.optimizer_steps,
+            state
+                .best_epoch
+                .map_or_else(|| "unknown".to_owned(), |value| value.to_string()),
+            state
+                .best_selection_loss
+                .map_or_else(|| "unknown".to_owned(), |value| format!("{value:.6}")),
         );
-        (state.completed_epochs, state.optimizer_steps)
+        let compact_exists = options.output_prefix.with_extension("mpk").is_file();
+        let restored_best_epoch = compact_exists.then_some(state.best_epoch).flatten();
+        let restored_best_loss = restored_best_epoch
+            .zip(state.best_selection_loss)
+            .filter(|(_, loss)| loss.is_finite())
+            .map_or(f32::INFINITY, |(_, loss)| loss);
+        (
+            state.completed_epochs,
+            state.optimizer_steps,
+            restored_best_epoch,
+            restored_best_loss,
+        )
     } else {
-        (0, 0)
+        (0, 0, None, f32::INFINITY)
     };
     let training_max_moves = maximum_legal_moves(train);
     let validation_max_moves = maximum_legal_moves(validation);
@@ -353,6 +429,8 @@ where
     };
     let mut invocation_step = 0_usize;
     let mut optimizer_steps = previous_steps;
+    train.sort_unstable_by_key(|record| (record.game_id, record.ply));
+    let training_probe_records = train[..train.len().min(TRAINING_PROBE_POSITIONS)].to_vec();
     println!(
         "tensor_shapes training_max_moves={} validation_max_moves={}",
         training_max_moves, validation_max_moves
@@ -392,7 +470,7 @@ where
         let validation_model = model.valid();
         let training_probe = evaluate_model_padded(
             &validation_model,
-            &train[..train.len().min(TRAINING_PROBE_POSITIONS)],
+            &training_probe_records,
             options.batch_size,
             training_max_moves,
             device,
@@ -406,10 +484,23 @@ where
             device,
             loss_weights,
         )?;
+        let selection_loss = metrics.strategic_selection_loss();
+        if !selection_loss.is_finite() {
+            return Err(format!(
+                "validation produced a non-finite checkpoint selection loss at epoch {}",
+                epoch + 1
+            ));
+        }
+        let is_best = selection_loss < best_selection_loss;
+        if is_best {
+            best_selection_loss = selection_loss;
+            best_epoch = Some(epoch + 1);
+            save_compact_checkpoint(&validation_model, &options.output_prefix)?;
+        }
         drop(validation_model);
         maintain_gpu::<B>(device, "after validation")?;
         println!(
-            "epoch={}/{} lr={:.8} train_probe_loss={:.6} validation_loss={:.6} policy_ce={:.6} policy_kl={:.6} policy_gain_vs_uniform={:.6} policy_top1={:.4} wdl_accuracy={:.4} wdl_majority={:.4} wdl_balanced={:.4} plan_ce={:.6} plan_kl={:.6} plan_gain_vs_prior={:.6} plan_accuracy={:.4} plan_macro_recall={:.4}",
+            "epoch={}/{} lr={:.8} train_probe_loss={:.6} validation_loss={:.6} selection_loss={:.6} best={} policy_ce={:.6} policy_kl={:.6} policy_gain_vs_uniform={:.6} policy_top1={:.4} policy_top3={:.4} policy_top8={:.4} policy_mass_top8={:.4} policy_regret_cp_top1={:.1} policy_regret_cp_top8={:.1} wdl_ce={:.6} wdl_accuracy={:.4} wdl_majority={:.4} wdl_balanced={:.4} plan_ce={:.6} plan_kl={:.6} plan_gain_vs_prior={:.6} plan_top1={:.4} plan_top2={:.4} plan_top3={:.4} plan_macro_recall={:.4} score_mse={:.6} risk_mse={:.6}",
             epoch + 1,
             completed_epochs + options.epochs,
             scheduled_learning_rate(
@@ -421,10 +512,18 @@ where
             ),
             training_probe.loss,
             metrics.loss,
+            selection_loss,
+            is_best,
             metrics.policy_cross_entropy,
             metrics.policy_cross_entropy - metrics.policy_target_entropy,
             metrics.policy_uniform_cross_entropy - metrics.policy_cross_entropy,
             metrics.policy_top1,
+            metrics.policy_top3,
+            metrics.policy_top8,
+            metrics.policy_target_mass_top8,
+            metrics.policy_regret_cp_top1,
+            metrics.policy_regret_cp_top8,
+            metrics.wdl_cross_entropy,
             metrics.wdl_accuracy,
             metrics.wdl_majority_accuracy,
             metrics.wdl_balanced_accuracy,
@@ -432,20 +531,59 @@ where
             metrics.plan_cross_entropy - metrics.plan_target_entropy,
             metrics.plan_prior_cross_entropy - metrics.plan_cross_entropy,
             metrics.plan_accuracy,
+            metrics.plan_top2,
+            metrics.plan_top3,
             metrics.plan_macro_recall,
+            metrics.score_mean_squared_error,
+            metrics.tactical_risk_mean_squared_error,
         );
         maintain_gpu::<B>(device, "before training checkpoint")?;
-        save_training_checkpoint(&model, &optimizer, options, epoch + 1, optimizer_steps)?;
+        save_training_checkpoint(
+            &model,
+            &optimizer,
+            options,
+            epoch + 1,
+            optimizer_steps,
+            best_epoch,
+            best_selection_loss,
+        )?;
+        training_manifest(
+            options,
+            TrainingResult {
+                trained_epochs: epoch + 1,
+                best_epoch: best_epoch.expect("the current run has selected a checkpoint"),
+                best_selection_loss,
+            },
+            train.len(),
+            validation.len(),
+        )
+        .save(&options.output_prefix)?;
     }
-    if let Some(parent) = options.output_prefix.parent() {
+    Ok(TrainingResult {
+        trained_epochs: completed_epochs + options.epochs,
+        best_epoch: best_epoch.expect("positive epoch count always selects a checkpoint"),
+        best_selection_loss,
+    })
+}
+
+fn save_compact_checkpoint<B: Backend, M: Module<B>>(
+    model: &M,
+    prefix: &Path,
+) -> Result<(), String> {
+    if let Some(parent) = prefix.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("cannot create checkpoint directory: {error}"))?;
     }
+    let temporary = suffixed_prefix(prefix, "-best-next");
     model
-        .valid()
-        .save_file(&options.output_prefix, &CompactRecorder::new())
-        .map_err(|error| format!("cannot save Burn checkpoint: {error}"))?;
-    Ok(completed_epochs + options.epochs)
+        .clone()
+        .save_file(&temporary, &CompactRecorder::new())
+        .map_err(|error| format!("cannot save best compact checkpoint: {error}"))?;
+    fs::rename(
+        temporary.with_extension("mpk"),
+        prefix.with_extension("mpk"),
+    )
+    .map_err(|error| format!("cannot publish best compact checkpoint: {error}"))
 }
 
 fn save_training_checkpoint<B, M, O>(
@@ -454,6 +592,8 @@ fn save_training_checkpoint<B, M, O>(
     options: &TrainingOptions,
     completed_epochs: usize,
     optimizer_steps: usize,
+    best_epoch: Option<usize>,
+    best_selection_loss: f32,
 ) -> Result<(), String>
 where
     B: AutodiffBackend,
@@ -500,6 +640,8 @@ where
         completed_epochs,
         optimizer_steps,
         checkpoint_slot,
+        best_epoch,
+        best_selection_loss: best_epoch.map(|_| best_selection_loss),
     };
     let state_final = training_state_path(&options.output_prefix);
     let state_temporary = state_final.with_extension("json.part");
@@ -596,13 +738,14 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
     let mut plan_total_by_kind = [0.0_f32; PlanKind::COUNT];
     let mut wdl_correct_by_outcome = [0.0_f32; 3];
     let mut wdl_total_by_outcome = [0.0_f32; 3];
+    let mut policy_regret_sums = [0.0_f32; 3];
+    let plan_prior = empirical_plan_prior(records);
     for (batch_index, records) in records.chunks(batch_size.max(1)).enumerate() {
         let batch = make_batch_padded(records, max_moves, device)?;
         let output = model.predict(batch.network_input());
-        let loss = training_loss_with_weights(output.clone(), &batch, loss_weights);
+        let components = loss_components(output.clone(), &batch);
+        let loss = components.weighted_total(loss_weights);
         let policy_logits = masked_logits(output.policy_logits, batch.move_mask.clone());
-        let policy_cross_entropy =
-            cross_entropy_with_logits(policy_logits.clone(), batch.policy_target.clone());
         let policy_target_entropy = -(batch.policy_target.clone()
             * batch.policy_target.clone().clamp_min(1.0e-12).log())
         .sum()
@@ -614,35 +757,77 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
             .clamp_min(1.0)
             .log()
             .mean();
-        let plan_cross_entropy =
-            cross_entropy_with_logits(output.plan_logits.clone(), batch.plan_target.clone());
+        let plan_logits = masked_logits(output.plan_logits, batch.plan_mask.clone());
         let plan_target_entropy =
             -(batch.plan_target.clone() * batch.plan_target.clone().clamp_min(1.0e-12).log()).sum()
                 / records.len() as f64;
-        let policy_correct = policy_logits
-            .argmax(1)
-            .equal(batch.policy_target.clone().argmax(1))
-            .float()
-            .sum();
+        let prior_logits = Tensor::<B, 2>::from_data(
+            TensorData::new(plan_prior.to_vec(), [1, PlanKind::COUNT]),
+            device,
+        )
+        .repeat_dim(0, records.len())
+        .clamp_min(1.0e-12)
+        .log();
+        let plan_prior_cross_entropy = cross_entropy_with_logits(
+            masked_logits(prior_logits, batch.plan_mask.clone()),
+            batch.plan_target.clone(),
+        );
+
+        let target_policy = batch.policy_target.clone().argmax(1);
+        let best_teacher_score = (batch.teacher_score.clone()
+            + (batch.teacher_score_mask.clone() - 1.0) * 1.0e9)
+            .max_dim(1);
+        let mut policy_metrics = Vec::with_capacity(3);
+        for k in [1_usize, 3, 8] {
+            let (_, indices) = policy_logits.clone().topk_with_indices(k.min(max_moves), 1);
+            let hits = topk_hits(indices.clone(), target_policy.clone());
+            let target_mass = batch.policy_target.clone().gather(1, indices.clone()).sum();
+            let selected_score_mask = batch.teacher_score_mask.clone().gather(1, indices.clone());
+            let selected_score = (batch.teacher_score.clone().gather(1, indices)
+                + (selected_score_mask - 1.0) * 1.0e9)
+                .max_dim(1);
+            // Mate-scale engine scores would otherwise dominate an average
+            // expressed in centipawns. Two thousand cp is already a decisive
+            // practical miss and keeps the statistic interpretable.
+            let regret_sum = (best_teacher_score.clone() - selected_score)
+                .clamp(0.0, 2_000.0)
+                .sum();
+            policy_metrics.push((hits, target_mass, regret_sum));
+        }
+
         let predicted_wdl = output.wdl_logits.argmax(1);
         let target_wdl = batch.wdl_target.clone().argmax(1);
         let wdl_correct_mask = predicted_wdl.equal(target_wdl.clone()).float();
         let wdl_correct = wdl_correct_mask.clone().sum();
-        let predicted_plan = output.plan_logits.clone().argmax(1);
         let target_plan = batch.plan_target.clone().argmax(1);
-        let plan_correct_mask = predicted_plan.clone().equal(target_plan.clone()).float();
-        let plan_correct = plan_correct_mask.clone().sum();
+        let mut plan_hits = Vec::with_capacity(3);
+        let mut plan_correct_mask = None;
+        for k in [1_usize, 2, 3] {
+            let (_, indices) = plan_logits.clone().topk_with_indices(k, 1);
+            let hit_mask = topk_hit_mask(indices, target_plan.clone());
+            if k == 1 {
+                plan_correct_mask = Some(hit_mask.clone());
+            }
+            plan_hits.push(hit_mask.sum());
+        }
+        let plan_correct_mask = plan_correct_mask.expect("top-1 plan metric is always present");
         let mut metric_tensors = vec![
             loss,
-            policy_cross_entropy,
+            components.policy,
+            components.wdl,
+            components.plan,
+            components.score,
+            components.tactical_risk,
             policy_target_entropy,
             policy_uniform_cross_entropy,
-            plan_cross_entropy,
             plan_target_entropy,
-            policy_correct,
-            wdl_correct,
-            plan_correct,
+            plan_prior_cross_entropy,
         ];
+        for (hits, target_mass, regret_sum) in policy_metrics {
+            metric_tensors.extend([hits, target_mass, regret_sum]);
+        }
+        metric_tensors.push(wdl_correct);
+        metric_tensors.extend(plan_hits);
         for kind in PlanKind::ALL {
             let target_mask = target_plan.clone().equal_elem(kind.index() as i64).float();
             metric_tensors.push((plan_correct_mask.clone() * target_mask.clone()).sum());
@@ -654,27 +839,57 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
             metric_tensors.push(target_mask.sum());
         }
         metric_tensors.push(batch.plan_target.clone().sum_dim(0).squeeze_dim::<1>(0));
-        metric_tensors.push(
-            softmax(output.plan_logits, 1)
-                .sum_dim(0)
-                .squeeze_dim::<1>(0),
-        );
+        metric_tensors.push(softmax(plan_logits, 1).sum_dim(0).squeeze_dim::<1>(0));
         // A single small transfer replaces separate transfers of full
         // prediction and target arrays for every validation batch.
         let values = Tensor::cat(metric_tensors, 0)
             .into_data()
             .to_vec::<f32>()
             .map_err(|error| format!("cannot read validation metrics: {error}"))?;
-        aggregate.loss += values[0] * records.len() as f32;
-        aggregate.policy_cross_entropy += values[1] * records.len() as f32;
-        aggregate.policy_target_entropy += values[2] * records.len() as f32;
-        aggregate.policy_uniform_cross_entropy += values[3] * records.len() as f32;
-        aggregate.plan_cross_entropy += values[4] * records.len() as f32;
-        aggregate.plan_target_entropy += values[5] * records.len() as f32;
-        aggregate.policy_top1 += values[6];
-        aggregate.wdl_accuracy += values[7];
-        aggregate.plan_accuracy += values[8];
-        let mut cursor = 9;
+        let sample_count = records.len() as f32;
+        let mut cursor = 0;
+        aggregate.loss += values[cursor] * sample_count;
+        cursor += 1;
+        aggregate.policy_cross_entropy += values[cursor] * sample_count;
+        cursor += 1;
+        aggregate.wdl_cross_entropy += values[cursor] * sample_count;
+        cursor += 1;
+        aggregate.plan_cross_entropy += values[cursor] * sample_count;
+        cursor += 1;
+        aggregate.score_mean_squared_error += values[cursor] * sample_count;
+        cursor += 1;
+        aggregate.tactical_risk_mean_squared_error += values[cursor] * sample_count;
+        cursor += 1;
+        aggregate.policy_target_entropy += values[cursor] * sample_count;
+        cursor += 1;
+        aggregate.policy_uniform_cross_entropy += values[cursor] * sample_count;
+        cursor += 1;
+        aggregate.plan_target_entropy += values[cursor] * sample_count;
+        cursor += 1;
+        aggregate.plan_prior_cross_entropy += values[cursor] * sample_count;
+        cursor += 1;
+        let policy_hits = [
+            &mut aggregate.policy_top1,
+            &mut aggregate.policy_top3,
+            &mut aggregate.policy_top8,
+        ];
+        let policy_masses = [
+            &mut aggregate.policy_target_mass_top1,
+            &mut aggregate.policy_target_mass_top3,
+            &mut aggregate.policy_target_mass_top8,
+        ];
+        for (index, (hits, mass)) in policy_hits.into_iter().zip(policy_masses).enumerate() {
+            *hits += values[cursor];
+            *mass += values[cursor + 1];
+            policy_regret_sums[index] += values[cursor + 2];
+            cursor += 3;
+        }
+        aggregate.wdl_accuracy += values[cursor];
+        cursor += 1;
+        aggregate.plan_accuracy += values[cursor];
+        aggregate.plan_top2 += values[cursor + 1];
+        aggregate.plan_top3 += values[cursor + 2];
+        cursor += 3;
         for kind in PlanKind::ALL {
             plan_correct_by_kind[kind.index()] += values[cursor];
             plan_total_by_kind[kind.index()] += values[cursor + 1];
@@ -701,13 +916,27 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
     let count = aggregate.samples.max(1) as f32;
     aggregate.loss /= count;
     aggregate.policy_cross_entropy /= count;
+    aggregate.wdl_cross_entropy /= count;
+    aggregate.score_mean_squared_error /= count;
+    aggregate.tactical_risk_mean_squared_error /= count;
     aggregate.policy_target_entropy /= count;
     aggregate.policy_uniform_cross_entropy /= count;
     aggregate.plan_cross_entropy /= count;
     aggregate.plan_target_entropy /= count;
+    aggregate.plan_prior_cross_entropy /= count;
     aggregate.policy_top1 /= count;
+    aggregate.policy_top3 /= count;
+    aggregate.policy_top8 /= count;
+    aggregate.policy_target_mass_top1 /= count;
+    aggregate.policy_target_mass_top3 /= count;
+    aggregate.policy_target_mass_top8 /= count;
+    aggregate.policy_regret_cp_top1 = policy_regret_sums[0] / count;
+    aggregate.policy_regret_cp_top3 = policy_regret_sums[1] / count;
+    aggregate.policy_regret_cp_top8 = policy_regret_sums[2] / count;
     aggregate.wdl_accuracy /= count;
     aggregate.plan_accuracy /= count;
+    aggregate.plan_top2 /= count;
+    aggregate.plan_top3 /= count;
     let mut represented_outcomes = 0_usize;
     for outcome in 0..3 {
         aggregate.wdl_target_fraction[outcome] = wdl_total_by_outcome[outcome] / count;
@@ -728,10 +957,6 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
     for kind in PlanKind::ALL {
         aggregate.plan_target_mass[kind.index()] /= count;
         aggregate.plan_predicted_mass[kind.index()] /= count;
-        let probability = aggregate.plan_target_mass[kind.index()];
-        if probability > 0.0 {
-            aggregate.plan_prior_cross_entropy -= probability * probability.ln();
-        }
         if plan_total_by_kind[kind.index()] > 0.0 {
             aggregate.plan_recall[kind.index()] =
                 plan_correct_by_kind[kind.index()] / plan_total_by_kind[kind.index()];
@@ -741,6 +966,36 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
     }
     aggregate.plan_macro_recall /= represented.max(1) as f32;
     Ok(aggregate)
+}
+
+fn empirical_plan_prior(records: &[DatasetRecord]) -> [f32; PlanKind::COUNT] {
+    let mut prior = [0.0_f32; PlanKind::COUNT];
+    for record in records {
+        for target in &record.plan_policy {
+            prior[target.kind.index()] += target.probability;
+        }
+    }
+    let total = prior.iter().sum::<f32>().max(f32::EPSILON);
+    for probability in &mut prior {
+        *probability = (*probability / total).max(1.0e-12);
+    }
+    prior
+}
+
+fn topk_hits<B: Backend>(indices: Tensor<B, 2, Int>, target: Tensor<B, 2, Int>) -> Tensor<B, 1> {
+    topk_hit_mask(indices, target).sum()
+}
+
+fn topk_hit_mask<B: Backend>(
+    indices: Tensor<B, 2, Int>,
+    target: Tensor<B, 2, Int>,
+) -> Tensor<B, 2> {
+    let k = indices.dims()[1];
+    indices
+        .equal(target.repeat_dim(1, k))
+        .float()
+        .sum_dim(1)
+        .clamp_max(1.0)
 }
 
 const GPU_MAINTENANCE_INTERVAL: usize = 64;
@@ -769,21 +1024,51 @@ pub fn training_loss_with_weights<B: Backend>(
     batch: &TrainingBatch<B>,
     weights: LossWeights,
 ) -> Tensor<B, 1> {
+    loss_components(output, batch).weighted_total(weights)
+}
+
+struct LossComponents<B: Backend> {
+    policy: Tensor<B, 1>,
+    wdl: Tensor<B, 1>,
+    plan: Tensor<B, 1>,
+    score: Tensor<B, 1>,
+    tactical_risk: Tensor<B, 1>,
+}
+
+impl<B: Backend> LossComponents<B> {
+    fn weighted_total(&self, weights: LossWeights) -> Tensor<B, 1> {
+        self.policy.clone() * weights.policy
+            + self.wdl.clone() * weights.wdl
+            + self.plan.clone() * weights.plan
+            + self.score.clone() * weights.score
+            + self.tactical_risk.clone() * weights.tactical_risk
+    }
+}
+
+fn loss_components<B: Backend>(
+    output: crate::model::NetworkOutput<B>,
+    batch: &TrainingBatch<B>,
+) -> LossComponents<B> {
     let policy = cross_entropy_with_logits(
         masked_logits(output.policy_logits, batch.move_mask.clone()),
         batch.policy_target.clone(),
     );
     let wdl = cross_entropy_with_logits(output.wdl_logits, batch.wdl_target.clone());
-    let plan = cross_entropy_with_logits(output.plan_logits, batch.plan_target.clone());
+    let plan = cross_entropy_with_logits(
+        masked_logits(output.plan_logits, batch.plan_mask.clone()),
+        batch.plan_target.clone(),
+    );
     let score = (output.score - batch.score_target.clone()).square().mean();
     let risk_prob = burn::tensor::activation::sigmoid(output.tactical_risk_logits);
     let risk_error = (risk_prob - batch.risk_target.clone()).square() * batch.move_mask.clone();
     let risk = risk_error.sum() / batch.move_mask.clone().sum().clamp_min(1.0);
-    policy * weights.policy
-        + wdl * weights.wdl
-        + plan * weights.plan
-        + score * weights.score
-        + risk * weights.tactical_risk
+    LossComponents {
+        policy,
+        wdl,
+        plan,
+        score,
+        tactical_risk: risk,
+    }
 }
 
 fn scheduled_learning_rate(
@@ -847,7 +1132,10 @@ fn make_batch_padded<B: Backend>(
     let mut move_from = vec![0_i64; batch * max_moves];
     let mut move_to = vec![0_i64; batch * max_moves];
     let mut move_masks = vec![0.0; batch * max_moves];
+    let mut teacher_scores = vec![0.0; batch * max_moves];
+    let mut teacher_score_masks = vec![0.0; batch * max_moves];
     let mut plan_inputs = vec![0.0; batch * PlanKind::COUNT];
+    let mut plan_masks = vec![0.0; batch * PlanKind::COUNT];
     let mut policy_targets = vec![0.0; batch * max_moves];
     let mut wdl_targets = Vec::with_capacity(batch * 3);
     let mut plan_targets = vec![0.0; batch * PlanKind::COUNT];
@@ -880,6 +1168,9 @@ fn make_batch_padded<B: Backend>(
             .map(|target| target.teacher_score)
             .max()
             .unwrap_or(record.teacher_score);
+        for target in &record.plan_policy {
+            plan_masks[sample * PlanKind::COUNT + target.kind.index()] = 1.0;
+        }
         for (move_index, (chess_move, encoded_move)) in
             legal.iter().zip(encoded.legal_moves).enumerate()
         {
@@ -890,6 +1181,8 @@ fn make_batch_padded<B: Backend>(
             move_masks[sample * max_moves + move_index] = 1.0;
             if let Some(target) = policy_by_move.get(chess_move.to_uci().as_str()) {
                 policy_targets[sample * max_moves + move_index] = target.probability;
+                teacher_scores[sample * max_moves + move_index] = target.teacher_score as f32;
+                teacher_score_masks[sample * max_moves + move_index] = 1.0;
                 risk_targets[sample * max_moves + move_index] =
                     f32::from(best_score - target.teacher_score > 180);
             } else {
@@ -925,8 +1218,20 @@ fn make_batch_padded<B: Backend>(
         move_from: Tensor::from_data(TensorData::new(move_from, [batch, max_moves]), device),
         move_to: Tensor::from_data(TensorData::new(move_to, [batch, max_moves]), device),
         move_mask: Tensor::from_data(TensorData::new(move_masks, [batch, max_moves]), device),
+        teacher_score: Tensor::from_data(
+            TensorData::new(teacher_scores, [batch, max_moves]),
+            device,
+        ),
+        teacher_score_mask: Tensor::from_data(
+            TensorData::new(teacher_score_masks, [batch, max_moves]),
+            device,
+        ),
         plan_input: Tensor::from_data(
             TensorData::new(plan_inputs, [batch, PlanKind::COUNT]),
+            device,
+        ),
+        plan_mask: Tensor::from_data(
+            TensorData::new(plan_masks, [batch, PlanKind::COUNT]),
             device,
         ),
         policy_target: Tensor::from_data(
@@ -1039,6 +1344,44 @@ mod tests {
     }
 
     #[test]
+    fn legacy_v3_manifest_without_selection_metadata_still_loads() {
+        let manifest: ModelManifest = serde_json::from_str(
+            r#"{
+                "format":"TERESSA_MODEL_V3",
+                "architecture":"bdh",
+                "width":192,
+                "layers_or_steps":4,
+                "sparse_per_head":48,
+                "heads":4,
+                "trained_epochs":8,
+                "training_positions":100,
+                "validation_positions":10
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(manifest.selected_epoch, None);
+        assert_eq!(manifest.validation_selection_loss, None);
+    }
+
+    #[test]
+    fn topk_hit_mask_matches_target_membership() {
+        let device = Default::default();
+        let indices = Tensor::<Flex, 2, Int>::from_data(
+            TensorData::new(vec![4_i64, 2, 1, 0, 3, 2], [2, 3]),
+            &device,
+        );
+        let targets =
+            Tensor::<Flex, 2, Int>::from_data(TensorData::new(vec![2_i64, 4], [2, 1]), &device);
+        assert_eq!(
+            topk_hit_mask(indices, targets)
+                .into_data()
+                .to_vec::<f32>()
+                .unwrap(),
+            vec![1.0, 0.0]
+        );
+    }
+
+    #[test]
     fn batches_pad_variable_move_lists_and_keep_targets_normalized() {
         let position = Variant::TerachessII.starting_position();
         let mut legal = position
@@ -1073,11 +1416,14 @@ mod tests {
             plan: generate_plan_candidates(&position).remove(0),
         };
         let device = Default::default();
-        let batch = make_batch::<Flex>(&[record.clone()], &device).unwrap();
+        let batch = make_batch::<Flex>(std::slice::from_ref(&record), &device).unwrap();
         assert_eq!(batch.board.dims(), [1, BOARD_TOKENS, BOARD_FEATURES]);
         let plan_target = batch.plan_target.to_data().to_vec::<f32>().unwrap();
+        let plan_mask = batch.plan_mask.to_data().to_vec::<f32>().unwrap();
         assert!((plan_target[PlanKind::DevelopPiece.index()] - 0.7).abs() < 1.0e-6);
         assert!((plan_target[PlanKind::KingSafety.index()] - 0.3).abs() < 1.0e-6);
+        assert_eq!(plan_mask[PlanKind::DevelopPiece.index()], 1.0);
+        assert_eq!(plan_mask[PlanKind::KingSafety.index()], 1.0);
         assert_eq!(
             batch
                 .policy_target

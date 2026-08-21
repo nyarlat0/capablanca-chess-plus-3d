@@ -70,9 +70,16 @@ fn run() -> Result<(), String> {
     );
     let manifest = train_vulkan(&options)?;
     println!(
-        "checkpoint={} architecture={:?} train_positions={} validation_positions={}",
+        "checkpoint={} architecture={:?} trained_epochs={} selected_epoch={} validation_selection_loss={} train_positions={} validation_positions={}",
         options.output_prefix.display(),
         manifest.architecture,
+        manifest.trained_epochs,
+        manifest
+            .selected_epoch
+            .map_or_else(|| "unknown".to_owned(), |value| value.to_string()),
+        manifest
+            .validation_selection_loss
+            .map_or_else(|| "unknown".to_owned(), |value| format!("{value:.6}")),
         manifest.training_positions,
         manifest.validation_positions
     );

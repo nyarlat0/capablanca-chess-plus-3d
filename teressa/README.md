@@ -71,6 +71,11 @@ The encoded move history was never passed to either trunk. V3 instead:
 - trains the soft plan head at full weight and uses linear warmup followed by
   cosine learning-rate decay.
 
+Plan loss and plan evaluation use the same symbolic candidate mask as play.
+Unavailable plan kinds are excluded from the softmax. During native play the
+reported plan confidence is likewise renormalized over the currently
+applicable kinds instead of being diluted by impossible ideas.
+
 The policy is conditioned on the selected persistent plan, while plan, WDL,
 and scalar value are predicted from the position itself. This avoids allowing
 the chosen plan to leak into the target that chooses that plan.
@@ -232,7 +237,7 @@ reduce only `--batch-size` to 192 or 128 first:
 ```sh
 ./target/release/teressa-train \
   --input target/teressa-data-v2 \
-  --output target/teressa/bdh-context-v3 \
+  --output target/teressa/bdh-context-v3-masked \
   --architecture bdh \
   --epochs 8 --batch-size 256 --learning-rate 0.0006 \
   --warmup-fraction 0.05 --minimum-lr-ratio 0.10 \
@@ -242,14 +247,19 @@ reduce only `--batch-size` to 192 or 128 first:
 ```
 
 At every completed epoch the trainer atomically publishes an alternating-slot
-full-precision model/AdamW checkpoint. If training is interrupted, continue
+full-precision model/AdamW checkpoint. It separately publishes `<output>.mpk`
+only when validation improves. The selection loss is
+`policy_KL + candidate-masked plan_KL + 0.25 * WDL_CE`: policy and strategy are
+primary, WDL remains relevant to the expressive-plan safety gate, and noisy
+score/risk auxiliaries cannot replace a better playing model. The manifest
+records the selected epoch and loss. If training is interrupted, continue
 the same output prefix and exact architecture/split seed; `--epochs` means the
 number of **additional** epochs in this invocation:
 
 ```sh
 ./target/release/teressa-train \
   --input target/teressa-data-v2 \
-  --output target/teressa/bdh-context-v3 \
+  --output target/teressa/bdh-context-v3-masked \
   --architecture bdh \
   --epochs 4 --batch-size 256 --learning-rate 0.0003 \
   --warmup-fraction 0.03 --minimum-lr-ratio 0.10 \
@@ -260,44 +270,34 @@ number of **additional** epochs in this invocation:
 ```
 
 The additional segment gets its own warmup/cosine schedule but retains the
-model and AdamW moments. Lowering the peak learning rate for a continuation is
-intentional. The compact play checkpoint is `<output>.mpk`; resumable files
+latest model and AdamW moments as well as the best model seen across both
+segments. Lowering the peak learning rate for a continuation is intentional.
+The selected compact play checkpoint is `<output>.mpk`; resumable files
 use `<output>-training-{0,1}.mpk`, `<output>-optimizer-{0,1}.bin`, and a small
 state JSON published last.
-
-Train the residual control with the same input, split seed, update count, and
-batch:
-
-```sh
-./target/release/teressa-train \
-  --input target/teressa-data-v2 \
-  --output target/teressa/residual-context-v3 \
-  --architecture residual \
-  --epochs 8 --batch-size 256 --learning-rate 0.0006 \
-  --warmup-fraction 0.05 --minimum-lr-ratio 0.10 \
-  --plan-loss-weight 1.0 \
-  --width 192 --steps 4 \
-  --seed 0x5445524553534132
-```
 
 Check untouched test positions:
 
 ```sh
 ./target/release/teressa-eval \
-  --model target/teressa/bdh-context-v3 \
+  --model target/teressa/bdh-context-v3-masked \
   --input target/teressa-data-v2 --batch-size 256 \
   --seed 0x5445524553534132
 ```
 
 The report now compares every head against a useful trivial baseline. Policy
-reports gain over a uniform legal-move distribution and the fraction of the
-available target-information gap it explains. WDL reports ordinary accuracy,
+reports gain over a uniform legal-move distribution, explained fraction,
+top-1/3/8 teacher-best inclusion, captured teacher probability mass, and
+top-1/3/8 teacher-score regret. Regret is clipped at 2,000 centipawns so mate
+scores cannot dominate the mean. WDL reports CE, ordinary accuracy,
 majority-class accuracy, balanced accuracy, and per-outcome recall. Plans
-report soft-target CE/KL, gain over the corpus plan prior, explained fraction,
-target probability mass, predicted probability mass, and hard argmax recall
-per kind. `plan_accuracy` alone is not an acceptance metric: on the old pilot
-it hid the collapse into `ImprovePiece`. These remain smoke metrics, not proof
-of human-like strategy. A research candidate should
+report candidate-masked soft-target CE/KL, gain over an empirical prior
+renormalized over applicable kinds, explained fraction, top-1/2/3 inclusion,
+target/predicted mass, and candidate-masked argmax recall per kind. Score and
+tactical-risk MSE are printed separately, making a rise in combined loss
+diagnosable. `plan_accuracy` alone is not an acceptance metric: on the old
+pilot it hid the collapse into `ImprovePiece`. These remain smoke metrics, not
+proof of human-like strategy. A research candidate should
 additionally be accepted only after fixed-sample, color-swapped matches report:
 
 - score and confidence interval versus both residual and TeraStockfish;
@@ -308,6 +308,24 @@ additionally be accepted only after fixed-sample, color-swapped matches report:
 
 Do not select checkpoints on the final test partition. Use validation while
 developing, freeze the candidate, and consume the test set once.
+
+The new evaluator can also reassess the older `bdh-context-v3` checkpoint; its
+manifest will simply print unknown selection metadata. For a fair trunk
+comparison, however, train a fresh residual output against the fresh masked
+BDH command above. Do not compare a newly candidate-masked residual loss with
+the older unmasked run. Keep every other option identical:
+
+```sh
+./target/release/teressa-train \
+  --input target/teressa-data-v2 \
+  --output target/teressa/residual-context-v3-masked \
+  --architecture residual \
+  --epochs 8 --batch-size 256 --learning-rate 0.0006 \
+  --warmup-fraction 0.05 --minimum-lr-ratio 0.10 \
+  --plan-loss-weight 1.0 \
+  --width 192 --steps 4 \
+  --seed 0x5445524553534132
+```
 
 ## UCI
 

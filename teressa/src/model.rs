@@ -325,6 +325,7 @@ impl<B: Backend> OutputHeads<B> {
         self.plan.forward(gelu(self.plan_hidden.forward(global)))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn forward(
         &self,
         hidden: Tensor<B, 3>,

@@ -84,8 +84,15 @@ fn run() -> Result<(), String> {
     let plan_available = metrics.plan_prior_cross_entropy - metrics.plan_target_entropy;
     let plan_gain = metrics.plan_prior_cross_entropy - metrics.plan_cross_entropy;
     println!(
-        "holdout_positions={} loss={:.6} policy_ce={:.6} policy_entropy={:.6} policy_kl={:.6} policy_uniform_ce={:.6} policy_gain_vs_uniform={:.6} policy_explained_fraction={:.4} policy_top1={:.4} wdl_accuracy={:.4} wdl_majority={:.4} wdl_balanced={:.4} plan_ce={:.6} plan_entropy={:.6} plan_kl={:.6} plan_prior_ce={:.6} plan_gain_vs_prior={:.6} plan_explained_fraction={:.4} plan_accuracy={:.4} plan_macro_recall={:.4}",
+        "holdout_positions={} selected_epoch={} validation_selection_loss={} holdout_selection_loss={:.6} loss={:.6} policy_ce={:.6} policy_entropy={:.6} policy_kl={:.6} policy_uniform_ce={:.6} policy_gain_vs_uniform={:.6} policy_explained_fraction={:.4} policy_top1={:.4} policy_top3={:.4} policy_top8={:.4} policy_mass_top1={:.4} policy_mass_top3={:.4} policy_mass_top8={:.4} policy_regret_cp_top1={:.1} policy_regret_cp_top3={:.1} policy_regret_cp_top8={:.1} wdl_ce={:.6} wdl_accuracy={:.4} wdl_majority={:.4} wdl_balanced={:.4} plan_ce={:.6} plan_entropy={:.6} plan_kl={:.6} plan_prior_ce={:.6} plan_gain_vs_prior={:.6} plan_explained_fraction={:.4} plan_top1={:.4} plan_top2={:.4} plan_top3={:.4} plan_macro_recall={:.4} score_mse={:.6} risk_mse={:.6}",
         metrics.samples,
+        manifest
+            .selected_epoch
+            .map_or_else(|| "unknown".to_owned(), |value| value.to_string()),
+        manifest
+            .validation_selection_loss
+            .map_or_else(|| "unknown".to_owned(), |value| format!("{value:.6}")),
+        metrics.strategic_selection_loss(),
         metrics.loss,
         metrics.policy_cross_entropy,
         metrics.policy_target_entropy,
@@ -94,6 +101,15 @@ fn run() -> Result<(), String> {
         policy_gain,
         safe_fraction(policy_gain, policy_available),
         metrics.policy_top1,
+        metrics.policy_top3,
+        metrics.policy_top8,
+        metrics.policy_target_mass_top1,
+        metrics.policy_target_mass_top3,
+        metrics.policy_target_mass_top8,
+        metrics.policy_regret_cp_top1,
+        metrics.policy_regret_cp_top3,
+        metrics.policy_regret_cp_top8,
+        metrics.wdl_cross_entropy,
         metrics.wdl_accuracy,
         metrics.wdl_majority_accuracy,
         metrics.wdl_balanced_accuracy,
@@ -104,7 +120,11 @@ fn run() -> Result<(), String> {
         plan_gain,
         safe_fraction(plan_gain, plan_available),
         metrics.plan_accuracy,
+        metrics.plan_top2,
+        metrics.plan_top3,
         metrics.plan_macro_recall,
+        metrics.score_mean_squared_error,
+        metrics.tactical_risk_mean_squared_error,
     );
     println!("wdl,target_fraction,recall");
     for (index, outcome) in ["win", "draw", "loss"].into_iter().enumerate() {
@@ -113,7 +133,7 @@ fn run() -> Result<(), String> {
             metrics.wdl_target_fraction[index], metrics.wdl_recall[index]
         );
     }
-    println!("plan,target_mass,predicted_mass,argmax_recall");
+    println!("plan,target_mass,predicted_mass,candidate_masked_argmax_recall");
     for kind in teressa::PlanKind::ALL {
         println!(
             "{:?},{:.6},{:.6},{:.6}",

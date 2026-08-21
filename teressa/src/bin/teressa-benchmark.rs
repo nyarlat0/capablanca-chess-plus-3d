@@ -408,8 +408,20 @@ fn synthetic_training_batch<B: Backend>(
             TensorData::new(vec![1.0; batch * moves], [batch, moves]),
             device,
         ),
+        teacher_score: Tensor::from_data(
+            TensorData::new(vec![0.0; batch * moves], [batch, moves]),
+            device,
+        ),
+        teacher_score_mask: Tensor::from_data(
+            TensorData::new(vec![1.0; batch * moves], [batch, moves]),
+            device,
+        ),
         plan_input: Tensor::from_data(
             TensorData::new(plan_input, [batch, PlanKind::COUNT]),
+            device,
+        ),
+        plan_mask: Tensor::from_data(
+            TensorData::new(vec![1.0; batch * PlanKind::COUNT], [batch, PlanKind::COUNT]),
             device,
         ),
         policy_target: Tensor::from_data(TensorData::new(policy_target, [batch, moves]), device),
