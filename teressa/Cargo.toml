@@ -38,3 +38,7 @@ path = "src/bin/teressa-train.rs"
 [[bin]]
 name = "teressa-eval"
 path = "src/bin/teressa-eval.rs"
+
+[[bin]]
+name = "teressa-arena"
+path = "src/bin/teressa-arena.rs"

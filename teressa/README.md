@@ -327,6 +327,66 @@ the older unmasked run. Keep every other option identical:
   --seed 0x5445524553534132
 ```
 
+## Fixed-sample playing-strength arena
+
+Offline metrics do not establish that a model improves actual play. Build the
+arena once and run three color-swapped comparisons using the same opening seed
+and the same node budget. `stockfish` means pure production TeraStockfish; any
+other player value is a Teressa checkpoint prefix:
+
+```sh
+cargo build --release -p teressa --bin teressa-arena
+```
+
+First run a 24-pair pilot for the old model against the selected masked model:
+
+```sh
+./target/release/teressa-arena \
+  --preset quick --jobs 2 --search-threads 6 --hash 32 \
+  --baseline target/teressa/bdh-context-v3 \
+  --candidate target/teressa/bdh-context-v3-masked \
+  --output target/teressa-arena-old-vs-masked.jsonl
+```
+
+Then compare both neural agents against pure TeraStockfish. Keep the candidate
+on the neural side so all scores and confidence intervals have the same
+interpretation:
+
+```sh
+./target/release/teressa-arena \
+  --preset quick --jobs 2 --search-threads 6 --hash 32 \
+  --baseline stockfish \
+  --candidate target/teressa/bdh-context-v3 \
+  --output target/teressa-arena-stockfish-vs-old.jsonl
+```
+
+```sh
+./target/release/teressa-arena \
+  --preset quick --jobs 2 --search-threads 6 --hash 32 \
+  --baseline stockfish \
+  --candidate target/teressa/bdh-context-v3-masked \
+  --output target/teressa-arena-stockfish-vs-masked.jsonl
+```
+
+If the pilots are healthy, replace `quick` with `overnight` for 96 pairs per
+comparison. A stopped run is resumed by repeating its command with `--resume`;
+the JSONL file is atomically replaced only after a complete color-swapped pair.
+The number of arena jobs may be changed on resume, but all chess/search
+parameters must continue to match the file header. Each job loads its own model
+weights while all jobs share one Vulkan runtime. Two jobs with six search
+threads each are nevertheless a conservative way to use a 12-core machine
+without excessive simultaneous GPU inference and search memory.
+
+The final report includes paired 95% confidence intervals, termination counts,
+actual search nodes, neural safety-veto rate, tactical loss and blunder rate,
+plan duration, completion, replacement, invalidation, horizon expiry,
+two-veto cancellation, and plan-kind usage. A `blunder` is specifically a
+selected move whose safety-search score is at least `--blunder-threshold`
+centipawns below TeraStockfish's best root move; it is not a claim about human
+annotation. Progress lines are provisional. Accept or reject a model only from
+the final paired result, and inspect the plan telemetry even if playing score is
+statistically inconclusive.
+
 ## UCI
 
 The default binary is a native UCI engine:

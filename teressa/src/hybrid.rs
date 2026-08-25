@@ -69,9 +69,41 @@ pub struct HybridDecision {
     pub wdl: [f32; 3],
     pub safety_vetoed_policy_best: bool,
     pub safety_score: i32,
+    pub tactical_best_score: i32,
+    pub safety_nodes: u64,
     pub tactical_best: Move,
+    pub plan_transition: PlanTransition,
+    pub plan_cancelled_by_safety: bool,
+    pub cancelled_plan_duration: Option<u8>,
     pub explanation_ru: String,
     pub explanation_en: String,
+}
+
+/// What happened to the persistent plan when this move was selected.
+///
+/// Durations count the agent's own moves spent on the previous plan. They are
+/// exposed primarily for reproducible arena studies rather than move choice.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlanTransition {
+    Started,
+    Continued,
+    Completed { duration: u8 },
+    HorizonExpired { duration: u8 },
+    BecameInapplicable { duration: u8 },
+    Superseded { duration: u8 },
+}
+
+impl PlanTransition {
+    #[must_use]
+    pub const fn ended_duration(self) -> Option<u8> {
+        match self {
+            Self::Completed { duration }
+            | Self::HorizonExpired { duration }
+            | Self::BecameInapplicable { duration }
+            | Self::Superseded { duration } => Some(duration),
+            Self::Started | Self::Continued => None,
+        }
+    }
 }
 
 pub struct HybridAgent<A> {
@@ -154,6 +186,7 @@ impl<A: NeuralAdvisor> HybridAgent<A> {
                 "neural planner selected a plan outside the applicable candidate set".to_owned(),
             );
         }
+        let plan_transition = plan_transition(&self.plan_state, position, &proposed);
         let plan = self.plan_state.choose(position, proposed).clone();
         let mut advice = self.advisor.evaluate(position, &plan)?;
         validate_advice(&advice, &legal)?;
@@ -201,12 +234,15 @@ impl<A: NeuralAdvisor> HybridAgent<A> {
             })
             .map_or(tactical_best, |candidate| candidate.chess_move);
         let veto = chosen != policy_best;
+        self.plan_state.record_chosen_move(chosen);
+        let current_plan_duration = self.plan_state.own_moves_elapsed;
         if veto {
             self.plan_state.record_safety_veto();
         } else {
             self.plan_state.record_safe_choice();
         }
-        self.plan_state.record_chosen_move(chosen);
+        let plan_cancelled_by_safety = veto && self.plan_state.current.is_none();
+        let cancelled_plan_duration = plan_cancelled_by_safety.then_some(current_plan_duration);
         let safety_score = analysis
             .root_candidates
             .iter()
@@ -220,9 +256,45 @@ impl<A: NeuralAdvisor> HybridAgent<A> {
             wdl: advice.wdl,
             safety_vetoed_policy_best: veto,
             safety_score,
+            tactical_best_score: best_score,
+            safety_nodes: analysis.nodes,
             tactical_best,
+            plan_transition,
+            plan_cancelled_by_safety,
+            cancelled_plan_duration,
         })
     }
+}
+
+fn plan_transition(
+    state: &PlanState,
+    position: &Position,
+    proposed: &StrategicPlan,
+) -> PlanTransition {
+    let Some(current) = state.current.as_ref() else {
+        return PlanTransition::Started;
+    };
+    if !current.applicable(position) {
+        return PlanTransition::BecameInapplicable {
+            duration: state.own_moves_elapsed,
+        };
+    }
+    if state.own_moves_elapsed >= current.horizon {
+        return PlanTransition::HorizonExpired {
+            duration: state.own_moves_elapsed,
+        };
+    }
+    if current.measured_progress(position) >= 0.85 {
+        return PlanTransition::Completed {
+            duration: state.own_moves_elapsed,
+        };
+    }
+    if proposed.confidence >= current.confidence + 0.15 {
+        return PlanTransition::Superseded {
+            duration: state.own_moves_elapsed,
+        };
+    }
+    PlanTransition::Continued
 }
 
 fn same_plan(left: &StrategicPlan, right: &StrategicPlan) -> bool {

@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod advisor;
+pub mod arena;
 pub mod dataset;
 pub mod encode;
 pub mod generate;
@@ -20,13 +21,18 @@ pub mod training;
 pub mod uci;
 
 pub use advisor::VulkanAdvisor;
+pub use arena::{
+    ArenaConfig, ArenaGame, ArenaPairRunner, ArenaPlayerSpec, ArenaResult, ArenaTelemetry,
+    ArenaTermination,
+};
 pub use dataset::{
     DatasetRecord, DatasetShardReader, DatasetShardWriter, PlanPolicyTarget, PolicyTarget,
 };
 pub use encode::{EncodedMove, EncodedPosition, encode_position, encode_position_uci_history};
 pub use generate::{GenerationOptions, GenerationSummary, generate_dataset};
 pub use hybrid::{
-    HybridAgent, HybridDecision, HybridOptions, NeuralAdvice, NeuralAdvisor, PolicyCandidate,
+    HybridAgent, HybridDecision, HybridOptions, NeuralAdvice, NeuralAdvisor, PlanTransition,
+    PolicyCandidate,
 };
 pub use model::{
     BdhConfig, BdhNetwork, NetworkInput, NetworkOutput, ResidualConfig, ResidualNetwork,

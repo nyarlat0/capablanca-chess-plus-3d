@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Once;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -261,19 +262,22 @@ impl<B: Backend> TrainingBatch<B> {
 }
 
 pub fn initialize_vulkan() -> burn::backend::wgpu::WgpuDevice {
+    static INITIALIZE: Once = Once::new();
     let device = burn::backend::wgpu::WgpuDevice::DiscreteGpu(0);
     // Training continuously creates upload and intermediate buffers. Exclusive
     // pages make the explicit cleanup below predictable, while a shorter task
     // queue limits how many submitted batches can retain buffers at once. The
     // main first-epoch VRAM spike was validation accidentally using autodiff;
     // these settings provide an additional bound instead of hiding that bug.
-    burn::backend::wgpu::init_setup::<burn::backend::wgpu::graphics::Vulkan>(
-        &device,
-        burn::backend::wgpu::RuntimeOptions {
-            tasks_max: 8,
-            memory_config: burn::backend::wgpu::MemoryConfiguration::ExclusivePages,
-        },
-    );
+    INITIALIZE.call_once(|| {
+        burn::backend::wgpu::init_setup::<burn::backend::wgpu::graphics::Vulkan>(
+            &device,
+            burn::backend::wgpu::RuntimeOptions {
+                tasks_max: 8,
+                memory_config: burn::backend::wgpu::MemoryConfiguration::ExclusivePages,
+            },
+        );
+    });
     device
 }
 
