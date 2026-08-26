@@ -30,6 +30,11 @@ pub struct DatasetRecord {
     pub policy: Vec<PolicyTarget>,
     /// Win/draw/loss target from the side-to-move's point of view.
     pub wdl: [f32; 3],
+    /// False when the storage ply cap, rather than a chess rule, ended the
+    /// generated game. Policy and plan labels remain useful, but WDL must not
+    /// learn a fabricated draw from that position.
+    #[serde(default = "known_outcome")]
+    pub outcome_known: bool,
     pub teacher_score: i32,
     /// Soft trajectory-derived distribution over applicable strategic ideas.
     /// Empty only while reading a legacy V1 shard before offline relabeling.
@@ -37,6 +42,10 @@ pub struct DatasetRecord {
     pub plan_policy: Vec<PlanPolicyTarget>,
     /// Concrete persistent plan used to condition the move-policy head.
     pub plan: StrategicPlan,
+}
+
+const fn known_outcome() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -317,6 +326,7 @@ mod tests {
             }],
             legal_moves,
             wdl: [0.0, 1.0, 0.0],
+            outcome_known: true,
             teacher_score: 0,
             plan_policy: vec![PlanPolicyTarget {
                 kind: PlanKind::DevelopPiece,
@@ -353,12 +363,17 @@ mod tests {
             }],
             legal_moves,
             wdl: [0.0, 1.0, 0.0],
+            outcome_known: true,
             teacher_score: 0,
             plan_policy: Vec::new(),
             plan: generate_plan_candidates(&position).remove(0),
         };
         let mut legacy_record = serde_json::to_value(record).unwrap();
         legacy_record.as_object_mut().unwrap().remove("plan_policy");
+        legacy_record
+            .as_object_mut()
+            .unwrap()
+            .remove("outcome_known");
         let contents = format!(
             "{}\n{}\n",
             serde_json::json!({ "format": LEGACY_DATASET_FORMAT_VERSION }),
@@ -372,5 +387,6 @@ mod tests {
         let decoded = reader.collect::<Vec<_>>();
         assert_eq!(decoded.len(), 1);
         assert!(decoded[0].plan_policy.is_empty());
+        assert!(decoded[0].outcome_known);
     }
 }

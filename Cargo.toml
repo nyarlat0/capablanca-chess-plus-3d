@@ -20,6 +20,15 @@ strip = true
 lto = false
 panic = "abort"
 
+# Long-running native engine research favors runtime throughput. Keeping this
+# separate avoids imposing its slower LTO link on normal development/release
+# builds and leaves the size-oriented WebAssembly profile unchanged.
+[profile.research]
+inherits = "release"
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
 # Browser releases trade a slower one-off link on the workstation for a much
 # smaller module and less code for the browser to compile on every page load.
 # Native development and release builds keep their faster existing profile.

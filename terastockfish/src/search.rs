@@ -206,6 +206,16 @@ impl Searcher {
         self.table.clear();
     }
 
+    /// Clears all state whose contents can influence move ordering in a new
+    /// independent game. Dataset generation uses this instead of only
+    /// clearing the transposition table so a game's fixed-node result cannot
+    /// depend on which worker searched the preceding game.
+    pub fn reset_for_new_game(&mut self) {
+        self.table.clear();
+        self.history.fill(0);
+        self.control.reset();
+    }
+
     pub fn resize_hash(&mut self, megabytes: usize) {
         self.options.hash_megabytes = megabytes.max(1);
         self.table = Arc::new(TranspositionTable::new(self.options.hash_megabytes));
@@ -1526,5 +1536,18 @@ mod tests {
                 assert_eq!(run(threads), expected, "Threads={threads}");
             }
         }
+    }
+
+    #[test]
+    fn resetting_for_a_new_game_clears_move_ordering_state() {
+        let mut searcher = Searcher::new(SearchOptions {
+            hash_megabytes: 1,
+            threads: 1,
+        });
+        searcher.history[17] = 42;
+        searcher.control.stop();
+        searcher.reset_for_new_game();
+        assert!(searcher.history.iter().all(|entry| *entry == 0));
+        assert!(!searcher.control.is_stopped());
     }
 }

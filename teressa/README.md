@@ -109,9 +109,25 @@ persistent plan used to condition move prediction.
 Shards are first written as hidden `.part` files, flushed and synced, then
 renamed atomically. Restarting the same command reuses completed shards and
 recomputes only incomplete ones. `games-per-shard` is therefore the unit of
-lost work after interruption. Seeds, node limits, and per-worker one-threaded
-teacher searches make the generated sample reproducible independently of OS
-scheduling.
+lost work after interruption. A `generation-manifest.json` records every
+parameter that changes the samples. A restart refuses to mix shards made with
+another seed, node limit, hash size, opening policy, or generator revision.
+The job count and wall-clock limit may be changed between restarts. Game seeds
+and IDs depend only on the master seed and global game index, not on which
+worker happened to claim a shard, so changing `--jobs` cannot silently change
+the corpus.
+
+Node budgets use the same strict single-threaded search mode as the native and
+WebAssembly Bevy AI. `--nodes 10000` stops at no more than 10,000 visited
+nodes and returns the last fully completed iterative-deepening pass; it does
+not finish a deeper pass beyond the budget. Between independent games the
+transposition table and move-ordering history are both reset.
+
+`--max-plies` is only a storage safeguard. Reaching it is not a chess draw.
+Those positions retain their teacher policy, scores, and trajectory labels,
+but carry `outcome_known=false` and are masked out of the WDL loss and WDL
+metrics. Old records without this field remain readable and are treated as
+having a known result.
 
 Training, validation, and test partitions are selected by a stable hash of
 `game_id`, never by individual position. Consequently adjacent positions from
@@ -141,9 +157,65 @@ cargo run --release -p teressa --bin teressa-generate -- \
 ```
 
 The hour limit stops assigning new shards; it does not corrupt or cut a game
-that is already being written. Increasing `jobs` to 24 usually oversubscribes
-the 12 physical cores and duplicates search memory, so it should be justified
-by a measured throughput gain rather than the logical CPU count alone.
+that is already being written. `--hash` is always per worker. The massive
+preset uses all 24 logical CPUs; for other runs, compare `positions_per_hour`
+instead of assuming that more workers necessarily scale linearly.
+
+## Massive 10K-node corpus
+
+The reproducible preset for the large run on the 12-core/24-thread, 32-GiB
+machine is:
+
+```sh
+RUSTFLAGS="-C target-cpu=native" \
+  cargo build --profile research -p teressa --bin teressa-generate
+./target/research/teressa-generate --preset massive-10k
+```
+
+The separate `research` profile enables `opt-level=3`, thin LTO, and one
+codegen unit without slowing normal workspace builds or changing the WASM
+profile. `target-cpu=native` specializes the binary for the machine that will
+perform the run; do not copy that binary to a different CPU.
+
+The preset generates 4,096 games in 1,024 four-game shards at a strict 10,000
+teacher nodes per move. Twenty-four one-thread search workers each receive a
+32-MiB transposition table, for 768 MiB of hash in total. Openings are sampled
+for 16 plies at temperature 120 cp; the remainder uses the teacher's best
+move. The output is `datasets/teressa-10k-strict`, outside `target/`, so
+`cargo clean` cannot delete an expensive corpus. The top-level `.gitignore`
+excludes `datasets/`.
+
+Interrupting with Ctrl-C is safe. At worst the currently active four-game
+shard of each worker is recomputed. To run in bounded sessions, repeat the
+exact same command with a wall-clock limit:
+
+```sh
+./target/research/teressa-generate --preset massive-10k --hours 12
+```
+
+Completed shards are reused, and changing only `--hours` or `--jobs` is safe.
+The target can later be extended with `--games N`, provided `N` remains a
+multiple of four. Do not use `--adopt-existing` for this new corpus; that flag
+exists only to attach a manifest to a trusted legacy directory.
+
+The older `datasets/teressa-10k` directory contains finish-current-depth
+searches that sometimes exceeded 10K (26,643 nodes from the initial position
+in one measured case). It is intentionally preserved but is not resumed or
+mixed into the strict corpus.
+
+Expect roughly 1.8--2.0 million stored positions, about 1.5--2 GiB of
+compressed shards, and approximately two to four days of wall time. This is
+deliberately an estimate. Progress reports include actual searched nodes,
+nodes per position, per-worker teacher NPS, aggregate wall-clock NPS,
+positions per hour, and ETA; those live measurements are authoritative.
+ETA remains `warming-up` for the first two waves of worker shards so startup
+latency is not presented as a multi-week forecast.
+
+The current trainer loads its entire input corpus into host memory. It is fine
+for the pilot data but must be made shard-streaming before training directly
+on this multi-million-position corpus. Generation can proceed now: all
+expensive raw positions, teacher policies, histories, and trajectories are
+preserved and can be relabeled later without repeating TeraStockfish search.
 
 ## Relabeling the existing V1 corpus
 

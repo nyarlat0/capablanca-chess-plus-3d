@@ -84,8 +84,9 @@ fn run() -> Result<(), String> {
     let plan_available = metrics.plan_prior_cross_entropy - metrics.plan_target_entropy;
     let plan_gain = metrics.plan_prior_cross_entropy - metrics.plan_cross_entropy;
     println!(
-        "holdout_positions={} selected_epoch={} validation_selection_loss={} holdout_selection_loss={:.6} loss={:.6} policy_ce={:.6} policy_entropy={:.6} policy_kl={:.6} policy_uniform_ce={:.6} policy_gain_vs_uniform={:.6} policy_explained_fraction={:.4} policy_top1={:.4} policy_top3={:.4} policy_top8={:.4} policy_mass_top1={:.4} policy_mass_top3={:.4} policy_mass_top8={:.4} policy_regret_cp_top1={:.1} policy_regret_cp_top3={:.1} policy_regret_cp_top8={:.1} wdl_ce={:.6} wdl_accuracy={:.4} wdl_majority={:.4} wdl_balanced={:.4} plan_ce={:.6} plan_entropy={:.6} plan_kl={:.6} plan_prior_ce={:.6} plan_gain_vs_prior={:.6} plan_explained_fraction={:.4} plan_top1={:.4} plan_top2={:.4} plan_top3={:.4} plan_macro_recall={:.4} score_mse={:.6} risk_mse={:.6}",
+        "holdout_positions={} wdl_positions={} selected_epoch={} validation_selection_loss={} holdout_selection_loss={:.6} loss={:.6} policy_ce={:.6} policy_entropy={:.6} policy_kl={:.6} policy_uniform_ce={:.6} policy_gain_vs_uniform={:.6} policy_explained_fraction={:.4} policy_top1={:.4} policy_top3={:.4} policy_top8={:.4} policy_mass_top1={:.4} policy_mass_top3={:.4} policy_mass_top8={:.4} policy_regret_cp_top1={:.1} policy_regret_cp_top3={:.1} policy_regret_cp_top8={:.1} wdl_ce={:.6} wdl_accuracy={:.4} wdl_majority={:.4} wdl_balanced={:.4} plan_ce={:.6} plan_entropy={:.6} plan_kl={:.6} plan_prior_ce={:.6} plan_gain_vs_prior={:.6} plan_explained_fraction={:.4} plan_top1={:.4} plan_top2={:.4} plan_top3={:.4} plan_macro_recall={:.4} score_mse={:.6} risk_mse={:.6}",
         metrics.samples,
+        metrics.wdl_samples,
         manifest
             .selected_epoch
             .map_or_else(|| "unknown".to_owned(), |value| value.to_string()),

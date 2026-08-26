@@ -12,7 +12,7 @@ use burn::record::{
     BinFileRecorder, CompactRecorder, DefaultRecorder, FullPrecisionSettings, Recorder,
 };
 use burn::tensor::Int;
-use burn::tensor::activation::softmax;
+use burn::tensor::activation::{log_softmax, softmax};
 use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::loss::cross_entropy_with_logits;
 use rand::SeedableRng;
@@ -191,6 +191,7 @@ pub struct EpochMetrics {
     pub score_mean_squared_error: f32,
     pub tactical_risk_mean_squared_error: f32,
     pub samples: usize,
+    pub wdl_samples: usize,
 }
 
 impl EpochMetrics {
@@ -220,6 +221,9 @@ pub struct TrainingBatch<B: Backend> {
     pub plan_mask: Tensor<B, 2>,
     pub policy_target: Tensor<B, 2>,
     pub wdl_target: Tensor<B, 2>,
+    /// One for positions whose final game result is known, zero for positions
+    /// retained from a game that hit the generator's storage ply cap.
+    pub wdl_mask: Tensor<B, 2>,
     pub plan_target: Tensor<B, 2>,
     pub score_target: Tensor<B, 2>,
     pub risk_target: Tensor<B, 2>,
@@ -801,7 +805,8 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
 
         let predicted_wdl = output.wdl_logits.argmax(1);
         let target_wdl = batch.wdl_target.clone().argmax(1);
-        let wdl_correct_mask = predicted_wdl.equal(target_wdl.clone()).float();
+        let wdl_correct_mask =
+            predicted_wdl.equal(target_wdl.clone()).float() * batch.wdl_mask.clone();
         let wdl_correct = wdl_correct_mask.clone().sum();
         let target_plan = batch.plan_target.clone().argmax(1);
         let mut plan_hits = Vec::with_capacity(3);
@@ -819,6 +824,7 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
             loss,
             components.policy,
             components.wdl,
+            batch.wdl_mask.clone().sum(),
             components.plan,
             components.score,
             components.tactical_risk,
@@ -838,7 +844,8 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
             metric_tensors.push(target_mask.sum());
         }
         for outcome in 0..3 {
-            let target_mask = target_wdl.clone().equal_elem(outcome as i64).float();
+            let target_mask =
+                target_wdl.clone().equal_elem(outcome as i64).float() * batch.wdl_mask.clone();
             metric_tensors.push((wdl_correct_mask.clone() * target_mask.clone()).sum());
             metric_tensors.push(target_mask.sum());
         }
@@ -856,8 +863,10 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
         cursor += 1;
         aggregate.policy_cross_entropy += values[cursor] * sample_count;
         cursor += 1;
-        aggregate.wdl_cross_entropy += values[cursor] * sample_count;
-        cursor += 1;
+        let batch_wdl_count = values[cursor + 1];
+        aggregate.wdl_cross_entropy += values[cursor] * batch_wdl_count;
+        aggregate.wdl_samples += batch_wdl_count.round() as usize;
+        cursor += 2;
         aggregate.plan_cross_entropy += values[cursor] * sample_count;
         cursor += 1;
         aggregate.score_mean_squared_error += values[cursor] * sample_count;
@@ -920,7 +929,8 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
     let count = aggregate.samples.max(1) as f32;
     aggregate.loss /= count;
     aggregate.policy_cross_entropy /= count;
-    aggregate.wdl_cross_entropy /= count;
+    let wdl_count = aggregate.wdl_samples.max(1) as f32;
+    aggregate.wdl_cross_entropy /= wdl_count;
     aggregate.score_mean_squared_error /= count;
     aggregate.tactical_risk_mean_squared_error /= count;
     aggregate.policy_target_entropy /= count;
@@ -937,13 +947,13 @@ fn evaluate_model_padded<B: Backend, M: StrategyNetwork<B>>(
     aggregate.policy_regret_cp_top1 = policy_regret_sums[0] / count;
     aggregate.policy_regret_cp_top3 = policy_regret_sums[1] / count;
     aggregate.policy_regret_cp_top8 = policy_regret_sums[2] / count;
-    aggregate.wdl_accuracy /= count;
+    aggregate.wdl_accuracy /= wdl_count;
     aggregate.plan_accuracy /= count;
     aggregate.plan_top2 /= count;
     aggregate.plan_top3 /= count;
     let mut represented_outcomes = 0_usize;
     for outcome in 0..3 {
-        aggregate.wdl_target_fraction[outcome] = wdl_total_by_outcome[outcome] / count;
+        aggregate.wdl_target_fraction[outcome] = wdl_total_by_outcome[outcome] / wdl_count;
         if wdl_total_by_outcome[outcome] > 0.0 {
             aggregate.wdl_recall[outcome] =
                 wdl_correct_by_outcome[outcome] / wdl_total_by_outcome[outcome];
@@ -1057,7 +1067,11 @@ fn loss_components<B: Backend>(
         masked_logits(output.policy_logits, batch.move_mask.clone()),
         batch.policy_target.clone(),
     );
-    let wdl = cross_entropy_with_logits(output.wdl_logits, batch.wdl_target.clone());
+    let wdl = masked_cross_entropy_with_logits(
+        output.wdl_logits,
+        batch.wdl_target.clone(),
+        batch.wdl_mask.clone(),
+    );
     let plan = cross_entropy_with_logits(
         masked_logits(output.plan_logits, batch.plan_mask.clone()),
         batch.plan_target.clone(),
@@ -1102,6 +1116,15 @@ fn masked_logits<B: Backend>(logits: Tensor<B, 2>, mask: Tensor<B, 2>) -> Tensor
     logits + (mask - 1.0) * 1.0e9
 }
 
+fn masked_cross_entropy_with_logits<B: Backend>(
+    logits: Tensor<B, 2>,
+    target: Tensor<B, 2>,
+    mask: Tensor<B, 2>,
+) -> Tensor<B, 1> {
+    let per_sample = -(target * log_softmax(logits, 1)).sum_dim(1);
+    (per_sample * mask.clone()).sum() / mask.sum().clamp_min(1.0)
+}
+
 pub fn make_batch<B: Backend>(
     records: &[DatasetRecord],
     device: &B::Device,
@@ -1142,6 +1165,7 @@ fn make_batch_padded<B: Backend>(
     let mut plan_masks = vec![0.0; batch * PlanKind::COUNT];
     let mut policy_targets = vec![0.0; batch * max_moves];
     let mut wdl_targets = Vec::with_capacity(batch * 3);
+    let mut wdl_masks = Vec::with_capacity(batch);
     let mut plan_targets = vec![0.0; batch * PlanKind::COUNT];
     let mut score_targets = Vec::with_capacity(batch);
     let mut risk_targets = vec![0.0; batch * max_moves];
@@ -1199,6 +1223,7 @@ fn make_batch_padded<B: Backend>(
             plan_targets[sample * PlanKind::COUNT + target.kind.index()] = target.probability;
         }
         wdl_targets.extend(record.wdl);
+        wdl_masks.push(f32::from(record.outcome_known));
         score_targets.push((record.teacher_score as f32 / 2_000.0).clamp(-1.0, 1.0));
     }
     Ok(TrainingBatch {
@@ -1243,6 +1268,7 @@ fn make_batch_padded<B: Backend>(
             device,
         ),
         wdl_target: Tensor::from_data(TensorData::new(wdl_targets, [batch, 3]), device),
+        wdl_mask: Tensor::from_data(TensorData::new(wdl_masks, [batch, 1]), device),
         plan_target: Tensor::from_data(
             TensorData::new(plan_targets, [batch, PlanKind::COUNT]),
             device,
@@ -1406,6 +1432,7 @@ mod tests {
             }],
             legal_moves: legal,
             wdl: [0.0, 1.0, 0.0],
+            outcome_known: true,
             teacher_score: 10,
             plan_policy: vec![
                 PlanPolicyTarget {
@@ -1428,6 +1455,7 @@ mod tests {
         assert!((plan_target[PlanKind::KingSafety.index()] - 0.3).abs() < 1.0e-6);
         assert_eq!(plan_mask[PlanKind::DevelopPiece.index()], 1.0);
         assert_eq!(plan_mask[PlanKind::KingSafety.index()], 1.0);
+        assert_eq!(batch.wdl_mask.to_data().to_vec::<f32>().unwrap(), vec![1.0]);
         assert_eq!(
             batch
                 .policy_target
@@ -1446,6 +1474,35 @@ mod tests {
     }
 
     #[test]
+    fn capped_games_are_masked_out_of_wdl_training() {
+        let position = Variant::TerachessII.starting_position();
+        let legal = position.legal_moves();
+        let record = DatasetRecord {
+            game_id: 91,
+            ply: 599,
+            position_fen: position.to_fen(),
+            history: Vec::new(),
+            legal_moves: legal.iter().map(|chess_move| chess_move.to_uci()).collect(),
+            policy: vec![PolicyTarget {
+                uci: legal[0].to_uci(),
+                probability: 1.0,
+                teacher_score: 0,
+            }],
+            wdl: [0.0, 1.0, 0.0],
+            outcome_known: false,
+            teacher_score: 0,
+            plan_policy: vec![PlanPolicyTarget {
+                kind: PlanKind::DevelopPiece,
+                probability: 1.0,
+            }],
+            plan: generate_plan_candidates(&position).remove(0),
+        };
+        let device = Default::default();
+        let batch = make_batch::<Flex>(&[record], &device).unwrap();
+        assert_eq!(batch.wdl_mask.to_data().to_vec::<f32>().unwrap(), vec![0.0]);
+    }
+
+    #[test]
     fn game_split_never_leaks_one_game_between_partitions() {
         let position = Variant::TerachessII.starting_position();
         let legal = position.legal_moves();
@@ -1461,6 +1518,7 @@ mod tests {
                 teacher_score: 0,
             }],
             wdl: [0.0, 1.0, 0.0],
+            outcome_known: true,
             teacher_score: 0,
             plan_policy: vec![PlanPolicyTarget {
                 kind: PlanKind::DevelopPiece,

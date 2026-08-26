@@ -426,6 +426,7 @@ fn synthetic_training_batch<B: Backend>(
         ),
         policy_target: Tensor::from_data(TensorData::new(policy_target, [batch, moves]), device),
         wdl_target: Tensor::from_data(TensorData::new(wdl_target, [batch, 3]), device),
+        wdl_mask: Tensor::from_data(TensorData::new(vec![1.0; batch], [batch, 1]), device),
         plan_target: Tensor::from_data(
             TensorData::new(plan_target, [batch, PlanKind::COUNT]),
             device,
