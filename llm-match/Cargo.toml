@@ -1,0 +1,8 @@
+[package]
+name = "llm-match"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+prompt-core = {path = "../../ai-tg-bot/crates/prompt-core"}

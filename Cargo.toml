@@ -6,7 +6,7 @@ members = [
     "engine",
     "multiplayer-protocol",
     "teressa",
-    "terastockfish",
+    "terastockfish", "llm-match",
 ]
 
 [workspace.dependencies]
