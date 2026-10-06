@@ -144,13 +144,15 @@ pub async fn generate_move(
                 client.context_budget(&config.preset)?,
             )
             .await?;
-        let answer = client
+        let raw_answer = client
             .generate(
                 &fitted.prompt.text,
                 &config.preset,
                 &fitted.prompt.stop_sequences,
             )
             .await?;
+
+        let answer = config.reasoning.strip_from_output(&raw_answer);
         match state.accept_model(&answer) {
             Ok(chess_move) => return Ok(chess_move),
             Err(_) => progress(attempt, answer.trim()),

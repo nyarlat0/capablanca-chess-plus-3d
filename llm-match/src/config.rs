@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, ensure};
-use prompt_core::{ContextTemplate, InstructTemplate, Preset, SystemPromptTemplate};
+use prompt_core::{
+    ContextTemplate, InstructTemplate, Preset, ReasoningTemplate, SystemPromptTemplate,
+};
 use serde::de::DeserializeOwned;
 use std::{
     collections::HashMap,
@@ -11,6 +13,7 @@ pub struct Config {
     pub endpoint: String,
     pub context: ContextTemplate,
     pub instruct: InstructTemplate,
+    pub reasoning: ReasoningTemplate,
     pub system: SystemPromptTemplate,
     pub preset: Preset,
     pub timeout_seconds: u64,
@@ -39,6 +42,7 @@ impl Config {
         let base = path.parent().unwrap_or(Path::new("."));
         let context = read_json(&base.join(get("LLM_CONTEXT_TEMPLATE")?))?;
         let instruct = read_json(&base.join(get("LLM_INSTRUCT_TEMPLATE")?))?;
+        let reasoning = read_json(&base.join(get("LLM_REASONING_TEMPLATE")?))?;
         let system: SystemPromptTemplate = read_json(&base.join(get("LLM_SYSTEM_TEMPLATE")?))?;
         ensure!(
             system.post_history.contains("{{board-state}}"),
@@ -59,6 +63,7 @@ impl Config {
             endpoint: normalize_endpoint(&get("LLM_KOBOLD_URL")?)?,
             context,
             instruct,
+            reasoning,
             system,
             preset,
             timeout_seconds,
