@@ -43,6 +43,8 @@ pub(crate) struct GameMenuPlugin;
 
 impl Plugin for GameMenuPlugin {
     fn build(&self, app: &mut App) {
+        #[cfg(not(target_arch = "wasm32"))]
+        app.add_plugins(crate::llm::LlmPlugin);
         app.init_resource::<GameMenuState>()
             .add_systems(Startup, setup_game_menu)
             .add_systems(
@@ -75,6 +77,8 @@ impl Plugin for GameMenuPlugin {
 pub(crate) enum GameMode {
     Local,
     Ai,
+    #[cfg(not(target_arch = "wasm32"))]
+    Llm,
     Multiplayer,
 }
 
@@ -238,26 +242,33 @@ fn setup_game_menu(
 
                 spawn_section_label(panel, &font, "GAME MODE");
                 spawn_row(panel, |row| {
+                    let mode_width = if cfg!(target_arch = "wasm32") {
+                        percent(30)
+                    } else {
+                        percent(22)
+                    };
                     spawn_menu_button(
                         row,
                         &font,
                         "Local",
                         MenuAction::Mode(GameMode::Local),
-                        percent(30),
+                        mode_width,
                     );
-                    spawn_menu_button(
-                        row,
-                        &font,
-                        "AI",
-                        MenuAction::Mode(GameMode::Ai),
-                        percent(30),
-                    );
+                    spawn_menu_button(row, &font, "AI", MenuAction::Mode(GameMode::Ai), mode_width);
                     spawn_menu_button(
                         row,
                         &font,
                         "Multiplayer",
                         MenuAction::Mode(GameMode::Multiplayer),
-                        percent(30),
+                        mode_width,
+                    );
+                    #[cfg(not(target_arch = "wasm32"))]
+                    spawn_menu_button(
+                        row,
+                        &font,
+                        "LLM",
+                        MenuAction::Mode(GameMode::Llm),
+                        percent(22),
                     );
                 });
 
@@ -290,6 +301,8 @@ fn setup_game_menu(
 
                 spawn_ai_difficulty_controls(panel, &font);
                 spawn_multiplayer_controls(panel, &font);
+                #[cfg(not(target_arch = "wasm32"))]
+                crate::llm::spawn_controls(panel, &font);
 
                 spawn_section_label(panel, &font, "PLAY AS");
                 spawn_row(panel, |row| {
@@ -922,6 +935,7 @@ fn adapt_menu_layout(
 
 #[allow(clippy::too_many_arguments)]
 fn handle_menu_interactions(
+    #[cfg(not(target_arch = "wasm32"))] mut llm: ResMut<crate::llm::LlmSession>,
     interactions: Query<(&Interaction, &MenuAction), Changed<Interaction>>,
     time: Res<Time>,
     mut menu: ResMut<GameMenuState>,
@@ -958,6 +972,8 @@ fn handle_menu_interactions(
             }
             MenuAction::Side(side) => menu.selected_side = side,
             MenuAction::Start => {
+                #[cfg(not(target_arch = "wasm32"))]
+                llm.reset();
                 active_graphics.0 = graphics_selection.0;
                 let mode = menu.selected_mode;
                 if mode == GameMode::Multiplayer {
@@ -986,6 +1002,8 @@ fn handle_menu_interactions(
                 match mode {
                     GameMode::Ai => ai_task.start_new_game(variant),
                     GameMode::Local => ai_task.shut_down(),
+                    #[cfg(not(target_arch = "wasm32"))]
+                    GameMode::Llm => ai_task.shut_down(),
                     GameMode::Multiplayer => unreachable!(),
                 }
                 multiplayer_commands.write(MultiplayerCommand::Disconnect);
@@ -1425,11 +1443,21 @@ fn starting_camera_side(mode: GameMode, choice: SideChoice, entropy: u128) -> Si
         // The camera will switch to the other side after that move finishes.
         GameMode::Local => Side::White,
         GameMode::Ai | GameMode::Multiplayer => resolve_side(choice, entropy),
+        #[cfg(not(target_arch = "wasm32"))]
+        GameMode::Llm => resolve_side(choice, entropy),
     }
 }
 
 fn controllers_for(mode: GameMode, human_side: Side) -> [Controller; 2] {
     match mode {
+        #[cfg(not(target_arch = "wasm32"))]
+        GameMode::Llm => std::array::from_fn(|index| {
+            if index == human_side.index() {
+                Controller::Human
+            } else {
+                Controller::Llm
+            }
+        }),
         GameMode::Local => [Controller::Human, Controller::Human],
         GameMode::Ai => std::array::from_fn(|index| {
             if index == human_side.index() {

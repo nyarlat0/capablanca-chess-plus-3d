@@ -770,6 +770,8 @@ fn hud_text(game_type: &str, mode: GameMode, outcome: GameOutcome) -> String {
     let mode = match mode {
         GameMode::Local => "Local · two players",
         GameMode::Ai => "AI · versus computer",
+        #[cfg(not(target_arch = "wasm32"))]
+        GameMode::Llm => "LLM · KoboldCPP",
         GameMode::Multiplayer => "Multiplayer · online",
     };
     let mut value = format!("{game_type}\n{mode}");

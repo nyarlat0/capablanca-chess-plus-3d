@@ -5,6 +5,8 @@ mod board;
 mod game;
 mod hud;
 mod input;
+#[cfg(not(target_arch = "wasm32"))]
+mod llm;
 mod menu;
 mod multiplayer;
 mod pieces;

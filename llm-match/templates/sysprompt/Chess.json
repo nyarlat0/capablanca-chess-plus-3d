@@ -1,0 +1,5 @@
+{
+  "name": "Chess",
+  "content": "{{chess-rules}}\nChoose your own move. Reply with exactly one legal coordinate/UCI move (for example e2e4, with a lowercase promotion suffix when required). No prose, reasoning, markdown, punctuation or additional moves.",
+  "post_history": "{{board-state}}\n{{#if wrong-move}}\n{{wrong-move}}\n{{/if}}Choose one legal move for the side to move. Output only that UCI move."
+}

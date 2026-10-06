@@ -1,0 +1,437 @@
+use crate::{
+    app::FrontendSet,
+    game::{ChessMatch, Controller, apply_move, is_playable},
+    menu::{GameMenuState, GameMode},
+    pieces::PieceAnimationState,
+};
+use bevy::{
+    ecs::hierarchy::ChildSpawnerCommands,
+    prelude::*,
+    text::{EditableText, TextCursorStyle},
+};
+use std::sync::{Mutex, mpsc};
+
+pub(crate) struct LlmPlugin;
+impl Plugin for LlmPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<LlmSession>()
+            .add_systems(Startup, setup_status)
+            .add_systems(Update, sync_controls.in_set(FrontendSet::Menu))
+            .add_systems(Update, update_match.in_set(FrontendSet::AiStart))
+            .add_systems(Update, update_status.in_set(FrontendSet::Hud));
+    }
+}
+
+enum Event {
+    Rejected(usize, String),
+    Finished(
+        llm_match::Match,
+        Result<capablanca_chess_plus::Move, String>,
+    ),
+}
+struct Pending {
+    generation: u64,
+    events: Mutex<mpsc::Receiver<Event>>,
+    _cancel: tokio::sync::oneshot::Sender<()>,
+}
+
+#[derive(Resource)]
+pub(crate) struct LlmSession {
+    endpoint: String,
+    state: Option<llm_match::Match>,
+    pending: Option<Pending>,
+    failed: bool,
+    status: String,
+}
+impl Default for LlmSession {
+    fn default() -> Self {
+        let endpoint = llm_match::Config::load()
+            .map(|c| c.endpoint)
+            .unwrap_or_default();
+        Self {
+            endpoint,
+            state: None,
+            pending: None,
+            failed: false,
+            status: String::new(),
+        }
+    }
+}
+impl LlmSession {
+    pub(crate) fn reset(&mut self) {
+        self.pending = None; // dropping sender cancels the old async request
+        self.state = None;
+        self.failed = false;
+        self.status.clear();
+    }
+}
+
+#[derive(Component)]
+struct Controls;
+#[derive(Component)]
+struct Endpoint;
+#[derive(Component)]
+struct StatusButton;
+#[derive(Component)]
+struct StatusText;
+
+pub(crate) fn spawn_controls(parent: &mut ChildSpawnerCommands, font: &Handle<Font>) {
+    let mut input = EditableText {
+        allow_newlines: false,
+        max_characters: Some(512),
+        ..default()
+    };
+    input.editor_mut().set_text(
+        &llm_match::Config::load()
+            .map(|c| c.endpoint)
+            .unwrap_or_default(),
+    );
+    parent
+        .spawn((
+            Controls,
+            Node {
+                display: Display::None,
+                width: percent(100),
+                flex_direction: FlexDirection::Column,
+                row_gap: px(5),
+                ..default()
+            },
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Text::new("KOBOLDCPP URL"),
+                TextFont {
+                    font: font.clone().into(),
+                    font_size: FontSize::Px(12.),
+                    ..default()
+                },
+            ));
+            p.spawn((
+                Endpoint,
+                input,
+                Node {
+                    width: percent(100),
+                    min_height: px(32),
+                    padding: UiRect::all(px(6)),
+                    overflow: Overflow::clip_x(),
+                    ..default()
+                },
+                TextFont {
+                    font: font.clone().into(),
+                    font_size: FontSize::Px(16.),
+                    ..default()
+                },
+                TextLayout::no_wrap(),
+                TextCursorStyle {
+                    color: Color::srgb(1., 0.3, 0.6),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.15, 0.10, 0.18, 0.9)),
+            ));
+        });
+}
+
+fn sync_controls(
+    menu: Res<GameMenuState>,
+    mut session: ResMut<LlmSession>,
+    mut controls: Query<&mut Node, With<Controls>>,
+    inputs: Query<&EditableText, (Changed<EditableText>, With<Endpoint>)>,
+) {
+    for mut node in &mut controls {
+        node.display = if menu.selected_mode == GameMode::Llm {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    for input in &inputs {
+        session.endpoint = input.value().to_string();
+    }
+}
+
+fn setup_status(mut commands: Commands) {
+    commands
+        .spawn((
+            StatusButton,
+            Button,
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: px(12),
+                left: percent(5),
+                max_width: percent(90),
+                padding: UiRect::all(px(10)),
+                border_radius: BorderRadius::all(px(8)),
+                display: Display::None,
+                ..default()
+            },
+            GlobalZIndex(20),
+            BackgroundColor(Color::srgba(0.08, 0.05, 0.10, 0.9)),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                StatusText,
+                Text::default(),
+                TextFont {
+                    font_size: FontSize::Px(14.),
+                    ..default()
+                },
+            ));
+        });
+}
+
+fn update_status(
+    menu: Res<GameMenuState>,
+    mut session: ResMut<LlmSession>,
+    mut buttons: Query<(&mut Node, &Interaction), With<StatusButton>>,
+    mut labels: Query<&mut Text, With<StatusText>>,
+) {
+    for (mut node, interaction) in &mut buttons {
+        let visible = !menu.open && menu.active_mode == GameMode::Llm && !session.status.is_empty();
+        node.display = if visible {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if visible && *interaction == Interaction::Pressed && session.failed {
+            session.failed = false;
+            session.status = "Retrying…".into();
+        }
+    }
+    for mut text in &mut labels {
+        text.0 = if session.failed {
+            format!("{}\nClick to retry", session.status)
+        } else {
+            session.status.clone()
+        };
+    }
+}
+
+fn update_match(
+    menu: Res<GameMenuState>,
+    animation: Res<PieceAnimationState>,
+    mut chess: ResMut<ChessMatch>,
+    mut session: ResMut<LlmSession>,
+) {
+    if menu.open || menu.active_mode != GameMode::Llm {
+        session.pending = None;
+        return;
+    }
+    if session
+        .pending
+        .as_ref()
+        .is_some_and(|p| p.generation != chess.generation)
+    {
+        session.reset();
+    }
+    let mut events = Vec::new();
+    let mut disconnected = false;
+    if let Some(pending) = &session.pending {
+        let receiver = pending.events.lock().unwrap();
+        loop {
+            match receiver.try_recv() {
+                Ok(event) => events.push(event),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+    }
+    for event in events {
+        match event {
+            Event::Rejected(attempt, answer) => {
+                if let Some(state) = &mut session.state {
+                    let _ = state.accept_model(&answer);
+                }
+                session.status =
+                    format!("LLM: rejected attempt {attempt}, requesting another move…");
+            }
+            Event::Finished(state, result) => {
+                session.pending = None;
+                session.state = Some(state);
+                match result {
+                    Ok(mv) => {
+                        apply_move(&mut chess, mv, None);
+                        session.status.clear();
+                    }
+                    Err(error) => {
+                        session.failed = true;
+                        session.status = error;
+                    }
+                }
+            }
+        }
+    }
+    if disconnected && session.pending.is_some() {
+        session.pending = None;
+        session.failed = true;
+        session.status = "LLM worker disconnected before returning a move".into();
+    }
+    if session.pending.is_some() || session.failed {
+        return;
+    }
+    let state = session
+        .state
+        .get_or_insert_with(|| llm_match::Match::new(chess.variant, menu.active_side.opposite()));
+    if state.history().len() > chess.move_history.len()
+        || state
+            .history()
+            .iter()
+            .zip(&chess.move_history)
+            .any(|(accepted, actual)| accepted.content != *actual)
+    {
+        session.failed = true;
+        session.status = "LLM history mismatch; start a new game".into();
+        return;
+    }
+    // Only human moves can have been applied outside this session. Accepted
+    // model moves were committed to both games together in Finished above.
+    for mv in &chess.move_history[state.history().len()..] {
+        if let Err(error) = state.accept_human(mv) {
+            session.failed = true;
+            session.status = format!("LLM history mismatch: {error}");
+            return;
+        }
+    }
+    // Record even a game-ending human move, but never generate before its
+    // animation (including captured pieces) has finished.
+    if !animation.is_settled(chess.generation)
+        || chess.pending_promotion.is_some()
+        || !is_playable(chess.game.outcome())
+        || chess.controllers[chess.game.position().side_to_move().index()] != Controller::Llm
+    {
+        return;
+    }
+    if state.game().position().to_fen() != chess.game.position().to_fen() {
+        session.failed = true;
+        session.status = "LLM position mismatch; start a new game".into();
+        return;
+    }
+    let mut state = state.clone();
+    let config = llm_match::Config::load().and_then(|mut c| {
+        c.endpoint = llm_match::normalize_endpoint(&session.endpoint)?;
+        Ok(c)
+    });
+    let config = match config {
+        Ok(c) => c,
+        Err(e) => {
+            session.failed = true;
+            session.status = format!("LLM configuration: {e:#}");
+            return;
+        }
+    };
+    let (tx, rx) = mpsc::channel();
+    let (cancel, cancelled) = tokio::sync::oneshot::channel::<()>();
+    session.pending = Some(Pending {
+        generation: chess.generation,
+        events: Mutex::new(rx),
+        _cancel: cancel,
+    });
+    session.status = "LLM is choosing a move…".into();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build();
+        let result = match runtime {
+            Ok(runtime) => runtime.block_on(async {
+                tokio::select! {
+                    _ = cancelled => None,
+                    result = llm_match::generate_move(&mut state, &config, |attempt, answer| { let _ = tx.send(Event::Rejected(attempt, answer.to_owned())); }) => Some(result.map_err(|e| format!("KoboldCPP: {e:#}"))),
+                }
+            }),
+            Err(error) => Some(Err(error.to_string())),
+        };
+        if let Some(result) = result {
+            let _ = tx.send(Event::Finished(state, result));
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+    use capablanca_chess_plus::{Color as Side, Variant};
+
+    fn world() -> World {
+        let mut world = World::new();
+        world.insert_resource(GameMenuState {
+            open: false,
+            active_mode: GameMode::Llm,
+            active_side: Side::White,
+            ..default()
+        });
+        let mut chess = ChessMatch::default();
+        chess.controllers = [Controller::Human, Controller::Llm];
+        let mv = chess.game.position().parse_uci_move("e2e4").unwrap();
+        apply_move(&mut chess, mv, None);
+        world.insert_resource(chess);
+        world.insert_resource(PieceAnimationState::default()); // not settled: no HTTP
+        world.insert_resource(LlmSession::default());
+        world
+    }
+
+    #[test]
+    fn llm_records_human_move_while_animation_is_still_running() {
+        let mut world = world();
+        world.run_system_once(update_match).unwrap();
+        let session = world.resource::<LlmSession>();
+        assert_eq!(session.state.as_ref().unwrap().history()[0].content, "e2e4");
+        assert!(session.pending.is_none());
+    }
+
+    #[test]
+    fn llm_discards_response_from_old_generation() {
+        let mut world = world();
+        let before = world.resource::<ChessMatch>().game.position().to_fen();
+        let generation = world.resource::<ChessMatch>().generation;
+        let mut old = llm_match::Match::new(Variant::Gothic, Side::Black);
+        old.accept_human("e2e4").unwrap();
+        let mv = old.accept_model("e7e5").unwrap();
+        let (tx, rx) = mpsc::channel();
+        tx.send(Event::Finished(old, Ok(mv))).unwrap();
+        let (cancel, _rx) = tokio::sync::oneshot::channel();
+        world.resource_mut::<LlmSession>().pending = Some(Pending {
+            generation: generation.wrapping_sub(1),
+            events: Mutex::new(rx),
+            _cancel: cancel,
+        });
+        world.run_system_once(update_match).unwrap();
+        assert_eq!(
+            world.resource::<ChessMatch>().game.position().to_fen(),
+            before
+        );
+        assert_eq!(
+            world
+                .resource::<LlmSession>()
+                .state
+                .as_ref()
+                .unwrap()
+                .history()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn llm_open_menu_cancels_client_request() {
+        let mut session = LlmSession::default();
+        let (_tx, rx) = mpsc::channel();
+        let (cancel, mut cancelled) = tokio::sync::oneshot::channel();
+        session.pending = Some(Pending {
+            generation: 1,
+            events: Mutex::new(rx),
+            _cancel: cancel,
+        });
+        let mut world = world();
+        world.insert_resource(session);
+        world.resource_mut::<GameMenuState>().open = true;
+        world.run_system_once(update_match).unwrap();
+        assert!(world.resource::<LlmSession>().pending.is_none());
+        assert!(matches!(
+            cancelled.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
+    }
+}

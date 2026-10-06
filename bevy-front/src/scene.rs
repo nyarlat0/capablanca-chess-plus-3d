@@ -528,6 +528,8 @@ fn manual_recenter_side(active_mode: GameMode, player_side: Side, side_to_move: 
     match active_mode {
         GameMode::Local => side_to_move,
         GameMode::Ai | GameMode::Multiplayer => player_side,
+        #[cfg(not(target_arch = "wasm32"))]
+        GameMode::Llm => player_side,
     }
 }
 

@@ -62,6 +62,8 @@ bevy = { version = "0.19.0", default-features = false, features = [
     "x11",
 ] }
 terastockfish = { path = "../terastockfish" }
+llm-match = { path = "../llm-match" }
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 bevy = { version = "0.19.0", default-features = false, features = ["webgl2"] }

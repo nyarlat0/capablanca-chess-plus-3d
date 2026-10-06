@@ -52,6 +52,7 @@ promotion, and the initial king jump implemented by the shared rules engine.
 | [`engine`](engine/) | Dependency-free rules, game state, move generation, and FEN. |
 | [`terastockfish`](terastockfish/) | Native UCI/Rust and browser-worker analysis engine for Terachess II, with 18x18-capable search storage. |
 | [`teressa`](teressa/) | Native Vulkan neural research engine with explicit bilingual plans and TeraStockfish tactical safety. |
+| [`llm-match`](llm-match/) | Native KoboldCPP opponent using prompt-core, authoritative board context and strict legal-move validation. |
 | [`bevy-front`](bevy-front/) | Bevy desktop/WASM client, rendering, UI, animation, audio, engine integration, and multiplayer client. |
 | [`multiplayer-protocol`](multiplayer-protocol/) | Shared versioned WebSocket message types. |
 | [`backend`](backend/) | Actix WebSocket server with authoritative validation and PostgreSQL persistence. |
@@ -124,6 +125,9 @@ reuse it.
   per-move node budget (`1k` through `1M`) rather than an estimated Elo.
 - **Multiplayer** creates or joins a room using its public game ID. Each color
   receives a separate secret player token for reconnecting without accounts.
+- **LLM** (desktop) plays against KoboldCPP at a configurable URL, without a
+  difficulty slider. Defaults and templates are in `llm-match/.env`.
+  See [setup and conversation guarantees](llm-match/README.md).
 
 ## Multiplayer development
 

@@ -20,6 +20,8 @@ pub(crate) struct MoveRequest(pub(crate) Move);
 pub(crate) enum Controller {
     Human,
     Computer,
+    #[cfg(not(target_arch = "wasm32"))]
+    Llm,
     Remote,
 }
 
