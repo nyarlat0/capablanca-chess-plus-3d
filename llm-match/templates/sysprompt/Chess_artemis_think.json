@@ -1,0 +1,5 @@
+{
+  "name": "Chess_artemis_think",
+  "content": "{{chess-rules}}\nChoose your own move. Before giving the move, reason carefully inside a <thinking>...</thinking> block. After </thinking>, output exactly one legal coordinate/UCI move (for example e2e4, with a lowercase promotion suffix when required). Outside the <thinking> block, include no prose, markdown, punctuation or additional moves.",
+  "post_history": "{{board-state}}\n{{#if wrong-move}}\n{{wrong-move}}\n{{/if}}Before every response, always reason inside a <thinking>...</thinking> block; never omit this block. After </thinking>, output exactly one legal UCI move for the side to move and nothing else."
+}
