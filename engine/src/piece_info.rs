@@ -13,6 +13,37 @@ impl VariantRules {
 }
 
 impl PieceKind {
+    /// Absolute-coordinate movement, shared by experiment renderers. These are
+    /// base predicates; royal safety and variant-specific rights still apply.
+    pub fn geometric_description(self) -> String {
+        let orth = "exactly one of dx,dy is zero; every intermediate square empty";
+        let diag = "abs(dx)=abs(dy)>0; every intermediate square empty";
+        let step = "max(abs(dx),abs(dy))=1";
+        match self {
+            Self::Knight | Self::Camel | Self::Giraffe | Self::Elephant | Self::Machine => self.movement_description(),
+            Self::Rook => orth.into(), Self::Bishop => diag.into(),
+            Self::Queen => format!("({orth}) OR ({diag})"),
+            Self::King => format!("{step}; royal: may not stay in or enter check"),
+            Self::Pawn => "quiet: dx=0, dy=forward, destination empty; capture: abs(dx)=1, dy=forward, enemy destination (or en passant under variant rules)".into(),
+            Self::Archbishop => format!("({diag}) OR ({})", Self::Knight.geometric_description()),
+            Self::Chancellor => format!("({orth}) OR ({})", Self::Knight.geometric_description()),
+            Self::Amazon => format!("({}) OR ({})", Self::Queen.geometric_description(), Self::Knight.geometric_description()),
+            Self::Centaur => format!("({step}) OR ({}); nonroyal", Self::Knight.geometric_description()),
+            Self::Lion => format!("({step}) OR ({}) OR (max(abs(dx),abs(dy))=2 and (dx=0 or dy=0 or abs(dx)=abs(dy))); all jumps ignore intermediate pieces; nonroyal; one capture maximum", Self::Knight.geometric_description()),
+            Self::Buffalo => format!("({}) OR ({}) OR ({})", Self::Knight.geometric_description(), Self::Camel.geometric_description(), Self::Giraffe.geometric_description()),
+            Self::Admiral => format!("({orth}) OR (abs(dx)=abs(dy)=1)"),
+            Self::Missionary => format!("({diag}) OR (abs(dx)+abs(dy)=1)"),
+            Self::Cannon | Self::Archer | Self::Sorceress => {
+                let ray = match self { Self::Cannon => "exactly one of dx,dy zero", Self::Archer => "abs(dx)=abs(dy)>0", _ => "dx=0 or dy=0 or abs(dx)=abs(dy), excluding (0,0)" };
+                format!("ray: {ray}; quiet: no intervening occupied square; capture: enemy destination and exactly one intervening occupied square of either color; cannot land quietly beyond a screen")
+            }
+            Self::Duchess => "1<=max(abs(dx),abs(dy))<=3 and (dx=0 or dy=0 or abs(dx)=abs(dy)); ignores intermediate squares".into(),
+            Self::Prince => format!("{step}; nonroyal; quiet forward double-step only as specified by variant rules"),
+            Self::Troll => "(max(abs(dx),abs(dy))=3 and (dx=0 or dy=0 or abs(dx)=abs(dy)), ignoring intermediate squares) OR (dx=0,dy=forward, empty destination) OR (abs(dx)=1,dy=forward, enemy destination); no double-step or en-passant capture".into(),
+            Self::Eagle => "choose sx,sy in {-1,+1}; first step (sx,sy), then optionally t>=1 steps in (sx,0) OR (0,sy). May stop/capture at first square. To continue, first square and every subsequent intermediate square must be empty; may capture only at destination".into(),
+            Self::Rhinoceros => "choose s,u in {-1,+1}; first step (s,0), then optionally t>=1 steps in (s,u); OR first step (0,s), then optionally t>=1 steps in (u,s). May stop/capture at first square. To continue, first square and every subsequent intermediate square must be empty; may capture only at destination".into(),
+        }
+    }
     pub const fn display_name(self) -> &'static str {
         match self {
             Self::Pawn => "Pawn",

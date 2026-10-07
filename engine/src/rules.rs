@@ -587,7 +587,7 @@ impl VariantRules {
     }
 
     #[must_use]
-    pub(crate) fn initial_count(&self, color: Color, kind: PieceKind) -> u8 {
+    pub fn initial_count(&self, color: Color, kind: PieceKind) -> u8 {
         self.initial_material[color.index()][piece_index(kind)]
     }
 

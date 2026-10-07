@@ -1,0 +1,9 @@
+{{board-header}}
+
+{{piece-legend}}
+VARIANT RULES
+{{castling-rules}}
+{{pawn-rules}}
+Initial king jump: while its right remains, a King not in check may jump to an empty square with max(abs(dx),abs(dy))=2; destination must be safe. Straight/diagonal jumps require the intermediate square safe; knight-shaped jumps require at least one of the two intermediate squares safe. Intervening pieces do not block this jump. Any King move consumes the right.
+Compulsory final-rank promotion: Pawn/Troll -> Queen; Prince -> Amazon; Knight/Camel/Giraffe -> Buffalo; Elephant/Machine/Centaur -> Lion. Troll promotion applies only to its pawn-like move, not its three-square leap. Other pieces do not promote.
+{{promotion-rules}}

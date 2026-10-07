@@ -1,5 +1,5 @@
 {
   "name": "Chess",
-  "content": "{{chess-rules}}\nUse CURRENT PIECES and the ASCII board as authoritative. Do not reconstruct the position from move history. Do not assume standard-chess starting squares, opening patterns, or piece identities.\nChoose your own move. Output exactly one canonical UCI move, including the promotion suffix when required. No reasoning, prose, markdown, or additional moves.",
-  "post_history": "{{board-state}}\n{{#if wrong-move}}\n{{wrong-move}}\n{{/if}}Use this authoritative state. Output exactly one canonical UCI move and nothing else."
+  "content": "{{chess-rules}}\n{{representation-instructions}}\n{{history-instructions}}\nChoose your own move. Do not output reasoning.\n{{output-instructions}}",
+  "post_history": "{{board-state}}\n{{#if wrong-move}}\n{{wrong-move}}\n{{/if}}Use this authoritative state.\n{{history-instructions}}\n{{output-instructions}}"
 }

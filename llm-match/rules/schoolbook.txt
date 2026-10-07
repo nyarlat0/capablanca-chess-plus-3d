@@ -1,0 +1,7 @@
+{{board-header}}
+
+{{piece-legend}}
+VARIANT RULES
+{{castling-rules}}
+{{pawn-rules}}
+{{promotion-rules}}

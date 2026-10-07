@@ -39,6 +39,7 @@ struct Pending {
 #[derive(Resource)]
 pub(crate) struct LlmSession {
     endpoint: String,
+    config: Option<llm_match::Config>,
     state: Option<llm_match::Match>,
     pending: Option<Pending>,
     failed: bool,
@@ -51,6 +52,7 @@ impl Default for LlmSession {
             .unwrap_or_default();
         Self {
             endpoint,
+            config: None,
             state: None,
             pending: None,
             failed: false,
@@ -62,6 +64,7 @@ impl LlmSession {
     pub(crate) fn reset(&mut self) {
         self.pending = None; // dropping sender cancels the old async request
         self.state = None;
+        self.config = None;
         self.failed = false;
         self.status.clear();
     }
@@ -71,6 +74,8 @@ impl LlmSession {
 struct Controls;
 #[derive(Component)]
 struct Endpoint;
+#[derive(Component)]
+struct ProfileLabel;
 #[derive(Component)]
 struct StatusButton;
 #[derive(Component)]
@@ -101,6 +106,19 @@ pub(crate) fn spawn_controls(parent: &mut ChildSpawnerCommands, font: &Handle<Fo
             },
         ))
         .with_children(|p| {
+            let profile = llm_match::Config::load()
+                .map(|c| format!("PROFILE: {}", c.profile_name))
+                .unwrap_or_else(|e| format!("Profile configuration: {e}"));
+            p.spawn((
+                ProfileLabel,
+                Text::new(profile),
+                TextFont {
+                    font: font.clone().into(),
+                    font_size: FontSize::Px(12.),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.8, 0.7, 0.8)),
+            ));
             p.spawn((
                 Text::new("KOBOLDCPP URL"),
                 TextFont {
@@ -227,8 +245,14 @@ fn update_status(
         (&mut Node, Ref<Interaction>, &mut BackgroundColor),
         (With<StatusButton>, Without<StatusPanel>),
     >,
-    mut labels: Query<&mut Text, With<StatusText>>,
+    mut labels: Query<&mut Text, (With<StatusText>, Without<ProfileLabel>)>,
+    mut profiles: Query<&mut Text, (With<ProfileLabel>, Without<StatusText>)>,
 ) {
+    if let Some(config) = &session.config {
+        for mut text in &mut profiles {
+            text.0 = format!("PROFILE: {}", config.profile_name);
+        }
+    }
     let visible = !menu.open && menu.active_mode == GameMode::Llm && !session.status.is_empty();
     for mut node in &mut panels {
         node.display = if visible {
@@ -298,8 +322,13 @@ fn update_match(
     for event in events {
         match event {
             Event::Rejected(attempt, answer) => {
+                let format = session
+                    .config
+                    .as_ref()
+                    .map(|c| c.representation.output_format)
+                    .unwrap_or_default();
                 if let Some(state) = &mut session.state {
-                    let _ = state.accept_model(&answer);
+                    let _ = state.accept_answer(&answer, format);
                 }
                 session.status =
                     format!("LLM: rejected attempt {attempt}, requesting another move…");
@@ -327,6 +356,26 @@ fn update_match(
     }
     if session.pending.is_some() || session.failed {
         return;
+    }
+    if session.config.is_none() {
+        match llm_match::Config::load().and_then(|mut c| {
+            c.endpoint = llm_match::normalize_endpoint(&session.endpoint)?;
+            Ok(c)
+        }) {
+            Ok(config) => {
+                info!(
+                    "LLM representation profile: {} | {}",
+                    config.profile_name,
+                    config.representation.summary()
+                );
+                session.config = Some(config);
+            }
+            Err(e) => {
+                session.failed = true;
+                session.status = format!("LLM configuration: {e:#}");
+                return;
+            }
+        }
     }
     let state = session
         .state
@@ -366,18 +415,11 @@ fn update_match(
         return;
     }
     let mut state = state.clone();
-    let config = llm_match::Config::load().and_then(|mut c| {
-        c.endpoint = llm_match::normalize_endpoint(&session.endpoint)?;
-        Ok(c)
-    });
-    let config = match config {
-        Ok(c) => c,
-        Err(e) => {
-            session.failed = true;
-            session.status = format!("LLM configuration: {e:#}");
-            return;
-        }
-    };
+    let config = session
+        .config
+        .as_ref()
+        .expect("initialized match configuration")
+        .clone();
     let (tx, rx) = mpsc::channel();
     let (cancel, cancelled) = tokio::sync::oneshot::channel::<()>();
     session.pending = Some(Pending {
@@ -474,6 +516,47 @@ mod tests {
         );
         assert_eq!(state.history()[1].content, "Black Pawn e7-e5");
         assert_eq!(state.history()[2].content, "White Pawn d2-d4");
+    }
+
+    #[test]
+    fn llm_numeric_history_and_rejections_keep_canonical_frontend_sync() {
+        let mut world = world();
+        world.run_system_once(update_match).unwrap();
+        world.resource_mut::<LlmSession>().config =
+            Some(llm_match::Config::load_with_profile(Some("numeric-last-move")).unwrap());
+        let generation = world.resource::<ChessMatch>().generation;
+        let (tx, rx) = mpsc::channel();
+        let bad = "Black Pawn: (5,7) -> (5,4)";
+        tx.send(Event::Rejected(1, bad.into())).unwrap();
+        let (cancel, _rx) = tokio::sync::oneshot::channel();
+        world.resource_mut::<LlmSession>().pending = Some(Pending {
+            generation,
+            events: Mutex::new(rx),
+            _cancel: cancel,
+        });
+        world.run_system_once(update_match).unwrap();
+        let mut state = world.resource::<LlmSession>().state.clone().unwrap();
+        assert_eq!(state.wrong_moves(), [bad]);
+        assert_eq!(state.uci_history(), ["e2e4"]);
+        let mv = state
+            .accept_answer(
+                "Black Pawn: (5,7) -> (5,5)",
+                llm_match::OutputFormat::Numeric,
+            )
+            .unwrap();
+        tx.send(Event::Finished(state, Ok(mv))).unwrap();
+        world.run_system_once(update_match).unwrap();
+        world.run_system_once(update_match).unwrap();
+        let session = world.resource::<LlmSession>();
+        assert!(!session.failed);
+        assert_eq!(
+            session.state.as_ref().unwrap().uci_history(),
+            world.resource::<ChessMatch>().move_history
+        );
+        assert_eq!(
+            session.state.as_ref().unwrap().numeric_history()[1].content,
+            "Black Pawn: (5,7) -> (5,5)"
+        );
     }
 
     #[test]

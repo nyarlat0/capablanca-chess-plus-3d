@@ -117,7 +117,11 @@ impl Drop for Server {
 
 #[tokio::test]
 async fn illegal_retries_keep_history_and_board_then_commit_only_valid_answer() {
-    let server = Server::new(vec!["I choose e7e5", "e7e4", " e7e5\n"]);
+    let server = Server::new(vec![
+        "I choose e7e5",
+        "Black Pawn e7-e4",
+        " Black Pawn e7-e5\n",
+    ]);
     let mut config = llm_match::Config::load().unwrap();
     config.endpoint = server.endpoint.clone();
     config.max_attempts = 2;
@@ -130,10 +134,10 @@ async fn illegal_retries_keep_history_and_board_then_commit_only_valid_answer() 
             .await
             .is_err()
     );
-    assert_eq!(rejected, ["e7e4"]);
+    assert_eq!(rejected, ["Black Pawn e7-e4"]);
     assert_eq!(state.game().position().to_fen(), fen);
     assert_eq!(state.history().len(), 1);
-    assert_eq!(state.wrong_moves(), ["e7e4"]);
+    assert_eq!(state.wrong_moves(), ["Black Pawn e7-e4"]);
     let mv = llm_match::generate_move(&mut state, &config, |_, _| panic!("valid answer rejected"))
         .await
         .unwrap();
@@ -149,7 +153,7 @@ async fn illegal_retries_keep_history_and_board_then_commit_only_valid_answer() 
     assert_eq!(prompts[0], prompts[1]);
     assert!(!prompts[0].contains("Rejected moves"));
     assert!(!prompts[1].contains("I choose e7e5"));
-    assert!(prompts[2].contains("e7e4"));
+    assert!(prompts[2].contains("Black Pawn e7-e4"));
     let history0 = prompts[0]
         .split("AUTHORITATIVE CURRENT POSITION")
         .next()
@@ -188,12 +192,16 @@ async fn truncated_and_empty_reasoning_retry_silently_without_changing_context()
     let server = Server::new(vec![
         "<thinking>private unclosed f2f4",
         "<thinking>private complete</thinking>  ",
-        "<thinking>private</thinking>e7e5",
+        "<thinking>private</thinking>Black Pawn e7-e5",
     ]);
     let mut state = black_turn();
     let original = state.game().position().to_fen();
     // Seed a genuine prior rejected move: silent retries must preserve it too.
-    assert!(state.accept_model("e7e4").is_err());
+    assert!(
+        state
+            .accept_answer("Black Pawn e7-e4", llm_match::OutputFormat::Semantic)
+            .is_err()
+    );
     let config = configured(&server, 2);
     assert!(
         llm_match::generate_move(&mut state, &config, |_, _| panic!(
@@ -205,7 +213,7 @@ async fn truncated_and_empty_reasoning_retry_silently_without_changing_context()
     assert_eq!(state.game().position().to_fen(), original);
     assert_eq!(state.uci_history(), ["e2e4"]);
     assert_eq!(state.history()[0].content, "White Pawn e2-e4");
-    assert_eq!(state.wrong_moves(), ["e7e4"]);
+    assert_eq!(state.wrong_moves(), ["Black Pawn e7-e4"]);
     llm_match::generate_move(&mut state, &config, |_, _| panic!("unexpected rejection"))
         .await
         .unwrap();
@@ -224,8 +232,8 @@ async fn truncated_and_empty_reasoning_retry_silently_without_changing_context()
 #[tokio::test]
 async fn only_the_rejected_final_move_is_visible() {
     let server = Server::new(vec![
-        "<thinking>secret reasoning suggests other moves</thinking>e7e4",
-        "<thinking>secret again</thinking>e7e5",
+        "<thinking>secret reasoning suggests other moves</thinking>Black Pawn e7-e4",
+        "<thinking>secret again</thinking>Black Pawn e7-e5",
     ]);
     let mut state = black_turn();
     let mut events = Vec::new();
@@ -235,15 +243,15 @@ async fn only_the_rejected_final_move_is_visible() {
             .await
             .is_err()
     );
-    assert_eq!(state.wrong_moves(), ["e7e4"]);
-    assert_eq!(events, ["e7e4"]);
+    assert_eq!(state.wrong_moves(), ["Black Pawn e7-e4"]);
+    assert_eq!(events, ["Black Pawn e7-e4"]);
     llm_match::generate_move(&mut state, &config, |_, _| panic!())
         .await
         .unwrap();
     let prompts = server.prompts.lock().unwrap();
-    assert!(
-        prompts[1].contains("Rejected moves: [\"e7e4\"]. Position unchanged. Do not repeat them.")
-    );
+    assert!(prompts[1].contains(
+        "Rejected moves: [\"Black Pawn e7-e4\"]. Position unchanged. Do not repeat them."
+    ));
     assert!(prompts.iter().all(|p| !p.contains("secret")));
 }
 
@@ -254,7 +262,7 @@ async fn transient_http_failures_retry_without_feedback() {
             Reply::Http(408),
             Reply::Http(429),
             Reply::Http(503),
-            Reply::Text("e7e5"),
+            Reply::Text("Black Pawn e7-e5"),
         ],
         512,
     );
@@ -272,7 +280,13 @@ async fn transient_http_failures_retry_without_feedback() {
 
 #[tokio::test]
 async fn timeout_retries_without_feedback() {
-    let server = Server::script(vec![Reply::Slow("e7e4"), Reply::Text("e7e5")], 512);
+    let server = Server::script(
+        vec![
+            Reply::Slow("Black Pawn e7-e4"),
+            Reply::Text("Black Pawn e7-e5"),
+        ],
+        512,
+    );
     let mut config = configured(&server, 2);
     config.timeout_seconds = 1;
     let mut state = black_turn();
@@ -323,4 +337,109 @@ async fn deterministic_http_and_context_errors_fail_without_generation_retries()
     );
     assert!(server.prompts.lock().unwrap().is_empty());
     assert_eq!(state.uci_history(), ["e2e4"]);
+}
+
+#[tokio::test]
+async fn no_history_uci_remains_strict() {
+    let server = Server::new(vec!["Black Pawn e7-e5", "<thinking>private</thinking>e7e5"]);
+    let mut config = llm_match::Config::load_with_profile(Some("uci-no-history")).unwrap();
+    config.endpoint = server.endpoint.clone();
+    config.max_attempts = 2;
+    let mut state = black_turn();
+    let mv = llm_match::generate_move(&mut state, &config, |_, _| {
+        panic!("wrong-format answer must retry silently")
+    })
+    .await
+    .unwrap();
+    assert_eq!(mv.to_uci(), "e7e5");
+    let prompts = server.prompts.lock().unwrap();
+    assert_eq!(prompts.len(), 2);
+    assert_eq!(prompts[0], prompts[1]);
+    assert!(!prompts[0].contains("White Pawn e2-e4"));
+}
+
+#[tokio::test]
+async fn numeric_history_requires_the_same_final_format_and_preserves_feedback() {
+    let server = Server::new(vec![
+        "<thinking>truncated",
+        r#"{"from":[5,7],"to":[5,5],"promotion":null}"#,
+        "e7e5",
+        "<thinking>private</thinking>Black Pawn: (5,7) -> (5,4)",
+        "<thinking>private</thinking>Black Pawn: (5,7) -> (5,5)",
+    ]);
+    let mut config = llm_match::Config::load_with_profile(Some("numeric-last-move")).unwrap();
+    config.endpoint = server.endpoint.clone();
+    config.max_attempts = 5;
+    let mut state = black_turn();
+    let mut rejected = Vec::new();
+    let mv = llm_match::generate_move(&mut state, &config, |_, s| rejected.push(s.to_owned()))
+        .await
+        .unwrap();
+    assert_eq!(mv.to_uci(), "e7e5");
+    assert_eq!(state.uci_history(), ["e2e4", "e7e5"]);
+    assert_eq!(
+        state.numeric_history()[1].content,
+        "Black Pawn: (5,7) -> (5,5)"
+    );
+    assert_eq!(rejected, ["Black Pawn: (5,7) -> (5,4)"]);
+    let prompts = server.prompts.lock().unwrap();
+    assert_eq!(prompts.len(), 5);
+    assert!(prompts[..4].windows(2).all(|p| p[0] == p[1]));
+    for prompt in &*prompts {
+        assert!(prompt.contains("White Pawn: (5,2) -> (5,4)"));
+        assert!(prompt.contains("SAME format as numeric accepted history"));
+        assert!(!prompt.contains("e2e4") && !prompt.contains("e7e5"));
+        assert!(!prompt.contains("private") && !prompt.contains("truncated"));
+    }
+    assert!(prompts[4].contains("Black Pawn: (5,7) -> (5,4)"));
+}
+
+#[tokio::test]
+async fn numeric_reasoning_transport_and_illegal_retries_never_leak_decoded_uci() {
+    let bad = r#"{"from":[5,7],"to":[5,4],"promotion":null}"#;
+    let good = r#"<thinking>private</thinking>{"from":[5,7],"to":[5,5],"promotion":null}"#;
+    let server = Server::script(
+        vec![
+            Reply::Text("<thinking>unfinished"),
+            Reply::Http(503),
+            Reply::Text("<thinking>finished</thinking>"),
+            Reply::Text("{bad json}"),
+            Reply::Text(bad),
+            Reply::Text(good),
+        ],
+        512,
+    );
+    let mut config = configured(&server, 6);
+    config.representation =
+        llm_match::ProfileFile::parse(include_str!("../representation-profiles.toml"))
+            .unwrap()
+            .select(Some("numeric-no-history"))
+            .unwrap()
+            .1;
+    let mut state = black_turn();
+    let mut events = Vec::new();
+    let mv = llm_match::generate_move(&mut state, &config, |_, s| events.push(s.to_owned()))
+        .await
+        .unwrap();
+    assert_eq!(mv.to_uci(), "e7e5");
+    assert_eq!(state.uci_history(), ["e2e4", "e7e5"]);
+    assert_eq!(events, [bad]);
+    let prompts = server.prompts.lock().unwrap();
+    assert_eq!(prompts.len(), 6);
+    assert!(prompts[..5].windows(2).all(|p| p[0] == p[1]));
+    for prompt in &*prompts {
+        for forbidden in [
+            "e2e4",
+            "e7e4",
+            "e7e5",
+            "White Pawn e2-e4",
+            "private",
+            "unfinished",
+            "canonical UCI",
+        ] {
+            assert!(!prompt.contains(forbidden), "{forbidden}");
+        }
+    }
+    assert!(prompts[5].contains("Rejected moves:"));
+    assert!(prompts[5].contains("\\\"from\\\":[5,7]"));
 }

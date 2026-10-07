@@ -89,6 +89,15 @@ impl Game {
         let count = self.repetitions.entry(hash).or_default();
         *count = count.saturating_add(1);
     }
+
+    /// Number of occurrences of the current position, including this one.
+    pub fn current_repetition_count(&self) -> u32 {
+        self.repetitions
+            .get(&position_hash(&self.position))
+            .copied()
+            .unwrap_or(0)
+            .into()
+    }
 }
 
 fn position_hash(position: &Position) -> u64 {

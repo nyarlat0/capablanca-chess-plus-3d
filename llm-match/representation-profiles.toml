@@ -1,0 +1,55 @@
+# CLI --llm-profile wins over LLM_PROFILE, which wins over this default.
+active_profile = "classic"
+
+[profiles.classic]
+state_format = "pieces_ascii"
+history_mode = "full"
+history_format = "semantic"
+output_format = "semantic"
+
+[profiles.classic-last-move]
+state_format = "pieces_ascii"
+history_mode = "last_n"
+history_count = 1
+history_format = "semantic"
+output_format = "semantic"
+
+[profiles.numeric-no-history]
+state_format = "numeric"
+history_mode = "none"
+history_format = "numeric"
+output_format = "numeric_json"
+
+[profiles.numeric-last-move]
+state_format = "numeric"
+history_mode = "last_n"
+history_count = 1
+history_format = "numeric"
+output_format = "numeric"
+
+[profiles.numeric-short-history]
+state_format = "numeric"
+history_mode = "last_n"
+history_count = 4
+history_format = "numeric"
+output_format = "numeric"
+
+[profiles.numeric-ascii-last-move]
+state_format = "numeric_ascii"
+history_mode = "last_n"
+history_count = 1
+history_format = "numeric"
+output_format = "numeric"
+
+[profiles.hybrid]
+state_format = "numeric_ascii"
+history_mode = "last_n"
+history_count = 2
+history_format = "semantic"
+output_format = "semantic"
+
+[profiles.uci-no-history]
+state_format = "pieces_ascii"
+history_mode = "none"
+history_format = "semantic"
+output_format = "uci"

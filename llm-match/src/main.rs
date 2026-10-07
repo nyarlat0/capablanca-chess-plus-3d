@@ -4,12 +4,27 @@ use std::io::{self, Write};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "llm_match=info".into()),
+        )
+        .with_writer(std::io::stderr)
+        .init();
     let mut config = llm_match::Config::load()?;
     let mut variant = Variant::Gothic;
     let mut human = Color::White;
+    let mut print_prompt = false;
+    let mut replay = String::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--llm-profile" => {
+                args.next().context("missing profile name")?;
+            }
+            s if s.starts_with("--llm-profile=") => {}
+            "--print-prompt" => print_prompt = true,
+            "--moves" => replay = args.next().context("missing quoted UCI history")?,
             "--url" => {
                 config.endpoint =
                     llm_match::normalize_endpoint(&args.next().context("missing URL")?)?
@@ -21,7 +36,7 @@ async fn main() -> Result<()> {
             }
             "--help" => {
                 println!(
-                    "llm-match [--variant Gothic|Embassy|Grand|Shako|Pemba|TerachessII] [--black] [--url http://aistation:5001]\nEnter a UCI move, or quit. Defaults come from llm-match/.env."
+                    "llm-match [--variant Gothic|Embassy|Grand|Shako|Pemba|TerachessII] [--black] [--url http://aistation:5001] [--llm-profile NAME] [--print-prompt] [--moves 'e2e4 e7e5']\nEnter a UCI move, or quit. Defaults come from llm-match/.env."
                 );
                 return Ok(());
             }
@@ -29,8 +44,33 @@ async fn main() -> Result<()> {
         }
     }
     let mut game = llm_match::Match::new(variant, human.opposite());
+    eprintln!(
+        "LLM representation profile: {}\n{}",
+        config.profile_name,
+        config.representation.summary()
+    );
+    for mv in replay.split_whitespace() {
+        if game.game().position().side_to_move() == human {
+            game.accept_human(mv)?;
+        } else {
+            game.accept_model(mv)?;
+        }
+    }
+    if print_prompt {
+        let data = game.prompt_data_with(&config)?;
+        println!(
+            "{}",
+            prompt_core::PromptBuilder::new()
+                .build(&config.context, &config.instruct, &config.system, &data)?
+                .text
+        );
+        return Ok(());
+    }
     loop {
-        println!("{}", llm_match::board_state(game.game().position()));
+        println!(
+            "{}",
+            llm_match::render_state(game.game().position(), config.representation.state_format)
+        );
         if !matches!(
             game.game().outcome(),
             GameOutcome::Ongoing | GameOutcome::Check

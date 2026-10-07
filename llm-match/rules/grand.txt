@@ -1,0 +1,8 @@
+{{board-header}}
+
+{{piece-legend}}
+VARIANT RULES
+{{castling-rules}}
+{{pawn-rules}}
+Promotion is optional on the last three ranks and compulsory on the final rank. Restore only a missing originally available non-pawn/non-king piece, within its initial material count. If none is missing, a Pawn cannot enter the final rank but still attacks it.
+{{promotion-rules}}

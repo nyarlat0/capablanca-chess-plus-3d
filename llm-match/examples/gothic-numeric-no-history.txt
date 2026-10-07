@@ -1,0 +1,70 @@
+AUTHORITATIVE CURRENT POSITION
+COORDINATE SYSTEM
+x increases from file a toward the right:
+a=1, b=2, c=3, d=4, e=5, f=6, g=7, h=8, i=9, j=10
+y is the board rank (rank 1 = y=1, rank 2 = y=2, and so on).
+Coordinates are absolute and NEVER mirrored or rotated for Black.
+
+BOARD
+width: 10
+height: 8
+
+SIDE TO MOVE
+White
+
+Castling:
+White queenside: yes
+White kingside: yes
+Black queenside: yes
+Black kingside: yes
+
+En passant: none
+
+Halfmove clock: 0
+Fullmove number: 1
+
+WHITE PIECES
+Archbishop: (7,1)
+Bishop: (3,1)
+Bishop: (8,1)
+Chancellor: (5,1)
+King: (6,1)
+Knight: (2,1)
+Knight: (9,1)
+Pawn: (1,2)
+Pawn: (2,2)
+Pawn: (3,2)
+Pawn: (4,2)
+Pawn: (5,2)
+Pawn: (6,2)
+Pawn: (7,2)
+Pawn: (8,2)
+Pawn: (9,2)
+Pawn: (10,2)
+Queen: (4,1)
+Rook: (1,1)
+Rook: (10,1)
+
+BLACK PIECES
+Archbishop: (7,8)
+Bishop: (3,8)
+Bishop: (8,8)
+Chancellor: (5,8)
+King: (6,8)
+Knight: (2,8)
+Knight: (9,8)
+Pawn: (1,7)
+Pawn: (2,7)
+Pawn: (3,7)
+Pawn: (4,7)
+Pawn: (5,7)
+Pawn: (6,7)
+Pawn: (7,7)
+Pawn: (8,7)
+Pawn: (9,7)
+Pawn: (10,7)
+Queen: (4,8)
+Rook: (1,8)
+Rook: (10,8)
+
+Current position occurrences: 1
