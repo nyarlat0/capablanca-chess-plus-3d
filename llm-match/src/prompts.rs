@@ -1,97 +1,223 @@
-use capablanca_chess_plus::{CastleSide, Color, Position, PromotionRule, Variant};
+use capablanca_chess_plus::{
+    CastleSide, Color, Move, MoveKind, Piece, PieceKind, Position, PromotionRule, Square, Variant,
+};
 use std::fmt::Write;
 
-const COMPOUNDS: &str = "A=archbishop (bishop+knight), C=chancellor (rook+knight).";
-const SHAKO: &str = "C=cannon: noncapturing rook slides; captures along a rook line over exactly one intervening piece of either color. E=elephant: diagonal step or leap of exactly two squares, jumping intervening pieces.";
+fn kinds(position: &Position) -> Vec<PieceKind> {
+    let mut kinds: Vec<_> = PieceKind::ALL
+        .into_iter()
+        .filter(|kind| {
+            position.rules().uses_piece(*kind)
+                || position
+                    .board()
+                    .pieces()
+                    .any(|(_, piece)| piece.kind == *kind)
+        })
+        .collect();
+    kinds.sort_by_key(|kind| kind.display_name());
+    kinds
+}
 
-/// Each variant gets its own rules prompt; castling/promotion details come from
-/// the same rules object used to validate moves, not a separate move generator.
 pub fn chess_rules(variant: Variant) -> String {
-    let rules = variant.rules();
+    let position = variant.starting_position();
+    let rules = position.rules();
     let size = rules.board_size();
     let mut text = format!(
-        "You are playing {} on a {}x{} board, files a-{}, ranks 1-{}. White advances toward increasing ranks, Black toward decreasing ranks. Uppercase symbols are White, lowercase Black.\n",
+        "You are playing {} on a {}x{} board, files a-{}, ranks 1-{}. White advances toward increasing ranks; Black toward decreasing ranks. Uppercase symbols are White, lowercase Black.\n",
         rules.name(),
         size.files(),
         size.ranks(),
         (b'a' + size.files() - 1) as char,
         size.ranks()
     );
-    text.push_str(match variant {
-        Variant::Capablanca => "Capablanca starting arrangement. ",
-        Variant::Gothic => "Gothic starting arrangement. ",
-        Variant::Embassy => "Embassy starting arrangement. ",
-        Variant::Schoolbook => "Schoolbook starting arrangement. ",
-        Variant::Bird => "Bird starting arrangement. ",
-        Variant::Carrera => "Carrera starting arrangement. ",
-        Variant::Grand => "Grand: pawns start on ranks 3/8. Promotion is optional on the last three ranks and compulsory on the final rank, and can only restore a missing originally available non-pawn, non-king piece. If no restoration is available a pawn cannot enter the last rank, but still attacks it. ",
-        Variant::Shako => "Shako: pawns start on ranks 3/8. ",
-        Variant::Pemba => "Pemba: pawns start on ranks 3/8. M=camel (1,3 leaper), Z=giraffe (1,4 leaper), V=archer (diagonal cannon: quiet bishop slides, captures across exactly one screen), W=machine (orthogonal step or two-square leap). ",
-        Variant::TerachessII => "Terachess II: A=amazon (queen+knight), X=archbishop (bishop+knight), H=chancellor (rook+knight), M=camel (1,3 leaper), Z=giraffe (1,4 leaper), V=archer (diagonal cannon: quiet bishop slides, captures across exactly one screen), W=machine (orthogonal step or two-square leap), L=lion (nonroyal king+knight+two-square orthogonal/diagonal leaps), F=buffalo (knight+camel+giraffe), J=centaur (nonroyal king+knight), S=admiral (rook+one diagonal step), Y=missionary (bishop+one orthogonal step), G=eagle (one diagonal step then optionally an outward orthogonal slide), U=rhinoceros (one orthogonal step then optionally an outward diagonal slide); eagle/rhino need the first square empty to continue. I=prince (nonroyal king plus a quiet forward double-step through an empty square), O=sorceress (cannon along orthogonal or diagonal lines), D=duchess (leaps 1, 2 or 3 squares in any orthogonal/diagonal direction), T=troll (three-square orthogonal/diagonal leap plus ordinary pawn single advance and diagonal capture). All leaps ignore intervening pieces. Pawns and princes can double-step from any rank if both squares are empty; both can be captured en passant by a pawn after a double-step (even if that double-step promoted the victim). No castling. An unmoved king may instead jump to an empty square at Chebyshev distance two, not out of/into check; straight/diagonal jumps must pass a safe intermediate square, knight-shaped jumps require at least one of the two intermediate squares safe. FEN J/j records this right. On reaching the final rank: pawn/troll -> queen (q), prince -> amazon (a), knight/camel/giraffe -> buffalo (f), elephant/machine/centaur -> lion (l). Troll promotion requires its pawn-like move, not a leap. These promotion suffixes are mandatory. ",
-    });
-    match variant {
-        Variant::Shako | Variant::Pemba | Variant::TerachessII => text.push_str(SHAKO),
-        _ => text.push_str(COMPOUNDS),
+    text.push_str("PIECE LEGEND\nThese symbol meanings are authoritative. Never infer piece identities from standard chess, memory, starting squares, or the letter itself.\n");
+    for kind in kinds(&position) {
+        writeln!(
+            text,
+            "{} = {}: {}",
+            rules.piece_symbol(Piece::new(Color::White, kind)),
+            kind.display_name(),
+            kind.movement_description()
+        )
+        .unwrap();
     }
-    text.push('\n');
+    text.push_str("\nVARIANT RULES\n");
+    if variant == Variant::Gothic {
+        text.push_str("Initial back rank (not the current position), a-j: R N B Q C K A B N R\n");
+    }
     if !rules.castling().any() {
-        text.push_str("No castling.\n");
+        text.push_str("Castling: none\n");
     }
     for color in [Color::White, Color::Black] {
         for side in CastleSide::ALL {
             if let Some(route) = rules.castling().route(color, side) {
-                writeln!(text, "{color:?} castling: king {}->{}, rook {}->{}; send the king coordinates. Ordinary unmoved/empty-path/check restrictions apply.", route.king_from, route.king_to, route.rook_from, route.rook_to).unwrap();
+                writeln!(text, "{color:?} {side:?} castling: king {}->{}, rook {}->{}; send only the king coordinates. Requires retained rights, an empty route and no check on the king's start, transit or destination.", route.king_from, route.king_to, route.rook_from, route.rook_to).unwrap();
             }
         }
     }
-    if let PromotionRule::LastRank { choices } = rules.promotion() {
-        let suffixes: String = choices.iter().map(|kind| kind.fen_char()).collect();
-        writeln!(
-            text,
-            "Last-rank pawn promotion requires one suffix from: {suffixes}."
-        )
-        .unwrap();
+    if rules.rapid_pawns() {
+        text.push_str("Pawns and princes may advance two squares from any rank if both squares are empty. A pawn can capture a double-stepped pawn or prince en passant on the next move, even if that move promoted the victim. Princes and trolls cannot capture en passant.\n");
+    } else {
+        writeln!(text, "Pawn double-step only from White rank {} / Black rank {}, with both squares empty. Ordinary en passant applies.", rules.pawn_start_rank(Color::White)+1, rules.pawn_start_rank(Color::Black)+1).unwrap();
     }
-    if variant == Variant::Grand {
-        text.push_str("Restoration UCI suffixes: q,r,b,n,a,c; availability is limited by missing original material, not arbitrary choice.\n");
+    if rules.king_initial_jump() {
+        text.push_str("Initial king jump: while its right remains, a king not in check may jump to an empty square at Chebyshev distance two; destination must be safe. Straight/diagonal jumps require the intermediate square safe; knight-shaped jumps require at least one of the two intermediate squares safe. Intervening pieces do not block this jump. Any king move consumes the right.\n");
+    }
+    match rules.promotion() {
+        PromotionRule::LastRank { choices } => {
+            let choices = choices.iter().map(|k| format!("{}={}", k.fen_char(), k.display_name())).collect::<Vec<_>>().join(", ");
+            writeln!(text, "Pawn promotion on the final rank is mandatory; append one suffix: {choices}.").unwrap();
+        }
+        PromotionRule::Grand => text.push_str("Grand promotion is optional on the last three ranks and compulsory on the final rank; restore only a missing originally available non-pawn/non-king piece. If none is missing, a pawn cannot enter the final rank, but still attacks it. Suffixes: q=Queen, r=Rook, b=Bishop, n=Knight, a=Archbishop, c=Chancellor; availability follows missing original material.\n"),
+        PromotionRule::TerachessII => text.push_str("Compulsory final-rank promotion: Pawn/Troll -> Queen (q); Prince -> Amazon (a); Knight/Camel/Giraffe -> Buffalo (f); Elephant/Machine/Centaur -> Lion (l). Append the indicated suffix. Troll promotion applies only to its pawn-like move, not its three-square leap. Other pieces do not promote.\n"),
     }
     text
 }
 
 pub fn board_state(position: &Position) -> String {
-    let fen = position.to_fen();
     let size = position.board().size();
+    let rules = position.rules();
     let mut text = format!(
-        "AUTHORITATIVE CURRENT POSITION. This state overrides any inferred position from history.\nExtended FEN: {fen}\nSide to move: {:?}\nASCII board (same symbols as FEN; . = empty):\n",
+        "AUTHORITATIVE CURRENT POSITION\nSide to move: {:?}\n\n",
         position.side_to_move()
     );
-    for (index, row) in fen
-        .split_whitespace()
-        .next()
-        .unwrap()
-        .split('/')
-        .enumerate()
-    {
-        write!(text, "{:>2} ", usize::from(size.ranks()) - index).unwrap();
-        let mut empty = 0usize;
-        for c in row.chars().chain(std::iter::once('!')) {
-            if let Some(digit) = c.to_digit(10) {
-                empty = empty * 10 + digit as usize;
-                continue;
+    if rules.castling().any() {
+        text.push_str("Castling:\n");
+        for color in [Color::White, Color::Black] {
+            for (side, name) in [
+                (CastleSide::QueenSide, "queenside"),
+                (CastleSide::KingSide, "kingside"),
+            ] {
+                let available = rules.castling().route(color, side).is_some()
+                    && position.castling_rights().has(color, side);
+                writeln!(
+                    text,
+                    "{color:?} {name}: {}",
+                    if available { "yes" } else { "no" }
+                )
+                .unwrap();
             }
-            for _ in 0..empty {
-                text.push_str(". ");
+        }
+    } else {
+        text.push_str("Castling: none\n");
+    }
+    writeln!(
+        text,
+        "\nEn passant: {}",
+        position
+            .en_passant()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "none".into())
+    )
+    .unwrap();
+    if rules.king_initial_jump() {
+        text.push_str("\nInitial king jump:\n");
+        for color in [Color::White, Color::Black] {
+            writeln!(
+                text,
+                "{color:?}: {}",
+                if position.king_jump_available(color) {
+                    "available"
+                } else {
+                    "unavailable"
+                }
+            )
+            .unwrap();
+        }
+    }
+    text.push_str("\nCURRENT PIECES\n");
+    for color in [Color::White, Color::Black] {
+        writeln!(text, "\n{color:?}:").unwrap();
+        for kind in kinds(position) {
+            // File, then numeric rank: a2 precedes a10.
+            let mut squares: Vec<_> = position
+                .board()
+                .pieces()
+                .filter(|(_, p)| p.color == color && p.kind == kind)
+                .map(|(s, _)| s)
+                .collect();
+            squares.sort_by_key(|s| (s.file(), s.rank()));
+            if !squares.is_empty() {
+                writeln!(
+                    text,
+                    "{} {}: {}",
+                    rules.piece_symbol(Piece::new(Color::White, kind)),
+                    kind.display_name(),
+                    squares
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+                .unwrap();
             }
-            empty = 0;
-            if c != '!' {
-                write!(text, "{c} ").unwrap();
-            }
+        }
+    }
+    text.push_str("\nASCII BOARD\n");
+    for rank in (0..size.ranks()).rev() {
+        write!(text, "{:>2}", rank + 1).unwrap();
+        for file in 0..size.files() {
+            let symbol = position
+                .board()
+                .piece_at(Square::new(file, rank))
+                .map(|p| rules.piece_symbol(p))
+                .unwrap_or('.');
+            write!(text, " {symbol}").unwrap();
         }
         text.push('\n');
     }
-    text.push_str("   ");
+    text.push_str("  ");
     for file in 0..size.files() {
-        write!(text, "{} ", (b'a' + file) as char).unwrap();
+        write!(text, " {}", (b'a' + file) as char).unwrap();
+    }
+    text
+}
+
+/// Call on the pre-move position, after legality validation.
+pub(crate) fn describe_move(position: &Position, mv: Move) -> String {
+    let piece = position
+        .board()
+        .piece_at(mv.from)
+        .expect("validated source");
+    let captures = mv.kind == MoveKind::EnPassant || position.board().piece_at(mv.to).is_some();
+    let mut text = format!(
+        "{:?} {} {}{}{}",
+        piece.color,
+        piece.kind.display_name(),
+        mv.from,
+        if captures { 'x' } else { '-' },
+        mv.to
+    );
+    if let Some(kind) = mv.promotion {
+        write!(text, "={}", kind.display_name()).unwrap();
+    }
+    match mv.kind {
+        MoveKind::EnPassant => text.push_str(" (en-passant)"),
+        MoveKind::Castle(side) => {
+            let route = position
+                .rules()
+                .castling()
+                .route(piece.color, side)
+                .unwrap();
+            write!(
+                text,
+                " (castling; Rook {}-{})",
+                route.rook_from, route.rook_to
+            )
+            .unwrap();
+        }
+        MoveKind::Normal => {
+            if piece.kind == PieceKind::King
+                && mv
+                    .from
+                    .file()
+                    .abs_diff(mv.to.file())
+                    .max(mv.from.rank().abs_diff(mv.to.rank()))
+                    == 2
+            {
+                text.push_str(" (initial king jump)");
+            }
+        }
     }
     text
 }

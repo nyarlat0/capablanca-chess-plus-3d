@@ -1,6 +1,6 @@
 {
-  "genamt": 2000,
-  "temp": 0.9,
+  "genamt": 4000,
+  "temp": 0.3,
   "top_p": 0.95,
   "min_p": 0.05,
   "top_k": 40,

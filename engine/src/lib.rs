@@ -10,6 +10,7 @@
 pub mod board;
 pub mod game;
 pub mod mv;
+mod piece_info;
 pub mod position;
 pub mod rules;
 pub mod types;

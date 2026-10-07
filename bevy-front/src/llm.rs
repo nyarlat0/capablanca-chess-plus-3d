@@ -6,6 +6,7 @@ use crate::{
 };
 use bevy::{
     ecs::hierarchy::ChildSpawnerCommands,
+    input_focus::tab_navigation::TabIndex,
     prelude::*,
     text::{EditableText, TextCursorStyle},
 };
@@ -73,6 +74,8 @@ struct Endpoint;
 #[derive(Component)]
 struct StatusButton;
 #[derive(Component)]
+struct StatusPanel;
+#[derive(Component)]
 struct StatusText;
 
 pub(crate) fn spawn_controls(parent: &mut ChildSpawnerCommands, font: &Handle<Font>) {
@@ -108,6 +111,7 @@ pub(crate) fn spawn_controls(parent: &mut ChildSpawnerCommands, font: &Handle<Fo
             ));
             p.spawn((
                 Endpoint,
+                TabIndex(0),
                 input,
                 Node {
                     width: percent(100),
@@ -149,16 +153,21 @@ fn sync_controls(
     }
 }
 
-fn setup_status(mut commands: Commands) {
+fn setup_status(mut commands: Commands, assets: Res<AssetServer>) {
+    // The frontend disables Bevy's default_font feature: every label needs
+    // an explicit font, otherwise the retry control renders without text.
+    let font: Handle<Font> = assets.load("fonts/FiraSans-Bold.ttf");
     commands
         .spawn((
-            StatusButton,
-            Button,
+            StatusPanel,
             Node {
                 position_type: PositionType::Absolute,
                 bottom: px(12),
                 left: percent(5),
                 max_width: percent(90),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Start,
+                row_gap: px(10),
                 padding: UiRect::all(px(10)),
                 border_radius: BorderRadius::all(px(8)),
                 display: Display::None,
@@ -172,37 +181,85 @@ fn setup_status(mut commands: Commands) {
                 StatusText,
                 Text::default(),
                 TextFont {
+                    font: font.clone().into(),
                     font_size: FontSize::Px(14.),
                     ..default()
                 },
+                TextColor(Color::srgb(0.97, 0.95, 0.98)),
             ));
+            p.spawn((
+                StatusButton,
+                Button,
+                TabIndex(0),
+                Node {
+                    display: Display::None,
+                    min_height: px(36),
+                    padding: UiRect::axes(px(18), px(8)),
+                    border: UiRect::all(px(1)),
+                    border_radius: BorderRadius::all(px(8)),
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.85, 0.10, 0.39)),
+                BorderColor::all(Color::srgb(1.0, 0.42, 0.65)),
+            ))
+            .with_children(|button| {
+                button.spawn((
+                    Text::new("Retry"),
+                    TextFont {
+                        font: font.into(),
+                        font_size: FontSize::Px(16.),
+                        ..default()
+                    },
+                    TextColor(Color::WHITE),
+                    Pickable::IGNORE,
+                ));
+            });
         });
 }
 
 fn update_status(
     menu: Res<GameMenuState>,
     mut session: ResMut<LlmSession>,
-    mut buttons: Query<(&mut Node, &Interaction), With<StatusButton>>,
+    mut panels: Query<&mut Node, (With<StatusPanel>, Without<StatusButton>)>,
+    mut buttons: Query<
+        (&mut Node, Ref<Interaction>, &mut BackgroundColor),
+        (With<StatusButton>, Without<StatusPanel>),
+    >,
     mut labels: Query<&mut Text, With<StatusText>>,
 ) {
-    for (mut node, interaction) in &mut buttons {
-        let visible = !menu.open && menu.active_mode == GameMode::Llm && !session.status.is_empty();
+    let visible = !menu.open && menu.active_mode == GameMode::Llm && !session.status.is_empty();
+    for mut node in &mut panels {
         node.display = if visible {
             Display::Flex
         } else {
             Display::None
         };
-        if visible && *interaction == Interaction::Pressed && session.failed {
+    }
+    for (mut node, interaction, mut background) in &mut buttons {
+        node.display = if visible && session.failed {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        background.0 = match *interaction {
+            Interaction::Pressed => Color::srgb(0.66, 0.06, 0.29),
+            Interaction::Hovered => Color::srgb(1.0, 0.25, 0.55),
+            Interaction::None => Color::srgb(0.85, 0.10, 0.39),
+        };
+        if visible
+            && interaction.is_changed()
+            && *interaction == Interaction::Pressed
+            && session.failed
+        {
             session.failed = false;
             session.status = "Retrying…".into();
+            node.display = Display::None;
         }
     }
     for mut text in &mut labels {
-        text.0 = if session.failed {
-            format!("{}\nClick to retry", session.status)
-        } else {
-            session.status.clone()
-        };
+        text.0 = session.status.clone();
     }
 }
 
@@ -274,12 +331,12 @@ fn update_match(
     let state = session
         .state
         .get_or_insert_with(|| llm_match::Match::new(chess.variant, menu.active_side.opposite()));
-    if state.history().len() > chess.move_history.len()
+    if state.uci_history().len() > chess.move_history.len()
         || state
-            .history()
+            .uci_history()
             .iter()
             .zip(&chess.move_history)
-            .any(|(accepted, actual)| accepted.content != *actual)
+            .any(|(accepted, actual)| accepted != actual)
     {
         session.failed = true;
         session.status = "LLM history mismatch; start a new game".into();
@@ -287,7 +344,7 @@ fn update_match(
     }
     // Only human moves can have been applied outside this session. Accepted
     // model moves were committed to both games together in Finished above.
-    for mv in &chess.move_history[state.history().len()..] {
+    for mv in &chess.move_history[state.uci_history().len()..] {
         if let Err(error) = state.accept_human(mv) {
             session.failed = true;
             session.status = format!("LLM history mismatch: {error}");
@@ -377,8 +434,96 @@ mod tests {
         let mut world = world();
         world.run_system_once(update_match).unwrap();
         let session = world.resource::<LlmSession>();
-        assert_eq!(session.state.as_ref().unwrap().history()[0].content, "e2e4");
+        assert_eq!(session.state.as_ref().unwrap().uci_history()[0], "e2e4");
+        assert_eq!(
+            session.state.as_ref().unwrap().history()[0].content,
+            "White Pawn e2-e4"
+        );
         assert!(session.pending.is_none());
+        // Run again: semantic text must NOT be compared to ChessMatch UCI.
+        world.run_system_once(update_match).unwrap();
+        assert!(!world.resource::<LlmSession>().failed);
+    }
+
+    #[test]
+    fn llm_semantic_history_remains_synchronized_after_model_and_human_moves() {
+        let mut world = world();
+        world.run_system_once(update_match).unwrap();
+        let mut state = world.resource::<LlmSession>().state.clone().unwrap();
+        let mv = state.accept_model("e7e5").unwrap();
+        let generation = world.resource::<ChessMatch>().generation;
+        let (tx, rx) = mpsc::channel();
+        tx.send(Event::Finished(state, Ok(mv))).unwrap();
+        let (cancel, _rx) = tokio::sync::oneshot::channel();
+        world.resource_mut::<LlmSession>().pending = Some(Pending {
+            generation,
+            events: Mutex::new(rx),
+            _cancel: cancel,
+        });
+        world.run_system_once(update_match).unwrap();
+        let mut chess = world.resource_mut::<ChessMatch>();
+        let mv = chess.game.position().parse_uci_move("d2d4").unwrap();
+        apply_move(&mut chess, mv, None);
+        world.run_system_once(update_match).unwrap();
+        let session = world.resource::<LlmSession>();
+        assert!(!session.failed);
+        let state = session.state.as_ref().unwrap();
+        assert_eq!(
+            state.uci_history(),
+            world.resource::<ChessMatch>().move_history
+        );
+        assert_eq!(state.history()[1].content, "Black Pawn e7-e5");
+        assert_eq!(state.history()[2].content, "White Pawn d2-d4");
+    }
+
+    #[test]
+    fn llm_url_field_has_working_input_tab_setup() {
+        let mut world = World::new();
+        world
+            .commands()
+            .spawn_empty()
+            .with_children(|p| spawn_controls(p, &Handle::default()));
+        world.flush();
+        let mut query = world.query_filtered::<(&TabIndex, &EditableText), With<Endpoint>>();
+        let (tab, input) = query.single(&world).unwrap();
+        assert_eq!(tab.0, 0);
+        assert!(!input.allow_newlines);
+    }
+
+    #[test]
+    fn retry_button_is_visible_for_failure_and_hides_after_click() {
+        let mut world = world();
+        {
+            let mut session = world.resource_mut::<LlmSession>();
+            session.failed = true;
+            session.status = "KoboldCPP unavailable".into();
+        }
+        let panel = world.spawn((StatusPanel, Node::default())).id();
+        let button = world
+            .spawn((
+                StatusButton,
+                Button,
+                Node::default(),
+                BackgroundColor::default(),
+            ))
+            .id();
+        let label = world.spawn((StatusText, Text::default())).id();
+        world.run_system_once(update_status).unwrap();
+        assert_eq!(world.get::<Node>(panel).unwrap().display, Display::Flex);
+        assert_eq!(world.get::<Node>(button).unwrap().display, Display::Flex);
+        assert_eq!(
+            world.get::<BackgroundColor>(button).unwrap().0,
+            Color::srgb(0.85, 0.10, 0.39)
+        );
+        assert_eq!(world.get::<Text>(label).unwrap().0, "KoboldCPP unavailable");
+        *world.get_mut::<Interaction>(button).unwrap() = Interaction::Pressed;
+        world.run_system_once(update_status).unwrap();
+        assert!(!world.resource::<LlmSession>().failed);
+        assert_eq!(world.get::<Node>(button).unwrap().display, Display::None);
+        assert_eq!(world.get::<Text>(label).unwrap().0, "Retrying…");
+        world.resource_mut::<GameMenuState>().open = true;
+        world.run_system_once(update_status).unwrap();
+        assert_eq!(world.get::<Node>(panel).unwrap().display, Display::None);
     }
 
     #[test]

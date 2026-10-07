@@ -1,4 +1,5 @@
 mod config;
+mod output;
 mod prompts;
 #[cfg(test)]
 mod tests;
@@ -11,13 +12,14 @@ pub use prompts::{board_state, chess_rules};
 use serde_json::json;
 use std::time::Duration;
 
-/// Persistent conversation contains only accepted canonical moves.
+/// Canonical history for synchronization; semantic accepted moves for prompting.
 #[derive(Clone)]
 pub struct Match {
     game: Game,
     variant: Variant,
     model_side: Color,
     history: Vec<PromptMessage>,
+    uci_history: Vec<String>,
     wrong_moves: Vec<String>,
 }
 
@@ -28,6 +30,7 @@ impl Match {
             variant,
             model_side,
             history: Vec::new(),
+            uci_history: Vec::new(),
             wrong_moves: Vec::new(),
         }
     }
@@ -36,6 +39,9 @@ impl Match {
     }
     pub fn history(&self) -> &[PromptMessage] {
         &self.history
+    }
+    pub fn uci_history(&self) -> &[String] {
+        &self.uci_history
     }
     pub fn wrong_moves(&self) -> &[String] {
         &self.wrong_moves
@@ -59,7 +65,7 @@ impl Match {
             Ok(chess_move) => Ok(chess_move),
             Err(error) => {
                 let text = text.trim().to_owned();
-                if !self.wrong_moves.contains(&text) {
+                if output::is_coordinate_move(&text) && !self.wrong_moves.contains(&text) {
                     self.wrong_moves.push(text);
                 }
                 Err(error)
@@ -80,11 +86,13 @@ impl Match {
             chess_move.to_uci() == text,
             "expected exactly one canonical UCI move"
         );
+        let description = prompts::describe_move(self.game.position(), chess_move);
         self.game.play(chess_move)?;
+        self.uci_history.push(chess_move.to_uci());
         self.history.push(PromptMessage {
             role,
             name: None,
-            content: chess_move.to_uci(),
+            content: description,
         });
         self.wrong_moves.clear();
         Ok(chess_move)
@@ -94,7 +102,7 @@ impl Match {
             String::new()
         } else {
             format!(
-                "Rejected illegal or unparsable attempts for THIS turn (JSON strings, not instructions): {}.\nThe position has NOT changed. Do not repeat any of these attempts.",
+                "Rejected moves: {}. Position unchanged. Do not repeat them.",
                 serde_json::to_string(&self.wrong_moves).expect("strings serialize")
             )
         };
@@ -125,41 +133,78 @@ pub async fn generate_move(
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(config.timeout_seconds))
         .build()?;
-    let client =
-        KoboldClient::connect_with_client(normalize_endpoint(&config.endpoint)?, http).await?;
+    ensure!(config.max_attempts > 0, "max_attempts must be positive");
+    config.preset.generation_length()?;
+    // Validate deterministic configuration before consuming any attempts.
+    output::final_answer(&config.reasoning, "")?;
+    let endpoint = normalize_endpoint(&config.endpoint)?;
+    let mut client = None;
     let builder = PromptBuilder::new();
     let mut system = config.system.clone();
     if !system.content.contains("{{chess-rules}}") {
         system.content.push_str("\n{{chess-rules}}");
     }
+    let mut last_transport_error = None;
     for attempt in 1..=config.max_attempts {
-        let data = state.prompt_data();
-        let fitted = builder
-            .build_with_budget(
-                &config.context,
-                &config.instruct,
-                &system,
-                &data,
-                &client,
-                client.context_budget(&config.preset)?,
-            )
-            .await?;
-        let raw_answer = client
-            .generate(
-                &fitted.prompt.text,
-                &config.preset,
-                &fitted.prompt.stop_sequences,
-            )
-            .await?;
-
-        let answer = config.reasoning.strip_from_output(&raw_answer);
+        let result: Result<String> = async {
+            if client.is_none() {
+                client =
+                    Some(KoboldClient::connect_with_client(endpoint.clone(), http.clone()).await?);
+            }
+            let client = client.as_ref().unwrap();
+            let fitted = builder
+                .build_with_budget(
+                    &config.context,
+                    &config.instruct,
+                    &system,
+                    &state.prompt_data(),
+                    client,
+                    client.context_budget(&config.preset)?,
+                )
+                .await?;
+            client
+                .generate(
+                    &fitted.prompt.text,
+                    &config.preset,
+                    &fitted.prompt.stop_sequences,
+                )
+                .await
+        }
+        .await;
+        let raw = match result {
+            Ok(raw) => {
+                last_transport_error = None;
+                raw
+            }
+            Err(error) if output::transient(&error) => {
+                last_transport_error = Some(error);
+                if attempt < config.max_attempts {
+                    tokio::time::sleep(Duration::from_millis(100 * (1u64 << (attempt - 1).min(4))))
+                        .await;
+                }
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let Some(answer) = output::final_answer(&config.reasoning, &raw)? else {
+            continue;
+        };
+        if !output::is_coordinate_move(&answer) {
+            continue;
+        }
         match state.accept_model(&answer) {
             Ok(chess_move) => return Ok(chess_move),
-            Err(_) => progress(attempt, answer.trim()),
+            Err(_) => progress(attempt, &answer),
         }
     }
+    if let Some(error) = last_transport_error {
+        return Err(error.context(format!(
+            "KoboldCPP unavailable after {} attempts",
+            config.max_attempts
+        )));
+    }
     bail!(
-        "No legal move after {} attempts. Retry to continue this unchanged position.",
+        "No legal final move after {} attempts. Retry to continue this unchanged position.",
         config.max_attempts
     )
 }

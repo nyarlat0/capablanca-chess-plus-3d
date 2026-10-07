@@ -562,12 +562,12 @@ impl VariantRules {
     }
 
     #[must_use]
-    pub(crate) const fn rapid_pawns(&self) -> bool {
+    pub const fn rapid_pawns(&self) -> bool {
         self.rapid_pawns
     }
 
     #[must_use]
-    pub(crate) const fn king_initial_jump(&self) -> bool {
+    pub const fn king_initial_jump(&self) -> bool {
         self.king_initial_jump
     }
 
@@ -641,7 +641,7 @@ impl VariantRules {
         }
     }
 
-    fn uses_piece(&self, kind: PieceKind) -> bool {
+    pub fn uses_piece(&self, kind: PieceKind) -> bool {
         self.initial_material
             .iter()
             .any(|material| material[piece_index(kind)] > 0)

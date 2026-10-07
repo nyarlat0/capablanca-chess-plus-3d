@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 const ORTHOGONAL_DIRECTIONS: [(i8, i8); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 const DIAGONAL_DIRECTIONS: [(i8, i8); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
-const KNIGHT_OFFSETS: [(i8, i8); 8] = [
+pub(crate) const KNIGHT_OFFSETS: [(i8, i8); 8] = [
     (1, 2),
     (2, 1),
     (2, -1),
@@ -19,7 +19,7 @@ const KNIGHT_OFFSETS: [(i8, i8); 8] = [
     (-2, 1),
     (-1, 2),
 ];
-const ELEPHANT_OFFSETS: [(i8, i8); 8] = [
+pub(crate) const ELEPHANT_OFFSETS: [(i8, i8); 8] = [
     (1, 1),
     (1, -1),
     (-1, 1),
@@ -29,7 +29,7 @@ const ELEPHANT_OFFSETS: [(i8, i8); 8] = [
     (-2, 2),
     (-2, -2),
 ];
-const CAMEL_OFFSETS: [(i8, i8); 8] = [
+pub(crate) const CAMEL_OFFSETS: [(i8, i8); 8] = [
     (1, 3),
     (3, 1),
     (3, -1),
@@ -39,7 +39,7 @@ const CAMEL_OFFSETS: [(i8, i8); 8] = [
     (-3, 1),
     (-1, 3),
 ];
-const GIRAFFE_OFFSETS: [(i8, i8); 8] = [
+pub(crate) const GIRAFFE_OFFSETS: [(i8, i8); 8] = [
     (2, 3),
     (3, 2),
     (3, -2),
@@ -49,7 +49,7 @@ const GIRAFFE_OFFSETS: [(i8, i8); 8] = [
     (-3, 2),
     (-2, 3),
 ];
-const MACHINE_OFFSETS: [(i8, i8); 8] = [
+pub(crate) const MACHINE_OFFSETS: [(i8, i8); 8] = [
     (1, 0),
     (-1, 0),
     (0, 1),
