@@ -7,7 +7,7 @@ fn cli_profile_overrides_environment_and_unknown_profile_fails_without_network()
         .env("LLM_PROFILE", "numeric-no-history")
         .args([
             "--llm-profile",
-            "classic-last-move",
+            "classic",
             "--print-prompt",
             "--moves",
             "e2e4 e7e5",
@@ -22,7 +22,7 @@ fn cli_profile_overrides_environment_and_unknown_profile_fails_without_network()
     let prompt = String::from_utf8(run.stdout).unwrap();
     assert!(prompt.contains("ASCII BOARD"));
     assert!(prompt.contains("Black Pawn e7-e5"));
-    assert!(!prompt.contains("White Pawn e2-e4"));
+    assert!(prompt.contains("White Pawn e2-e4"));
     let run = Command::new(exe)
         .env("LLM_PROFILE", "numeric-no-history")
         .args(["--print-prompt"])

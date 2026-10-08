@@ -250,14 +250,36 @@ pub(crate) fn numeric_move(position: &Position, mv: Move, role: PromptRole) -> P
 pub fn render_history(
     semantic: &[PromptMessage],
     numeric: &[PromptMessage],
+    canonical: &[String],
+    json: &[PromptMessage],
     profile: &Representation,
 ) -> Vec<PromptMessage> {
-    let source = if profile.history_format == HistoryFormat::Semantic {
-        semantic
-    } else {
-        numeric
-    };
-    source[profile.history_start(source.len())..].to_vec()
+    if profile.history_mode == HistoryMode::None {
+        return Vec::new();
+    }
+    match profile.history_format {
+        HistoryFormat::Semantic => semantic.to_vec(),
+        HistoryFormat::Numeric => numeric.to_vec(),
+        HistoryFormat::NumericJson => json.to_vec(),
+        HistoryFormat::Uci => semantic
+            .iter()
+            .zip(canonical)
+            .map(|(message, uci)| {
+                let mut message = message.clone();
+                message.content = uci.clone();
+                message
+            })
+            .collect(),
+    }
+}
+
+pub(crate) fn json_move(mv: Move) -> String {
+    format!(
+        "{{\"from\":{},\"to\":{},\"promotion\":{}}}",
+        serde_json::to_string(&numeric_square(mv.from)).unwrap(),
+        serde_json::to_string(&numeric_square(mv.to)).unwrap(),
+        serde_json::to_string(&mv.promotion.map(|p| p.display_name())).unwrap()
+    )
 }
 pub fn history_instruction(profile: &Representation, shown: usize) -> String {
     if shown == 0 {
@@ -265,17 +287,7 @@ pub fn history_instruction(profile: &Representation, shown: usize) -> String {
     }
     match profile.history_mode {
         HistoryMode::None => unreachable!(),
-        HistoryMode::Full => format!(
-            "MOVE HISTORY: all {shown} accepted moves, oldest first. Informational only; use current state as authoritative."
-        ),
-        HistoryMode::LastN => format!(
-            "{}: only the last {shown} accepted move(s), oldest first; this is NOT the complete game history. Use the current state as authoritative.",
-            if shown == 1 {
-                "LAST MOVE"
-            } else {
-                "RECENT MOVES"
-            }
-        ),
+        HistoryMode::Full => "MOVE HISTORY: accepted moves, oldest first, in the same format as your required answer. Earlier entries may be omitted only to fit the context window. Informational only; use the current state as authoritative.".into(),
     }
 }
 pub fn output_instruction(format: OutputFormat) -> &'static str {

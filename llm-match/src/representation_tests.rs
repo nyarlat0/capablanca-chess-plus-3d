@@ -70,7 +70,7 @@ fn numeric_state_rights_inventory_and_no_mirroring() {
     for expected in [
         "width: 10\nheight: 8",
         "SIDE TO MOVE\nBlack",
-        "En passant: (5,3)",
+        "En passant: none",
         "King: (6,1)",
         "King: (6,8)",
         "Chancellor: (5,1)",
@@ -103,26 +103,19 @@ fn history_profiles_filter_without_affecting_canonical_history() {
     for (name, count) in [
         ("numeric-no-history", 0),
         ("classic", 6),
-        ("classic-last-move", 1),
-        ("numeric-last-move", 1),
-        ("numeric-short-history", 4),
+        ("classic-no-history", 0),
+        ("numeric", 6),
+        ("numeric-json", 6),
+        ("uci", 6),
     ] {
         let data = m.prompt_data_with(&config(name)).unwrap();
         assert_eq!(data.messages.len(), count);
         assert_eq!(m.uci_history().len(), 6);
-        if count == 1 {
-            assert!(
-                data.custom["history-instructions"]
-                    .as_str()
-                    .unwrap()
-                    .starts_with("LAST MOVE")
-            );
-        }
     }
-    let c = config("numeric-short-history");
+    let c = config("numeric");
     let data = m.prompt_data_with(&c).unwrap();
-    assert_eq!(data.messages[0].content, "White Pawn: (4,2) -> (4,4)");
-    assert_eq!(data.messages[3].content, "Black Pawn: (1,7) -> (1,6)");
+    assert_eq!(data.messages[0].content, "White Pawn: (5,2) -> (5,4)");
+    assert_eq!(data.messages[5].content, "Black Pawn: (1,7) -> (1,6)");
     assert_eq!(data.messages[0].role, PromptRole::User);
     assert_eq!(data.messages[3].role, PromptRole::Assistant);
     let mut c = config("classic");
@@ -264,15 +257,21 @@ fn history_outputs_round_trip_exactly_including_capture_promotion_and_special_mo
         ),
     ];
     for (variant, fen, uci) in cases {
-        for format in [OutputFormat::Semantic, OutputFormat::Numeric] {
+        for format in [
+            OutputFormat::Semantic,
+            OutputFormat::Numeric,
+            OutputFormat::Uci,
+            OutputFormat::NumericJson,
+        ] {
             let mut source = Match::new(variant, Color::White);
             source.game = Game::new(Position::from_fen(variant.rules(), fen).unwrap());
             let mut target = source.clone();
             source.accept_model(uci).unwrap();
-            let text = if format == OutputFormat::Semantic {
-                &source.history()[0].content
-            } else {
-                &source.numeric_history()[0].content
+            let text = match format {
+                OutputFormat::Semantic => &source.history()[0].content,
+                OutputFormat::Numeric => &source.numeric_history()[0].content,
+                OutputFormat::Uci => &source.uci_history()[0],
+                OutputFormat::NumericJson => &source.json_history[0].content,
             };
             assert_eq!(target.accept_answer(text, format).unwrap().to_uci(), uci);
             assert_eq!(target.uci_history(), source.uci_history());
@@ -314,7 +313,7 @@ fn history_output_is_strict_and_checks_identity_color_capture_and_annotations() 
         }
         assert_eq!(m.accept_answer(good, format).unwrap().to_uci(), "e2e4");
     }
-    let mut c = config("numeric-last-move");
+    let mut c = config("numeric");
     c.representation.output_format = OutputFormat::NumericJson;
     assert!(
         c.representation
@@ -329,6 +328,92 @@ fn history_output_is_strict_and_checks_identity_color_capture_and_annotations() 
 }
 
 #[test]
+fn every_profile_has_an_identical_no_history_partner_and_matching_output() {
+    let p = profiles();
+    for (name, with) in &p.profiles {
+        if name.ends_with("-no-history") {
+            continue;
+        }
+        let mut without = p.profiles[&format!("{name}-no-history")].clone();
+        assert_eq!(without.history_mode, HistoryMode::None);
+        without.history_mode = HistoryMode::Full;
+        assert_eq!(&without, with);
+        assert_eq!(with.history_format.name(), with.output_format.name());
+        let m = replay();
+        let data = m.prompt_data_with(&config(name)).unwrap();
+        assert_eq!(data.messages.len(), m.uci_history().len());
+        let mut receiver = Match::new(Variant::Gothic, Color::White);
+        let first = &data.messages[0].content;
+        assert_eq!(
+            receiver
+                .accept_answer(first, with.output_format)
+                .unwrap()
+                .to_uci(),
+            m.uci_history()[0]
+        );
+        if with.output_format == OutputFormat::NumericJson {
+            assert_eq!(first, r#"{"from":[5,2],"to":[5,4],"promotion":null}"#);
+        }
+        if with.output_format == OutputFormat::Uci {
+            assert_eq!(first, "e2e4");
+        }
+    }
+}
+
+#[tokio::test]
+async fn context_fitting_only_trims_requests_when_necessary_and_preserves_state() {
+    struct Counter(bool);
+    impl prompt_core::TokenCounter for Counter {
+        fn count_tokens<'a>(
+            &'a self,
+            text: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<u64>> + Send + 'a>>
+        {
+            Box::pin(async move {
+                Ok(
+                    if self.0
+                        && (text.contains("White Pawn e2-e4") || text.contains("Black Pawn e7-e5"))
+                    {
+                        20000
+                    } else {
+                        512
+                    },
+                )
+            })
+        }
+    }
+    let m = replay();
+    let c = config("classic");
+    let data = m.prompt_data_with(&c).unwrap();
+    let before = m.game.position().to_fen();
+    for trim in [false, true] {
+        let fitted = PromptBuilder::new()
+            .build_with_budget(
+                &c.context,
+                &c.instruct,
+                &c.system,
+                &data,
+                &Counter(trim),
+                prompt_core::ContextBudget::new(16384, 4000),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fitted.dropped_messages, if trim { 2 } else { 0 });
+        assert!(fitted.prompt.text.contains("Black Pawn a7-a6"));
+        assert!(
+            fitted
+                .prompt
+                .text
+                .contains("AUTHORITATIVE CURRENT POSITION")
+        );
+        assert_eq!(fitted.prompt.text.contains("White Pawn e2-e4"), !trim);
+        assert_eq!(data.messages.len(), 6);
+        assert_eq!(m.uci_history().len(), 6);
+        assert_eq!(m.game.position().to_fen(), before);
+    }
+}
+
+#[test]
 fn profile_schema_validation_and_override_selection() {
     let p = profiles();
     assert_eq!(p.select(None).unwrap().0, "classic");
@@ -337,6 +422,13 @@ fn profile_schema_validation_and_override_selection() {
         "numeric-no-history"
     );
     assert!(p.select(Some("missing")).is_err());
+    assert!(
+        ProfileFile::parse(&include_str!("../representation-profiles.toml").replace(
+            "history_mode = \"full\"",
+            "history_mode = \"full\"\nhistory_count = 4"
+        ))
+        .is_err()
+    );
     for count in ["", "history_count=0", "history_count=-1"] {
         assert!(ProfileFile::parse(&format!("active_profile='x'\n[profiles.x]\nstate_format='numeric'\nhistory_mode='last_n'\nhistory_format='numeric'\noutput_format='numeric_json'\n{count}")).is_err());
     }

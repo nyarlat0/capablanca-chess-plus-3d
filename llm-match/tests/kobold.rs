@@ -343,6 +343,7 @@ async fn deterministic_http_and_context_errors_fail_without_generation_retries()
 async fn no_history_uci_remains_strict() {
     let server = Server::new(vec!["Black Pawn e7-e5", "<thinking>private</thinking>e7e5"]);
     let mut config = llm_match::Config::load_with_profile(Some("uci-no-history")).unwrap();
+    config.reasoning = configured(&server, 2).reasoning;
     config.endpoint = server.endpoint.clone();
     config.max_attempts = 2;
     let mut state = black_turn();
@@ -367,7 +368,8 @@ async fn numeric_history_requires_the_same_final_format_and_preserves_feedback()
         "<thinking>private</thinking>Black Pawn: (5,7) -> (5,4)",
         "<thinking>private</thinking>Black Pawn: (5,7) -> (5,5)",
     ]);
-    let mut config = llm_match::Config::load_with_profile(Some("numeric-last-move")).unwrap();
+    let mut config = llm_match::Config::load_with_profile(Some("numeric")).unwrap();
+    config.reasoning = configured(&server, 5).reasoning;
     config.endpoint = server.endpoint.clone();
     config.max_attempts = 5;
     let mut state = black_turn();
@@ -413,7 +415,7 @@ async fn numeric_reasoning_transport_and_illegal_retries_never_leak_decoded_uci(
     config.representation =
         llm_match::ProfileFile::parse(include_str!("../representation-profiles.toml"))
             .unwrap()
-            .select(Some("numeric-no-history"))
+            .select(Some("numeric-json-no-history"))
             .unwrap()
             .1;
     let mut state = black_turn();

@@ -162,15 +162,24 @@ pub(crate) fn render_rights(position: &Position, numeric: bool) -> String {
     } else {
         text.push_str("Castling: none\n");
     }
-    writeln!(
-        text,
-        "\nEn passant: {}",
-        position
-            .en_passant()
-            .map(|s| crate::representation::coordinate(s, numeric))
-            .unwrap_or_else(|| "none".into())
-    )
-    .unwrap();
+    let legal_en_passant = position
+        .legal_moves()
+        .into_iter()
+        .find(|mv| mv.kind == MoveKind::EnPassant);
+
+    match legal_en_passant {
+        Some(mv) => {
+            writeln!(
+                text,
+                "\nEn passant: available to {}",
+                crate::representation::coordinate(mv.to, numeric)
+            )
+            .unwrap();
+        }
+        None => {
+            text.push_str("\nEn passant: none\n");
+        }
+    }
     if rules.king_initial_jump() {
         text.push_str("\nInitial king jump:\n");
         for color in [Color::White, Color::Black] {

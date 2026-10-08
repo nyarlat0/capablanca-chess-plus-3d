@@ -523,7 +523,7 @@ mod tests {
         let mut world = world();
         world.run_system_once(update_match).unwrap();
         world.resource_mut::<LlmSession>().config =
-            Some(llm_match::Config::load_with_profile(Some("numeric-last-move")).unwrap());
+            Some(llm_match::Config::load_with_profile(Some("numeric")).unwrap());
         let generation = world.resource::<ChessMatch>().generation;
         let (tx, rx) = mpsc::channel();
         let bad = "Black Pawn: (5,7) -> (5,4)";

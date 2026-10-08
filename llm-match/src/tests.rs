@@ -288,7 +288,8 @@ fn explicit_rights_and_authoritative_legend() {
         assert!(initial.contains(right));
     }
     p.play_uci("e2e4").unwrap();
-    assert!(board_state(&p).contains("En passant: e3"));
+    // Current renderer exposes availability, not the uncapturable FEN target.
+    assert!(board_state(&p).contains("En passant: none"));
     assert!(board_state(&Variant::Grand.starting_position()).contains("Castling: none"));
     let t = Variant::TerachessII.starting_position();
     assert!(board_state(&t).contains("Initial king jump:\nWhite: available\nBlack: available"));

@@ -163,10 +163,11 @@ assistant/user. Не удаляй эти директивы из пользов�
   и те же принятые ходы, но обновлённый временный список отказов. При ошибке
   сети/исчерпании попыток список сохраняется для ручного повтора. При легальном
   ходе очищается. Новый матч начинает новую историю.
-- Если настроенный контекст не помещается, запрос завершается явной ошибкой:
-  история **не обрезается автоматически**, иначе эксперимент `full` незаметно
-  стал бы другим. Выбери `last_n`/`none` или увеличь контекст. Размер контекста
-  и токены берутся из API модели, не оцениваются по числу символов.
+- История не ограничена числом ходов. `prompt-core::build_with_budget` сначала
+  пробует весь контекст и только при реальном переполнении убирает старейшие
+  сообщения из конкретного запроса. Правила, текущая позиция и последнее
+  сообщение сохраняются. Постоянные истории не изменяются. Если обязательные
+  блоки сами не помещаются, возвращается ошибка. Размеры проверяются токенизатором модели.
 - Сеть работает вне потока рендера. Модель начинает после окончания анимации.
   Открытие меню/новая игра отменяют клиентское ожидание; запоздалые ответы не
   применяются. Это не глобальная команда abort серверу: Kobold может закончить
@@ -176,158 +177,126 @@ assistant/user. Не удаляй эти директивы из пользов�
 
 ## Эксперименты с представлением позиции
 
-Цель профилей — проверить, провоцируют ли традиционная шахматная нотация и
-полная история нежелательные стандартно-шахматные предположения у LLM в
-fairy chess, прежде всего Gothic и Terachess II. Это не обещание усиления модели.
-Списки легальных ходов, оценки, кандидаты, карты атак и подсказки движка
-**не передаются ни в одном профиле**.
+Профили проверяют, провоцируют ли традиционная нотация и история стандартно-
+шахматные предположения у LLM. Списков легальных ходов, оценок и подсказок нет.
 
-Настройки: [`representation-profiles.toml`](representation-profiles.toml).
-Можно добавлять собственные секции и смешивать представления состояния и
-истории. По дополнительному требованию **при включённой истории формат ответа
-обязан совпадать с её форматом**. Несовместимое сочетание отклоняется, а не
-незаметно исправляется:
+Настройки: [representation-profiles.toml](representation-profiles.toml).
+Каждый эксперимент имеет **ровно два варианта: полная история или отсутствие
+истории**. Они отличаются только `history_mode`, а не форматом ответа.
+
+| С историей | Без истории | Состояние | История и ответ |
+| --- | --- | --- | --- |
+| `classic` (по умолчанию) | `classic-no-history` | pieces_ascii | semantic |
+| `numeric` | `numeric-no-history` | numeric | numeric |
+| `numeric-ascii` | `numeric-ascii-no-history` | numeric_ascii | numeric |
+| `hybrid` | `hybrid-no-history` | numeric_ascii | semantic |
+| `uci` | `uci-no-history` | pieces_ascii | uci |
+| `numeric-json` | `numeric-json-no-history` | numeric | numeric_json |
 
 ```toml
-active_profile = "classic"
+active_profile = "numeric"
 
-[profiles.my-experiment]
+[profiles.numeric]
 state_format = "numeric"
-history_mode = "last_n"
-history_count = 4
+history_mode = "full"
 history_format = "numeric"
 output_format = "numeric"
 ```
 
-| Поле | Значения |
-| --- | --- |
-| `state_format` | `pieces_ascii`: символы, имена, координаты a1, ASCII; `numeric`: имена и абсолютные (x,y); `numeric_ascii`: numeric плюс обычная ASCII-доска |
-| `history_mode` | `none`: 0 сообщений истории; `full`: все принятые полуходы; `last_n`: последние N в хронологическом порядке |
-| `history_count` | Положительное целое, обязательно для `last_n`; в остальных режимах не используется |
-| `history_format` | `semantic`: `White Pawn e2-e4`; `numeric`: `White Pawn: (5,2) -> (5,4)` |
-| `output_format` | `semantic`: точная строка семантической истории; `numeric`: точная строка числовой истории; `uci`: canonical UCI; `numeric_json`: строгая JSON-схема ниже |
+- `state_format`: `pieces_ascii` — имена/символы и ASCII; `numeric` —
+  абсолютные координаты; `numeric_ascii` — числовой список плюс ASCII.
+- `history_mode`: только `full` или `none`. **`last_n` и `history_count`
+  удалены**; старые настройки с ними отклоняются.
+- `history_format` и `output_format`: `semantic`, `numeric`, `uci`,
+  `numeric_json`. При включённой истории обязаны совпадать.
+- `full` отправляет все принятые полуходы в хронологическом порядке, без
+  искусственного лимита; лишь реальное переполнение включает штатный сдвиг
+  контекста prompt-core. `none` не отправляет ни одного сообщения истории.
+- Полная каноническая история UCI сохраняется независимо от профиля.
+  Роли: человек — User, модель — Assistant.
 
-Для `history_mode=full/last_n`: semantic-история требует `output_format=semantic`,
-numeric-история — `output_format=numeric`. UCI/JSON доступны при `history_mode=none`.
-Даже перед первым ходом, когда история ещё пуста, выбранный формат ответа
-остаётся тем же. Это намеренное изменение `classic` относительно старого
-UCI-ответа: модель теперь отвечает тем же языком, который видит в истории.
-
-`history_count` считает **полуходы**, не пары White+Black. `last_n=1` явно
-помечается `LAST MOVE`; более длинный суффикс — `RECENT MOVES`, не полная игра.
-Роли сохраняются: принятый ход человека User, модели Assistant. Даже `none`
-сохраняет полную внутреннюю UCI-историю; в модельном запросе её нет.
-
-| Профиль | Состояние | История | Ответ |
-| --- | --- | --- | --- |
-| `classic` (по умолчанию) | pieces_ascii | full semantic | semantic |
-| `classic-last-move` | pieces_ascii | last 1 semantic | semantic |
-| `numeric-no-history` | numeric | none | numeric_json |
-| `numeric-last-move` | numeric | last 1 numeric | numeric |
-| `numeric-short-history` | numeric | last 4 numeric | numeric |
-| `numeric-ascii-last-move` | numeric_ascii | last 1 numeric | numeric |
-| `hybrid` | numeric_ascii | last 2 semantic | semantic |
-| `uci-no-history` | pieces_ascii | none | uci |
-
-Выбор (никакой пересборки):
+Выбор без пересборки:
 
 ```sh
-cargo run -p bevy-front -- --llm-profile numeric-no-history
-cargo run -p llm-match -- --variant Gothic --llm-profile numeric-last-move
-LLM_PROFILE=numeric-short-history cargo run -p bevy-front
+cargo run -p bevy-front -- --llm-profile numeric
+cargo run -p llm-match -- --variant Gothic --llm-profile numeric-json
+LLM_PROFILE=classic-no-history cargo run -p bevy-front
 ```
 
-Приоритет: **CLI > переменная процесса LLM_PROFILE > LLM_PROFILE в .env >
-active_profile в TOML**. Неизвестный профиль/формат, опечатка поля, нулевой или
-отсутствующий `history_count` для `last_n` — явная ошибка. Имя профиля видно в
-LLM-меню; действующий профиль и форматы записываются в лог при запуске матча.
-`RUST_LOG=llm_match=debug` показывает stripped final answer и декодированный
-UCI; reasoning в этих сообщениях отсутствует. В обратную связь попадает только
-исходный отклонённый final answer выбранного формата, не его внутренний UCI.
+Приоритет: **CLI > окружение LLM_PROFILE > .env LLM_PROFILE > active_profile**.
+Имя профиля видно в меню, форматы — в логе начала партии.
+`RUST_LOG=llm_match=debug` показывает final answer, внутренний UCI и число
+старых сообщений, удалённых из запроса при сдвиге контекста.
+Отказы передаются модели только в её формате, без внутреннего преобразования.
+Профиль фиксируется на партию.
 
-### Координаты, состояние и правила
+Миграция: `classic-last-move` → `classic`;
+`numeric-last-move`/`numeric-short-history` → `numeric`;
+`numeric-ascii-last-move` → `numeric-ascii`.
+Прежний JSON-эксперимент без истории теперь называется
+`numeric-json-no-history`; `numeric-no-history` использует числовой текст,
+как его парный вариант с историей.
 
-`x=file+1`, `y=rank`: a1=(1,1), j1=(10,1), a8=(1,8), j8=(10,8).
-Terachess II: a1=(1,1), p16=(16,16). При ходе Black оси **не зеркалируются**.
-В numeric сохраняется краткая справка a=1, b=2…; сами фигуры, en passant и
-маршруты рокировки используют числа. В numeric_ascii буквенная ASCII-доска
-добавлена намеренно; semantic-история/ответ в смешанном профиле также
-сохраняют буквы. Названия фигур остаются английскими, это не анонимизация.
-
-Состояние содержит размеры, очередь, все фигуры, права рокировки, en passant,
-initial king jump Terachess, счётчики полуходов/ходов и число повторений
-текущей позиции; Grand также получает начальные количества фигур для
-правил восстановления. Нет FEN. Порядок inventory детерминирован: имя,
-затем x и y. Геометрические описания принадлежат `engine::PieceKind`, leaper
-смещения используют общие с генератором массивы. Giraffe=(2,3)/(3,2).
-Движок по-прежнему один решает легальность; описания сложных составных
-движений — человекочитаемый текст, а не формальное доказательство правил.
-
-### Формат numeric_json
-
-Используется профилем `numeric-no-history`. В профилях с историей вместо
-него ответ имеет точно тот же вид, что запись истории:
+### Форматы ходов
 
 ```text
-White Pawn e2-e4
+semantic: White Pawn e2-e4
+numeric:  White Pawn: (5,2) -> (5,4)
+uci:      e2e4
 ```
 
-или для числовой истории:
-
-```text
-White Pawn: (5,2) -> (5,4)
-```
-
-Для взятия нужны соответственно `e4xd5` / `(5,4) x (4,5)`, для промоушена
-`=Queen` / ` = Queen`. Для спецходов обязательны те же суффиксы, что в истории:
-` (en-passant)`, ` (initial king jump)` либо
-` (castling; Rook a1-d1)` / ` (castling; Rook (1,1) -> (4,1))`.
-Парсер не только разбирает координаты, но и сравнивает весь final answer с
-описанием engine-хода из **предходовой** позиции. Неправильный цвет, имя фигуры,
-маркер взятия или аннотация не исправляются. Это не SAN и не извлечение хода
-из произвольной строки. При этом человек в CLI всё ещё вводит обычный UCI.
-
-JSON без истории:
+JSON (одинаковая схема в истории и в ответе):
 
 ```json
-{"from":[2,8],"to":[3,6],"promotion":null}
+{"from":[5,2],"to":[5,4],"promotion":null}
 ```
 
-Декодируется ровно в `b8c6`, без поиска/исправления хода. Его легальность
-зависит от текущей позиции. Промоушен:
+Все три JSON-поля обязательны; дополнительные/повторяющиеся ключи, нецелые
+или выходящие за доску координаты запрещены. Промоушен — точное имя
+(`"Queen"`, не `"queen"`). Например
+`{"from":[2,8],"to":[3,6],"promotion":null}` декодируется в `b8c6`;
+это только преобразование, не гарантия легальности и не исправление хода.
 
-```json
-{"from":[5,7],"to":[5,8],"promotion":"Queen"}
-```
+В semantic/numeric взятие обозначается `x`, промоушен — `=Queen` /
+` = Queen`. Спецходы требуют аннотации ` (en-passant)`,
+` (initial king jump)` либо ` (castling; Rook a1-d1)` /
+` (castling; Rook (1,1) -> (4,1))`.
+В UCI/JSON спецходы выражаются координатами без этих аннотаций.
+Semantic/numeric парсер сравнивает всю строку с описанием движка из
+**предходовой** позиции: цвет, фигура, взятие и спецходы не исправляются.
+Никаких SAN, извлечения подстрок или нормализации регистра.
+Человек в CLI по-прежнему вводит UCI.
 
-Все три поля обязательны, дополнительные/повторяющиеся поля запрещены.
-Координаты — целые, начиная с 1, в пределах доски. Названия промоушена точно
-совпадают с легендой (`Queen`, не `queen`); null означает отсутствие
-промоушена. Не принимаются markdown, SAN, проза или несколько объектов.
-Явное имя фигуры проверяется также после engine-декодирования: одинаковая
-UCI-буква не позволяет заменить Archbishop на Amazon. В истории промоушен
-сохраняет исходную фигуру: `White Pawn: (5,7) -> (5,8) = Queen`;
-взятие использует `x`, спецходы имеют дополнительные аннотации.
+### Координаты и состояние
 
-### Посмотреть фактический промпт без модели
+`x=file+1`, `y=rank`: a1=(1,1), j8=(10,8), для Terachess II p16=(16,16).
+При ходе Black оси не зеркалируются. В numeric остаётся краткая справка a=1,
+b=2…; сами фигуры используют числа. Названия фигур остаются английскими.
+NumericAscii намеренно добавляет обычную буквенную ASCII-доску.
+
+Состояние содержит очередь, фигуры, права рокировки/en passant, initial king
+jump Terachess, счётчики и число повторений текущей позиции; Grand также
+начальные количества фигур для восстановления. Нет FEN.
+Геометрические описания находятся рядом с правилами движка; leaper-смещения
+общие с генератором ходов, Giraffe=(2,3)/(3,2).
+Редактирование загружаемых файлов правил изменяет промпт, не правила движка.
+
+### Посмотреть промпт без модели
 
 ```sh
 cargo run -p llm-match -- --variant Gothic --llm-profile numeric-no-history --print-prompt
-cargo run -p llm-match -- --variant Gothic --llm-profile numeric-last-move --moves 'e2e4' --print-prompt
-cargo run -p llm-match -- --variant TerachessII --llm-profile numeric-no-history --print-prompt
+cargo run -p llm-match -- --variant Gothic --llm-profile numeric --moves 'e2e4 e7e5' --print-prompt
+cargo run -p llm-match -- --variant TerachessII --llm-profile numeric-json --print-prompt
 ```
 
-`--moves` принимает каноническую UCI-историю для воспроизводимого примера;
-ни HTTP, ни генерация не выполняются. Готовые примеры состояния:
-[Gothic numeric-no-history](examples/gothic-numeric-no-history.txt),
-[Gothic numeric-last-move](examples/gothic-numeric-last-move.txt),
-[Terachess numeric-no-history](examples/terachess-numeric-no-history.txt).
+`--moves` задаёт историю каноническими UCI; HTTP-запросов нет.
+Примеры представления: [Gothic без истории](examples/gothic-numeric-no-history.txt),
+[Gothic с историей](examples/gothic-numeric-history.txt),
+[Terachess](examples/terachess-numeric-no-history.txt).
 
-Архитектура: `profile.rs` — схема и выбор; `representation.rs` — состояние,
-история и JSON/UCI-парсер; `move_text.rs` — строгая грамматика ответов в формате
-истории; `rules.rs` — подстановка в файлы правил;
-`Match` — применение ходов и история. Расширение renderer не требует
-переписывать логику партии или сеть.
+Архитектура: `profile.rs` — конфигурация; `representation.rs` — состояние,
+история и JSON/UCI; `move_text.rs` — грамматика текстовых ходов;
+`rules.rs` — подстановка в редактируемые файлы правил.
 
 ## Проверки
 
@@ -345,7 +314,7 @@ HTTP-Kobold проверяет полное/оборванное reasoning, от
 для тестов не нужна.
 
 Тесты профилей дополнительно проверяют все клетки досок 10×8/16×16,
-абсолютные координаты для Black, filtering none/full/last_n, CLI/env precedence,
+абсолютные координаты для Black, выбор none/full и сдвиг контекста, CLI/env precedence,
 строгую JSON-схему, alias-защиту промоушена, точное совпадение semantic/numeric
 ответов с историей (включая спецходы), запрет несовместимых настроек и
 синхронизацию числового режима с UCI-историей фронтенда.

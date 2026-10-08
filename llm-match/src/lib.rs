@@ -33,6 +33,7 @@ pub struct Match {
     model_side: Color,
     history: Vec<PromptMessage>,
     numeric_history: Vec<PromptMessage>,
+    json_history: Vec<PromptMessage>,
     uci_history: Vec<String>,
     wrong_moves: Vec<String>,
 }
@@ -45,6 +46,7 @@ impl Match {
             model_side,
             history: Vec::new(),
             numeric_history: Vec::new(),
+            json_history: Vec::new(),
             uci_history: Vec::new(),
             wrong_moves: Vec::new(),
         }
@@ -161,6 +163,11 @@ impl Match {
         self.game.play(chess_move)?;
         self.uci_history.push(chess_move.to_uci());
         self.numeric_history.push(numeric);
+        self.json_history.push(PromptMessage {
+            role: role.clone(),
+            name: None,
+            content: representation::json_move(chess_move),
+        });
         self.history.push(PromptMessage {
             role,
             name: None,
@@ -193,7 +200,13 @@ impl Match {
                 serde_json::to_string(&self.wrong_moves).expect("strings serialize")
             )
         };
-        let messages = render_history(&self.history, &self.numeric_history, profile);
+        let messages = render_history(
+            &self.history,
+            &self.numeric_history,
+            &self.uci_history,
+            &self.json_history,
+            profile,
+        );
         let history_instruction = representation::history_instruction(profile, messages.len());
         let mut board = render_state(self.game.position(), profile.state_format);
         use std::fmt::Write;
@@ -253,17 +266,19 @@ pub async fn generate_move(
             }
             let client = client.as_ref().unwrap();
             let data = state.prompt_data_with(config)?;
-            let prompt = builder
-                .build(
+            let fitted = builder
+                .build_with_budget(
                     &config.context,
                     &config.instruct,
                     &system,
                     &data,
-                )?;
-            // Benchmark profiles must not silently become different history
-            // experiments when they overflow the model's context window.
-            let tokens = client.count_tokens(&prompt.text).await?;
-            ensure!(tokens <= client.context_budget(&config.preset)?.input_tokens()?, "selected LLM profile/history exceeds context; choose shorter history or a larger context");
+                    client,
+                    client.context_budget(&config.preset)?,
+                ).await?;
+            if fitted.dropped_messages > 0 {
+                tracing::debug!("LLM context fitting: dropped {} oldest history messages from this request only", fitted.dropped_messages);
+            }
+            let prompt = fitted.prompt;
             client
                 .generate(
                     &prompt.text,

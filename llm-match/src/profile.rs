@@ -16,7 +16,6 @@ pub enum HistoryMode {
     None,
     #[default]
     Full,
-    LastN,
 }
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -24,6 +23,8 @@ pub enum HistoryFormat {
     #[default]
     Semantic,
     Numeric,
+    Uci,
+    NumericJson,
 }
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -42,18 +43,15 @@ pub struct Representation {
     pub history_mode: HistoryMode,
     pub history_format: HistoryFormat,
     pub output_format: OutputFormat,
-    pub history_count: Option<usize>,
 }
 impl Representation {
     pub fn validate(&self) -> Result<()> {
-        ensure!(
-            self.history_mode != HistoryMode::LastN || self.history_count.is_some_and(|n| n > 0),
-            "last_n requires a positive history_count"
-        );
         if self.history_mode != HistoryMode::None {
             let expected = match self.history_format {
                 HistoryFormat::Semantic => OutputFormat::Semantic,
                 HistoryFormat::Numeric => OutputFormat::Numeric,
+                HistoryFormat::Uci => OutputFormat::Uci,
+                HistoryFormat::NumericJson => OutputFormat::NumericJson,
             };
             ensure!(
                 self.output_format == expected,
@@ -68,17 +66,13 @@ impl Representation {
         match self.history_mode {
             HistoryMode::None => len,
             HistoryMode::Full => 0,
-            HistoryMode::LastN => len.saturating_sub(self.history_count.unwrap_or(0)),
         }
     }
     pub fn summary(&self) -> String {
         format!(
-            "state: {} | history: {}{} ({}) | output: {}",
+            "state: {} | history: {} ({}) | output: {}",
             self.state_format.name(),
             self.history_mode.name(),
-            self.history_count
-                .map(|n| format!("/{n}"))
-                .unwrap_or_default(),
             self.history_format.name(),
             self.output_format.name()
         )
@@ -86,8 +80,8 @@ impl Representation {
 }
 macro_rules! names { ($t:ty, $($v:ident => $s:literal),+) => { impl $t { pub const fn name(self) -> &'static str { match self { $(Self::$v => $s),+ } } } }; }
 names!(StateFormat, PiecesAscii => "pieces_ascii", Numeric => "numeric", NumericAscii => "numeric_ascii");
-names!(HistoryMode, None => "none", Full => "full", LastN => "last_n");
-names!(HistoryFormat, Semantic => "semantic", Numeric => "numeric");
+names!(HistoryMode, None => "none", Full => "full");
+names!(HistoryFormat, Semantic => "semantic", Numeric => "numeric", Uci => "uci", NumericJson => "numeric_json");
 names!(OutputFormat, Uci => "uci", NumericJson => "numeric_json", Semantic => "semantic", Numeric => "numeric");
 
 #[derive(Deserialize)]

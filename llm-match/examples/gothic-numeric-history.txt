@@ -1,4 +1,4 @@
-LAST MOVE
+MOVE HISTORY
 White Pawn: (5,2) -> (5,4)
 
 AUTHORITATIVE CURRENT POSITION
@@ -21,7 +21,7 @@ White kingside: yes
 Black queenside: yes
 Black kingside: yes
 
-En passant: (5,3)
+En passant: none
 
 Halfmove clock: 0
 Fullmove number: 1
