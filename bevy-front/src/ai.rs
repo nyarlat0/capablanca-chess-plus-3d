@@ -454,6 +454,7 @@ fn update_analysis(line: &str, analysis: &mut MoveAnalysis) {
 
 const fn uci_variant(variant: Variant) -> &'static str {
     match variant {
+        Variant::Classic => "chess",
         Variant::Capablanca => "capablanca",
         Variant::Gothic => "gothic",
         Variant::Embassy => "embassy",
@@ -495,6 +496,7 @@ mod tests {
                 "shako",
                 "ccp_pemba",
                 "terachessii",
+                "chess",
             ]
         );
         assert_eq!(

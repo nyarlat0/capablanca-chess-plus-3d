@@ -565,6 +565,7 @@ fn side_from_wire(side: Side) -> EngineSide {
 fn variant_to_wire(variant: EngineVariant) -> Variant {
     match variant {
         EngineVariant::Capablanca => Variant::Capablanca,
+        EngineVariant::Classic => Variant::Classic,
         EngineVariant::Gothic => Variant::Gothic,
         EngineVariant::Embassy => Variant::Embassy,
         EngineVariant::Schoolbook => Variant::Schoolbook,
@@ -580,6 +581,7 @@ fn variant_to_wire(variant: EngineVariant) -> Variant {
 fn variant_from_wire(variant: Variant) -> EngineVariant {
     match variant {
         Variant::Capablanca => EngineVariant::Capablanca,
+        Variant::Classic => EngineVariant::Classic,
         Variant::Gothic => EngineVariant::Gothic,
         Variant::Embassy => EngineVariant::Embassy,
         Variant::Schoolbook => EngineVariant::Schoolbook,

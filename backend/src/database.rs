@@ -403,6 +403,7 @@ fn resolve_side(preference: SidePreference) -> Side {
 fn variant_name(variant: Variant) -> &'static str {
     match variant {
         Variant::Capablanca => "capablanca",
+        Variant::Classic => "classic",
         Variant::Gothic => "gothic",
         Variant::Embassy => "embassy",
         Variant::Schoolbook => "schoolbook",
@@ -418,6 +419,7 @@ fn variant_name(variant: Variant) -> &'static str {
 fn parse_variant(value: &str, game_id: &str) -> Result<Variant, RepositoryError> {
     match value {
         "capablanca" => Ok(Variant::Capablanca),
+        "classic" => Ok(Variant::Classic),
         "gothic" => Ok(Variant::Gothic),
         "embassy" => Ok(Variant::Embassy),
         "schoolbook" => Ok(Variant::Schoolbook),
@@ -437,6 +439,7 @@ fn parse_variant(value: &str, game_id: &str) -> Result<Variant, RepositoryError>
 fn engine_variant(variant: Variant) -> EngineVariant {
     match variant {
         Variant::Capablanca => EngineVariant::Capablanca,
+        Variant::Classic => EngineVariant::Classic,
         Variant::Gothic => EngineVariant::Gothic,
         Variant::Embassy => EngineVariant::Embassy,
         Variant::Schoolbook => EngineVariant::Schoolbook,
@@ -473,6 +476,23 @@ fn client_error(code: &'static str, message: impl Into<String>) -> RepositoryErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classic_rooms_use_standard_engine_rules() {
+        assert_eq!(variant_name(Variant::Classic), "classic");
+        assert_eq!(
+            parse_variant("classic", "TESTROOM").unwrap(),
+            Variant::Classic
+        );
+        let game = replay_game(
+            Variant::Classic,
+            &["e2e4".into(), "e7e5".into()],
+            "TESTROOM",
+        )
+        .unwrap();
+        assert_eq!(game.position().board().size().files(), 8);
+        assert!(game.position().parse_san_move("Nf3").is_ok());
+    }
 
     #[test]
     fn generated_ids_are_short_unambiguous_codes() {

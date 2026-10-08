@@ -13,6 +13,7 @@ pub mod mv;
 mod piece_info;
 pub mod position;
 pub mod rules;
+mod san;
 pub mod types;
 
 pub use board::{Board, BoardSize};

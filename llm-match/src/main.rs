@@ -11,7 +11,7 @@ async fn main() -> Result<()> {
         )
         .with_writer(std::io::stderr)
         .init();
-    let mut config = llm_match::Config::load()?;
+    let mut endpoint = None;
     let mut variant = Variant::Gothic;
     let mut human = Color::White;
     let mut print_prompt = false;
@@ -19,15 +19,16 @@ async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--llm-profile" => {
+            "--llm-profile" | "--llm-classic-profile" => {
                 args.next().context("missing profile name")?;
             }
-            s if s.starts_with("--llm-profile=") => {}
+            s if s.starts_with("--llm-profile=") || s.starts_with("--llm-classic-profile=") => {}
             "--print-prompt" => print_prompt = true,
             "--moves" => replay = args.next().context("missing quoted UCI history")?,
             "--url" => {
-                config.endpoint =
-                    llm_match::normalize_endpoint(&args.next().context("missing URL")?)?
+                endpoint = Some(llm_match::normalize_endpoint(
+                    &args.next().context("missing URL")?,
+                )?)
             }
             "--black" => human = Color::Black,
             "--variant" => {
@@ -36,18 +37,22 @@ async fn main() -> Result<()> {
             }
             "--help" => {
                 println!(
-                    "llm-match [--variant Gothic|Embassy|Grand|Shako|Pemba|TerachessII] [--black] [--url http://aistation:5001] [--llm-profile NAME] [--print-prompt] [--moves 'e2e4 e7e5']\nEnter a UCI move, or quit. Defaults come from llm-match/.env."
+                    "llm-match [--variant Classic|Gothic|Embassy|Grand|Shako|Pemba|TerachessII] [--black] [--url http://aistation:5001] [--llm-profile NAME] [--llm-classic-profile with-history|no-history] [--print-prompt] [--moves 'e2e4 e7e5']\nEnter a UCI move, or quit. Defaults come from llm-match/.env. Classic chess uses its separate SAN configuration."
                 );
                 return Ok(());
             }
             _ => bail!("unknown argument {arg}"),
         }
     }
+    let mut config = llm_match::Config::load_for_variant(variant)?;
+    if let Some(endpoint) = endpoint {
+        config.endpoint = endpoint;
+    }
     let mut game = llm_match::Match::new(variant, human.opposite());
     eprintln!(
         "LLM representation profile: {}\n{}",
         config.profile_name,
-        config.representation.summary()
+        config.summary()
     );
     for mv in replay.split_whitespace() {
         if game.game().position().side_to_move() == human {

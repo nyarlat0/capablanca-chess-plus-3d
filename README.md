@@ -1,6 +1,6 @@
 # Capablanca Chess Plus 3D
 
-A 3D chess application for Gothic, Embassy, Grand, Shako Chess, Pemba, and
+A 3D chess application for Classic Chess, Gothic, Embassy, Grand, Shako Chess, Pemba, and
 Terachess II, written in Rust with Bevy 0.19. It runs as a native desktop
 application or as a WebAssembly frontend in the browser, with Local, AI, and
 online multiplayer modes.
@@ -29,6 +29,7 @@ responsible for interaction, animation, sound, and rendering.
 | Variant | Board | Back rank / arrangement | Castling |
 | --- | --- | --- | --- |
 | Gothic | 10x8 | `RNBQCKABNR` | King `f` to `c` or `i` |
+| Classic Chess | 8x8 | `RNBQKBNR` | King `e` to `c` or `g` |
 | Embassy | 10x8 | `RNBQKCABNR` | King `e` to `b` or `h` |
 | Grand | 10x10 | Grand Chess arrangement | None |
 | Shako | 10x10 | Cannons on rank 1/10, orthodox army and elephants on rank 2/9 | Orthodox two-square castling |

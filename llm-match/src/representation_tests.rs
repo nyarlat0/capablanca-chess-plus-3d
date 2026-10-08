@@ -463,6 +463,9 @@ fn classic_compatibility_and_all_profiles_have_no_assistance_leaks() {
     );
     for (_, profile) in profiles().profiles {
         for variant in Variant::ALL {
+            if variant == Variant::Classic {
+                continue;
+            } // separate SAN configuration
             c.representation = profile.clone();
             let m = Match::new(variant, Color::White);
             let data = m.prompt_data_with(&c).unwrap();

@@ -1,0 +1,5 @@
+{
+  "name": "Classic chess with SAN history",
+  "content": "Play orthodox chess on an 8x8 board. Choose your own move. Return exactly one canonical SAN move, using the same notation as the accepted moves in the history, but without move numbers. Include required disambiguation, capture, promotion, and check/checkmate suffixes. Castling uses O-O or O-O-O. No commentary, markdown, alternatives or annotations. The current FEN and ASCII position are authoritative; do not reconstruct the position from memory.",
+  "post_history": "AUTHORITATIVE CURRENT POSITION\nFEN: {{fen}}\n{{ascii}}\n{{#if wrong-move}}\n{{wrong-move}}\n{{/if}}Return exactly one canonical SAN move for the side to move in this position."
+}

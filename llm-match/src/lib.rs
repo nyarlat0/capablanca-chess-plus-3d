@@ -1,4 +1,6 @@
+mod classic;
 mod config;
+pub use classic::ClassicConfig;
 mod move_text;
 mod output;
 mod profile;
@@ -13,11 +15,13 @@ pub use representation::{
 };
 pub use rules::{render_rules, variant_key};
 #[cfg(test)]
+mod classic_tests;
+#[cfg(test)]
 mod representation_tests;
 #[cfg(test)]
 mod tests;
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use capablanca_chess_plus::{Color, Game, GameOutcome, Move, Variant};
 pub use config::{Config, normalize_endpoint};
 use prompt_core::{KoboldClient, PromptBuilder, PromptData, PromptMessage, PromptRole};
@@ -34,6 +38,7 @@ pub struct Match {
     history: Vec<PromptMessage>,
     numeric_history: Vec<PromptMessage>,
     json_history: Vec<PromptMessage>,
+    san_history: Vec<classic::SanPly>,
     uci_history: Vec<String>,
     wrong_moves: Vec<String>,
 }
@@ -47,6 +52,7 @@ impl Match {
             history: Vec::new(),
             numeric_history: Vec::new(),
             json_history: Vec::new(),
+            san_history: Vec::new(),
             uci_history: Vec::new(),
             wrong_moves: Vec::new(),
         }
@@ -65,6 +71,42 @@ impl Match {
     }
     pub fn wrong_moves(&self) -> &[String] {
         &self.wrong_moves
+    }
+    pub fn classic_san_history(&self) -> String {
+        classic::history(&self.san_history)
+    }
+
+    pub fn accept_configured_answer(&mut self, answer: &str, config: &Config) -> Result<Move> {
+        if self.variant != Variant::Classic {
+            ensure!(
+                config.classic.is_none(),
+                "classic configuration is only for classic chess"
+            );
+            return self.accept_answer(answer, config.representation.output_format);
+        }
+        ensure!(
+            config.classic.is_some(),
+            "classic chess requires its separate configuration"
+        );
+        ensure!(
+            self.game.position().side_to_move() == self.model_side,
+            "not the model turn"
+        );
+        let answer = answer.trim();
+        ensure!(classic::san_shape(answer), "expected one SAN move");
+        let result = self
+            .game
+            .position()
+            .parse_san_move(answer)
+            .map_err(anyhow::Error::from)
+            .and_then(|mv| {
+                tracing::debug!("model answer: {answer}; decoded move: {}", mv.to_uci());
+                self.accept(&mv.to_uci(), PromptRole::Assistant)
+            });
+        if result.is_err() && !self.wrong_moves.iter().any(|m| m == answer) {
+            self.wrong_moves.push(answer.into());
+        }
+        result
     }
 
     pub fn accept_human(&mut self, text: &str) -> Result<Move> {
@@ -159,8 +201,20 @@ impl Match {
             );
         }
         let description = prompts::describe_move(self.game.position(), chess_move);
+        let san = if self.variant == Variant::Classic {
+            Some(classic::SanPly {
+                number: self.game.position().fullmove_number(),
+                side: self.game.position().side_to_move(),
+                san: self.game.position().san(chess_move)?,
+            })
+        } else {
+            None
+        };
         let numeric = representation::numeric_move(self.game.position(), chess_move, role.clone());
         self.game.play(chess_move)?;
+        if let Some(san) = san {
+            self.san_history.push(san);
+        }
         self.uci_history.push(chess_move.to_uci());
         self.numeric_history.push(numeric);
         self.json_history.push(PromptMessage {
@@ -184,6 +238,31 @@ impl Match {
         .expect("built-in profile")
     }
     pub fn prompt_data_with(&self, config: &Config) -> Result<PromptData> {
+        if self.variant == Variant::Classic {
+            let c = config
+                .classic
+                .as_ref()
+                .context("classic chess requires its separate configuration")?;
+            let wrong = if self.wrong_moves.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "Rejected moves: {}. Position unchanged. Do not repeat them.",
+                    serde_json::to_string(&self.wrong_moves)?
+                )
+            };
+            return Ok(classic::prompt(
+                self.game.position(),
+                &self.san_history,
+                &wrong,
+                c,
+                self.model_side,
+            ));
+        }
+        ensure!(
+            config.classic.is_none(),
+            "classic configuration is only for classic chess"
+        );
         let template = config
             .rules_templates
             .get(variant_key(self.variant))
@@ -254,7 +333,7 @@ pub async fn generate_move(
     let mut client = None;
     let builder = PromptBuilder::new();
     let mut system = config.system.clone();
-    if !system.content.contains("{{chess-rules}}") {
+    if config.classic.is_none() && !system.content.contains("{{chess-rules}}") {
         system.content.push_str("\n{{chess-rules}}");
     }
     let mut last_transport_error = None;
@@ -306,16 +385,19 @@ pub async fn generate_move(
         let Some(answer) = output::final_answer(&config.reasoning, &raw)? else {
             continue;
         };
-        if parse_model_move(
-            &answer,
-            config.representation.output_format,
-            state.game.position(),
-        )
-        .is_err()
-        {
+        if if config.classic.is_some() {
+            !classic::san_shape(&answer)
+        } else {
+            parse_model_move(
+                &answer,
+                config.representation.output_format,
+                state.game.position(),
+            )
+            .is_err()
+        } {
             continue;
         }
-        match state.accept_answer(&answer, config.representation.output_format) {
+        match state.accept_configured_answer(&answer, config) {
             Ok(chess_move) => return Ok(chess_move),
             Err(_) => progress(attempt, &answer),
         }

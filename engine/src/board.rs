@@ -13,6 +13,7 @@ pub struct BoardSize {
 }
 
 impl BoardSize {
+    pub const CLASSIC: Self = Self { files: 8, ranks: 8 };
     pub const CAPABLANCA: Self = Self {
         files: 10,
         ranks: 8,

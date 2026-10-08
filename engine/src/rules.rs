@@ -250,6 +250,54 @@ impl VariantRules {
         )
     }
 
+    fn classic() -> Self {
+        use PieceKind::{Bishop as B, King as K, Knight as N, Queen as Q, Rook as R};
+        let mut board = Board::empty(BoardSize::CLASSIC);
+        for color in Color::ALL {
+            let (home, pawns) = if color == Color::White {
+                (0, 1)
+            } else {
+                (7, 6)
+            };
+            for (file, kind) in [R, N, B, Q, K, B, N, R].into_iter().enumerate() {
+                board.set_piece_unchecked(
+                    Square::new(file as u8, home),
+                    Some(Piece::new(color, kind)),
+                );
+                board.set_piece_unchecked(
+                    Square::new(file as u8, pawns),
+                    Some(Piece::new(color, PieceKind::Pawn)),
+                );
+            }
+        }
+        Self::from_parts(
+            "Classic Chess".into(),
+            board,
+            [1, 6],
+            CastlingRules::mirrored(
+                8,
+                CastleRoute::new(
+                    Square::new(4, 0),
+                    Square::new(0, 0),
+                    Square::new(2, 0),
+                    Square::new(3, 0),
+                ),
+                CastleRoute::new(
+                    Square::new(4, 0),
+                    Square::new(7, 0),
+                    Square::new(6, 0),
+                    Square::new(5, 0),
+                ),
+            ),
+            PromotionRule::LastRank {
+                choices: vec![Q, R, B, N],
+            },
+            false,
+            false,
+        )
+        .expect("classic rules")
+    }
+
     fn grand() -> Self {
         let size = BoardSize::GRAND;
         let mut board = Board::empty(size);
@@ -730,10 +778,11 @@ pub enum Variant {
     Shako,
     Pemba,
     TerachessII,
+    Classic,
 }
 
 impl Variant {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Capablanca,
         Self::Gothic,
         Self::Embassy,
@@ -744,6 +793,7 @@ impl Variant {
         Self::Shako,
         Self::Pemba,
         Self::TerachessII,
+        Self::Classic,
     ];
 
     #[must_use]
@@ -752,6 +802,7 @@ impl Variant {
         use PieceKind::{King as K, Knight as N, Queen as Q, Rook as R};
 
         match self {
+            Self::Classic => return VariantRules::classic(),
             Self::Capablanca => VariantRules::capablanca_family(
                 "Capablanca Chess",
                 [R, N, A, B, Q, K, B, C, N, R],

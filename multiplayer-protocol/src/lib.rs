@@ -43,6 +43,7 @@ pub enum Variant {
     Pemba,
     #[serde(rename = "terachess_ii")]
     TerachessII,
+    Classic,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -120,6 +121,18 @@ mod tests {
         assert_eq!(value["revision"], 7);
         assert_eq!(value["uci"], "a2a4");
         assert_eq!(value.as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn classic_has_separate_wire_name() {
+        assert_eq!(
+            serde_json::to_string(&Variant::Classic).unwrap(),
+            "\"classic\""
+        );
+        assert_eq!(
+            serde_json::from_str::<Variant>("\"classic\"").unwrap(),
+            Variant::Classic
+        );
     }
 
     #[test]

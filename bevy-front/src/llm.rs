@@ -248,7 +248,16 @@ fn update_status(
     mut labels: Query<&mut Text, (With<StatusText>, Without<ProfileLabel>)>,
     mut profiles: Query<&mut Text, (With<ProfileLabel>, Without<StatusText>)>,
 ) {
-    if let Some(config) = &session.config {
+    if menu.open && menu.is_changed() {
+        let label = llm_match::Config::load_for_variant(menu.selected_variant)
+            .map(|c| format!("PROFILE: {}", c.profile_name))
+            .unwrap_or_else(|e| format!("Profile configuration: {e}"));
+        for mut text in &mut profiles {
+            text.0 = label.clone();
+        }
+    } else if !menu.open
+        && let Some(config) = &session.config
+    {
         for mut text in &mut profiles {
             text.0 = format!("PROFILE: {}", config.profile_name);
         }
@@ -322,13 +331,11 @@ fn update_match(
     for event in events {
         match event {
             Event::Rejected(attempt, answer) => {
-                let format = session
-                    .config
-                    .as_ref()
-                    .map(|c| c.representation.output_format)
-                    .unwrap_or_default();
+                let config = session.config.clone();
                 if let Some(state) = &mut session.state {
-                    let _ = state.accept_answer(&answer, format);
+                    if let Some(config) = &config {
+                        let _ = state.accept_configured_answer(&answer, config);
+                    }
                 }
                 session.status =
                     format!("LLM: rejected attempt {attempt}, requesting another move…");
@@ -358,7 +365,7 @@ fn update_match(
         return;
     }
     if session.config.is_none() {
-        match llm_match::Config::load().and_then(|mut c| {
+        match llm_match::Config::load_for_variant(chess.variant).and_then(|mut c| {
             c.endpoint = llm_match::normalize_endpoint(&session.endpoint)?;
             Ok(c)
         }) {
@@ -366,7 +373,7 @@ fn update_match(
                 info!(
                     "LLM representation profile: {} | {}",
                     config.profile_name,
-                    config.representation.summary()
+                    config.summary()
                 );
                 session.config = Some(config);
             }
@@ -516,6 +523,46 @@ mod tests {
         );
         assert_eq!(state.history()[1].content, "Black Pawn e7-e5");
         assert_eq!(state.history()[2].content, "White Pawn d2-d4");
+    }
+
+    #[test]
+    fn classic_llm_san_history_syncs_with_frontend_uci() {
+        let mut world = world();
+        {
+            let mut chess = world.resource_mut::<ChessMatch>();
+            chess.variant = Variant::Classic;
+            chess.game = capablanca_chess_plus::Game::new(Variant::Classic.starting_position());
+            chess.game.play_uci("e2e4").unwrap();
+            chess.move_history = vec!["e2e4".into()];
+        }
+        world.run_system_once(update_match).unwrap();
+        let session = world.resource::<LlmSession>();
+        let config = session.config.clone().unwrap();
+        assert!(config.classic.is_some());
+        let mut state = session.state.clone().unwrap();
+        assert_eq!(state.classic_san_history(), "1. e4");
+        let mv = state.accept_configured_answer("e5", &config).unwrap();
+        let generation = world.resource::<ChessMatch>().generation;
+        let (tx, rx) = mpsc::channel();
+        tx.send(Event::Finished(state, Ok(mv))).unwrap();
+        let (cancel, _rx) = tokio::sync::oneshot::channel();
+        world.resource_mut::<LlmSession>().pending = Some(Pending {
+            generation,
+            events: Mutex::new(rx),
+            _cancel: cancel,
+        });
+        world.run_system_once(update_match).unwrap();
+        world.run_system_once(update_match).unwrap();
+        let session = world.resource::<LlmSession>();
+        assert!(!session.failed);
+        assert_eq!(
+            session.state.as_ref().unwrap().classic_san_history(),
+            "1. e4 e5"
+        );
+        assert_eq!(
+            session.state.as_ref().unwrap().uci_history(),
+            world.resource::<ChessMatch>().move_history
+        );
     }
 
     #[test]

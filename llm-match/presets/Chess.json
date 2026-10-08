@@ -1,8 +1,8 @@
 {
   "genamt": 6000,
-  "temp": 0.9,
+  "temp": 0.3,
   "top_p": 0.95,
   "min_p": 0.05,
   "top_k": 40,
-  "rep_pen": 1.05
+  "rep_pen": 1.0
 }

@@ -116,6 +116,53 @@ impl Drop for Server {
 }
 
 #[tokio::test]
+async fn classic_san_retries_keep_only_accepted_san_history() {
+    let server = Server::script(
+        vec![
+            Reply::Text("<thinking>truncated"),
+            Reply::Http(503),
+            Reply::Text("<thinking>finished</thinking>"),
+            Reply::Text("e7e5"),
+            Reply::Text("I choose e5"),
+            Reply::Text("<thinking>secret</thinking>e6+"),
+            Reply::Text("<thinking>secret</thinking>e5"),
+        ],
+        512,
+    );
+    let mut config = llm_match::Config::load_classic_with_profile(Some("with-history")).unwrap();
+    config.endpoint = server.endpoint.clone();
+    config.max_attempts = 7;
+    config.reasoning = configured(&server, 7).reasoning;
+    let mut state = llm_match::Match::new(Variant::Classic, Color::Black);
+    state.accept_human("e2e4").unwrap();
+    let mut rejected = Vec::new();
+    let mv = llm_match::generate_move(&mut state, &config, |_, s| rejected.push(s.to_owned()))
+        .await
+        .unwrap();
+    assert_eq!(mv.to_uci(), "e7e5");
+    assert_eq!(rejected, ["e6+"]);
+    assert_eq!(state.classic_san_history(), "1. e4 e5");
+    assert_eq!(state.uci_history(), ["e2e4", "e7e5"]);
+    let prompts = server.prompts.lock().unwrap();
+    assert_eq!(prompts.len(), 7);
+    assert!(prompts[..6].windows(2).all(|p| p[0] == p[1]));
+    assert!(prompts[6].contains("Rejected moves: [\"e6+\"]"));
+    for p in &*prompts {
+        assert!(p.contains("e4"));
+        for bad in [
+            "secret",
+            "truncated",
+            "I choose",
+            "e7e5",
+            "White Pawn",
+            "legal moves:",
+        ] {
+            assert!(!p.contains(bad));
+        }
+    }
+}
+
+#[tokio::test]
 async fn illegal_retries_keep_history_and_board_then_commit_only_valid_answer() {
     let server = Server::new(vec![
         "I choose e7e5",

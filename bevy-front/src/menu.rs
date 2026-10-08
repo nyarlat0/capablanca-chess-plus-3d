@@ -1478,6 +1478,7 @@ fn controllers_for(mode: GameMode, human_side: Side) -> [Controller; 2] {
 
 fn variant_label(variant: Variant) -> &'static str {
     match variant {
+        Variant::Classic => "Classic Chess",
         Variant::Capablanca => "Capablanca",
         Variant::Gothic => "Gothic",
         Variant::Embassy => "Embassy",
@@ -1491,13 +1492,14 @@ fn variant_label(variant: Variant) -> &'static str {
     }
 }
 
-const MENU_VARIANTS: [Variant; 6] = [
+const MENU_VARIANTS: [Variant; 7] = [
     Variant::Gothic,
     Variant::Embassy,
     Variant::Grand,
     Variant::Shako,
     Variant::Pemba,
     Variant::TerachessII,
+    Variant::Classic,
 ];
 
 #[cfg(test)]
@@ -1523,6 +1525,7 @@ mod tests {
                 Variant::Shako,
                 Variant::Pemba,
                 Variant::TerachessII,
+                Variant::Classic,
             ]
         );
     }

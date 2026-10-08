@@ -7,6 +7,9 @@
 
 ## Запуск в игре
 
+Обычные шахматы 8×8 описаны в разделе **Classic Chess / SAN** ниже. Это отдельный
+вариант, не существующий representation-профиль с именем `classic`.
+
 1. Запусти KoboldCPP с загруженной моделью и доступным API.
 2. Проверь [`.env`](.env): адрес `http://aistation:5001`, context `Plain`,
    instruct `Gemma_4`, reasoning `Artemis_think`, system `Chess_artemis_think`
@@ -298,6 +301,93 @@ cargo run -p llm-match -- --variant TerachessII --llm-profile numeric-json --pri
 Архитектура: `profile.rs` — конфигурация; `representation.rs` — состояние,
 история и JSON/UCI; `move_text.rs` — грамматика текстовых ходов;
 `rules.rs` — подстановка в редактируемые файлы правил.
+
+## Classic Chess / SAN
+
+В меню вариантов добавлен **Classic Chess**: обычная расстановка 8×8,
+рокировка e1–g1/c1 (и аналогично у чёрных), en passant, промоушен только в
+Queen/Rook/Bishop/Knight. Local, AI (Fairy-Stockfish `chess`) и LLM используют
+один движок правил. Для Multiplayer добавлено отдельное wire-имя `classic`;
+нужно обновить backend вместе с фронтом, миграции таблиц не требуется.
+Общий механизм завершения партий движка сохранён: мат/пат, повторения и
+правило 50 ходов. Это не реализация турнирных процедур заявления ничьей FIDE.
+
+LLM-конфигурация классики **отдельная**: [classic-profiles.toml](classic-profiles.toml),
+шаблоны в [templates/classic/](templates/classic/). Старые
+`representation-profiles.toml`, `LLM_PROFILE`, `--llm-profile` и profile
+`classic` не переименованы и не меняют смысл. Для `Variant::Classic` они не
+выбирают представление; вместо них используются:
+
+| Настройка | Значение |
+| --- | --- |
+| `LLM_CLASSIC_PROFILES_FILE` | Путь от `.env`, по умолчанию `classic-profiles.toml` |
+| `LLM_CLASSIC_PROFILE` | `with-history` или `no-history` |
+| `LLM_CLASSIC_SYSTEM_TEMPLATE_WITH_HISTORY` | System prompt классики с историей; переопределяет путь из classic TOML |
+| `LLM_CLASSIC_SYSTEM_TEMPLATE_NO_HISTORY` | System prompt классики без истории; переопределяет путь из classic TOML |
+| `--llm-classic-profile` | CLI-переопределение, приоритет над env и `.env` |
+| `active_profile` в classic TOML | По умолчанию `with-history` |
+
+Адрес Kobold, instruct/context/reasoning и sampler preset остаются общими
+транспортными настройками `.env`; system prompt выбирается из classic TOML,
+пути `system_template` относительны этому TOML. Два отдельных system prompt
+можно переключать непосредственно в `.env`:
+
+```dotenv
+LLM_CLASSIC_SYSTEM_TEMPLATE_WITH_HISTORY=templates/classic/WithHistory.json
+LLM_CLASSIC_SYSTEM_TEMPLATE_NO_HISTORY=templates/classic/NoHistory.json
+```
+
+Для эксперимента скопируй нужный JSON и укажи новый путь. Относительные пути
+этих двух переменных считаются от `.env`, абсолютные тоже поддерживаются.
+Приоритет: переменная процесса → `.env` → `system_template` из classic TOML
+(если переменная отсутствует). Выбор зависит от `include_history`, а не имени
+профиля; неиспользуемый шаблон не читается. Изменения действуют в новой партии,
+пересборка не требуется. Содержимое classic-сиспромптов не ограничено:
+все директивы необязательны, разрешён и пустой текст. Нужен только корректный
+JSON шаблона. Без `fen`/`ascii` позиция автоматически в текст не добавляется;
+без `wrong-move` обратная связь об отказах в текст не попадёт.
+Настройка `include_history` независимо управляет сообщениями принятых SAN-ходов.
+`LLM_SYSTEM_TEMPLATE` по-прежнему относится только к нестандартным вариантам.
+
+Fairy-конфигурация не требует
+наличия classic-файлов, а классика не загружает fairy-профили и файлы правил.
+
+```sh
+cargo run -p bevy-front -- --llm-classic-profile with-history
+# Затем выбрать Classic Chess и режим LLM в меню.
+cargo run -p llm-match -- --variant Classic --llm-classic-profile no-history
+cargo run -p llm-match -- --variant Classic --moves 'e2e4 e7e5 g1f3 b8c6' --print-prompt
+```
+
+Директивы этой отдельной ветки:
+
+- `{{ascii}}` — ASCII текущего `Position`;
+- `{{fen}}` — FEN того же `Position`, включая очередь, права и счётчики;
+- `{{classic-san-history}}` — принятые ходы в PGN-movetext, например
+  `1. e4 e5 2. Nf3 Nc6`. Это текст ходов без PGN-заголовков/комментариев;
+  при старте с хода чёрных сохраняется номер: `23... a1=Q+`.
+
+`with-history` передаёт все принятые ходы отдельными сообщениями: ход человека —
+`User`, ход модели — `Assistant`, независимо от цвета. Содержимое каждого сообщения —
+только канонический SAN (`e4`, `e5`, `Nf3`), точно как требуемый ответ модели.
+Лимита количества ходов нет; при переполнении контекстом управляет prompt-core.
+`no-history` не передаёт сообщений истории (директива также возвращает пустую строку).
+SAN формируется движком из позиции **до** каждого принятого хода; внутренний UCI
+для frontend синхронизации сохраняется отдельно. Отказы и reasoning в историю не входят.
+`{{classic-san-history}}` остаётся необязательной PGN-вставкой для пользовательских
+шаблонов; стандартные шаблоны её не используют, чтобы не дублировать сообщения.
+
+В обоих режимах модель отвечает **одним каноническим SAN-ходом**: `Nf3`,
+`exd5`, `O-O`, `axb8=Q+`, `Qh4#`. Без номера хода, пояснений и markdown.
+Разрешение неоднозначности учитывает только легальные исходные фигуры;
+лишняя/недостающая disambiguation, неверный `+/#`, `0-0`, UCI и prose не
+исправляются. CLI-ввод человека и `--moves` остаются UCI для совместимости.
+
+Тихие reasoning/transport retries сохранены. Только настоящий final SAN
+может попасть в минимальный список отказов; нелегальные попытки не меняют
+SAN-историю, UCI-историю или позицию. FEN/ASCII в `post_history` authoritative.
+Генерируемые легальные ходы/оценки/подсказки модели не передаются. Для Gothic
+и Terachess новые SAN-правила, FEN-директивы и classic-шаблоны не включаются.
 
 ## Проверки
 

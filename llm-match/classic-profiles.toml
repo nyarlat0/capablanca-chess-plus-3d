@@ -1,0 +1,9 @@
+active_profile = "with-history"
+
+[profiles.with-history]
+include_history = true
+system_template = "templates/classic/WithHistory.json"
+
+[profiles.no-history]
+include_history = false
+system_template = "templates/classic/NoHistory.json"

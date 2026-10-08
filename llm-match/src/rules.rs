@@ -7,6 +7,7 @@ use std::fmt::Write;
 
 pub fn variant_key(variant: Variant) -> &'static str {
     match variant {
+        Variant::Classic => "classic-chess",
         Variant::Capablanca => "capablanca",
         Variant::Gothic => "gothic",
         Variant::Embassy => "embassy",
@@ -21,6 +22,9 @@ pub fn variant_key(variant: Variant) -> &'static str {
 }
 pub(crate) fn builtin_template(variant: Variant) -> &'static str {
     match variant {
+        Variant::Classic => {
+            "{{board-header}}\n{{piece-legend}}\n{{castling-rules}}\n{{pawn-rules}}\n{{promotion-rules}}"
+        }
         Variant::Capablanca => include_str!("../rules/capablanca.txt"),
         Variant::Gothic => include_str!("../rules/gothic.txt"),
         Variant::Embassy => include_str!("../rules/embassy.txt"),
