@@ -485,6 +485,70 @@ fn classic_compatibility_and_all_profiles_have_no_assistance_leaks() {
 }
 
 #[test]
+fn pure_numeric_prompts_never_mention_letter_coordinates() {
+    for name in [
+        "numeric",
+        "numeric-no-history",
+        "numeric-json",
+        "numeric-json-no-history",
+    ] {
+        let mut c = config(name);
+        for template in [
+            "Chess.json",
+            "Chess_artemis_think.json",
+            "Chess_nothink.json",
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("templates/sysprompt")
+                .join(template);
+            if !path.exists() {
+                continue;
+            }
+            c.system = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            for variant in [Variant::Gothic, Variant::TerachessII] {
+                let mut m = Match::new(variant, Color::Black);
+                if variant == Variant::Gothic {
+                    m.accept_human("e2e4").unwrap();
+                }
+                let data = m.prompt_data_with(&c).unwrap();
+                let prompt = PromptBuilder::new()
+                    .build(&c.context, &c.instruct, &c.system, &data)
+                    .unwrap()
+                    .text;
+                for forbidden in [
+                    "a=1",
+                    "b=2",
+                    "file a",
+                    "file letters",
+                    "file/rank",
+                    "SAN",
+                    "UCI",
+                    "letter itself",
+                    "a b c",
+                    "e2e4",
+                    "e2-e4",
+                ] {
+                    assert!(
+                        !prompt.contains(forbidden),
+                        "{name}/{template}/{variant:?}: {forbidden}"
+                    );
+                }
+                assert!(prompt.contains("increases left to right"));
+                assert!(prompt.contains("NEVER mirrored or rotated for Black"));
+            }
+        }
+    }
+    // The explicitly hybrid experiment still has its alphabetic ASCII axis.
+    assert!(
+        render_state(
+            &Variant::Gothic.starting_position(),
+            StateFormat::NumericAscii
+        )
+        .contains("a b c")
+    );
+}
+
+#[test]
 fn rules_templates_are_editable_and_geometry_is_engine_owned() {
     let mut c = config("numeric-no-history");
     c.rules_templates.insert(

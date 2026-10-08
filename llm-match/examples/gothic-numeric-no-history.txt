@@ -1,8 +1,6 @@
 AUTHORITATIVE CURRENT POSITION
 COORDINATE SYSTEM
-x increases from file a toward the right:
-a=1, b=2, c=3, d=4, e=5, f=6, g=7, h=8, i=9, j=10
-y is the board rank (rank 1 = y=1, rank 2 = y=2, and so on).
+Viewed from White's side: x=1..10 increases left to right; y=1..8 increases from White's edge toward Black's edge.
 Coordinates are absolute and NEVER mirrored or rotated for Black.
 
 BOARD

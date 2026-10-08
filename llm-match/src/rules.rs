@@ -44,9 +44,11 @@ pub fn render_rules(variant: Variant, profile: &Representation, template: &str) 
         size.files(),
         size.ranks()
     );
-    let mut legend = String::from(
-        "PIECE LEGEND\nNames and symbol meanings are authoritative. Never infer piece identities from standard chess, memory, starting squares, or the letter itself.\n",
-    );
+    let mut legend = String::from(if profile.state_format == StateFormat::Numeric {
+        "PIECE LEGEND\nPiece names and movement rules are authoritative. Never infer piece identities from memory or starting positions.\n"
+    } else {
+        "PIECE LEGEND\nNames and symbol meanings are authoritative. Never infer piece identities from standard chess, memory, starting squares, or the letter itself.\n"
+    });
     let mut kinds: Vec<_> = PieceKind::ALL
         .into_iter()
         .filter(|k| rules.uses_piece(*k))

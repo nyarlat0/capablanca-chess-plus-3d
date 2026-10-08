@@ -127,16 +127,11 @@ pub fn render_state(position: &Position, format: StateFormat) -> String {
         return out;
     }
     let size = position.board().size();
-    let mut out = String::from(
-        "AUTHORITATIVE CURRENT POSITION\nCOORDINATE SYSTEM\nx increases from file a toward the right:\n",
+    let mut out = format!(
+        "AUTHORITATIVE CURRENT POSITION\nCOORDINATE SYSTEM\nViewed from White's side: x=1..{} increases left to right; y=1..{} increases from White's edge toward Black's edge.\nCoordinates are absolute and NEVER mirrored or rotated for Black.\n",
+        size.files(),
+        size.ranks()
     );
-    out.push_str(
-        &(0..size.files())
-            .map(|f| format!("{}={}", (b'a' + f) as char, f + 1))
-            .collect::<Vec<_>>()
-            .join(", "),
-    );
-    out.push_str("\ny is the board rank (rank 1 = y=1, rank 2 = y=2, and so on).\nCoordinates are absolute and NEVER mirrored or rotated for Black.\n");
     writeln!(
         out,
         "\nBOARD\nwidth: {}\nheight: {}\n\nSIDE TO MOVE\n{:?}\n",
@@ -296,13 +291,13 @@ pub fn output_instruction(format: OutputFormat) -> &'static str {
             "Output exactly one raw canonical UCI move: source immediately followed by destination and lowercase promotion suffix when required. No SAN, hyphens, prose, markdown or extra text."
         }
         OutputFormat::NumericJson => {
-            "Output exactly one JSON object with exactly these keys: {\"from\":[x,y],\"to\":[x,y],\"promotion\":null}. Use integer absolute coordinates. If promotion is required, replace null with the exact promoted piece name from the legend (for example \"Queen\"). No file letters, markdown, prose, additional keys or additional objects."
+            "Output exactly one JSON object with exactly these keys: {\"from\":[x,y],\"to\":[x,y],\"promotion\":null}. Use integer absolute coordinates. If promotion is required, replace null with the exact promoted piece name from the legend (for example \"Queen\"). Use only this numeric schema, without markdown, prose, additional keys or additional objects."
         }
         OutputFormat::Semantic => {
             "Output exactly one move in the SAME format as semantic accepted history: <Color> <PieceName> <from>-<to>. Use White or Black and exact piece names from the legend; squares use file letters and ranks. For a capture replace - with x. For promotion append =<PromotionPiece>. Append exactly ' (en-passant)' for en passant, ' (initial king jump)' for that jump, or ' (castling; Rook <rook-from>-<rook-to>)' for castling. Moving piece identity is from the CURRENT position before the move. No raw UCI, JSON, SAN, markdown, commentary or extra lines."
         }
         OutputFormat::Numeric => {
-            "Output exactly one move in the SAME format as numeric accepted history: <Color> <PieceName>: (x,y) -> (x,y). Use White or Black, exact piece names from the legend and absolute integer coordinates without spaces inside parentheses. For a capture replace ' -> ' with ' x '. For promotion append ' = <PromotionPiece>'. Append exactly ' (en-passant)' for en passant, ' (initial king jump)' for that jump, or ' (castling; Rook (x,y) -> (x,y))' for castling. Moving piece identity is from the CURRENT position before the move. No file letters, raw UCI, JSON, SAN, markdown, commentary or extra lines."
+            "Output exactly one move in the SAME format as numeric accepted history: <Color> <PieceName>: (x,y) -> (x,y). Use White or Black, exact piece names from the legend and absolute integer coordinates without spaces inside parentheses. For a capture replace ' -> ' with ' x '. For promotion append ' = <PromotionPiece>'. Append exactly ' (en-passant)' for en passant, ' (initial king jump)' for that jump, or ' (castling; Rook (x,y) -> (x,y))' for castling. Moving piece identity is from the CURRENT position before the move. Use only this numeric move format, without markdown, commentary or extra lines."
         }
     }
 }
