@@ -61,14 +61,7 @@ fn classic_system_templates_can_be_overridden_independently_from_env_file_and_pr
             .to_string_lossy()
             .into_owned(),
     );
-    env.insert(
-        "LLM_CLASSIC_SYSTEM_TEMPLATE_WITH_HISTORY".into(),
-        "with.json".into(),
-    );
-    env.insert(
-        "LLM_CLASSIC_SYSTEM_TEMPLATE_NO_HISTORY".into(),
-        "without.json".into(),
-    );
+    env.insert("LLM_CLASSIC_SYSTEM_TEMPLATE".into(), "with.json".into());
     fs::write(
         dir.0.join(".env"),
         env.iter()
@@ -83,7 +76,7 @@ fn classic_system_templates_can_be_overridden_independently_from_env_file_and_pr
         }
         cmd.env("LLM_MATCH_ENV", dir.0.join(".env"));
         if let Some(path) = override_path {
-            cmd.env("LLM_CLASSIC_SYSTEM_TEMPLATE_WITH_HISTORY", path);
+            cmd.env("LLM_CLASSIC_SYSTEM_TEMPLATE", path);
         }
         cmd.args([
             "--variant",
@@ -97,7 +90,7 @@ fn classic_system_templates_can_be_overridden_independently_from_env_file_and_pr
     };
     for (profile, marker) in [
         ("with-history", "WITH_ENV_FILE"),
-        ("no-history", "WITHOUT_ENV_FILE"),
+        ("no-history", "WITH_ENV_FILE"),
     ] {
         let result = run(profile, None);
         assert!(
@@ -111,7 +104,7 @@ fn classic_system_templates_can_be_overridden_independently_from_env_file_and_pr
     assert!(result.status.success());
     assert!(String::from_utf8_lossy(&result.stdout).contains("WITH_PROCESS_ENV"));
     assert!(
-        run("no-history", Some("missing-unused.json"))
+        !run("no-history", Some("missing-unused.json"))
             .status
             .success()
     );
@@ -122,15 +115,14 @@ fn classic_system_templates_can_be_overridden_independently_from_env_file_and_pr
     assert!(run("with-history", Some("without.json")).status.success());
     for file in ["plain.json", "empty.json", "optional-history.json"] {
         assert!(run("with-history", Some(file)).status.success());
-        fs::copy(dir.0.join(file), dir.0.join("without.json")).unwrap();
-        assert!(run("no-history", None).status.success());
+        assert!(run("no-history", Some(file)).status.success());
     }
 }
 
 #[test]
 fn classic_cli_and_environment_are_separate_from_fairy_profiles() {
     let exe = env!("CARGO_BIN_EXE_llm-match");
-    for (profile, history) in [("with-history", true), ("no-history", false)] {
+    for profile in ["with-history", "no-history"] {
         let run = Command::new(exe)
             .env("LLM_PROFILE", "intentionally-not-a-fairy-profile")
             .env("LLM_CLASSIC_PROFILE", "invalid-overridden-by-cli")
@@ -151,7 +143,6 @@ fn classic_cli_and_environment_are_separate_from_fairy_profiles() {
             String::from_utf8_lossy(&run.stderr)
         );
         let text = String::from_utf8(run.stdout).unwrap();
-        let _ = history;
         assert!(
             text.contains("FEN: r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3")
         );

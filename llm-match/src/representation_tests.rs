@@ -297,8 +297,8 @@ fn history_output_is_strict_and_checks_identity_color_capture_and_annotations() 
         for bad in [
             "e2e4".into(),
             r#"{"from":[5,2],"to":[5,4],"promotion":null}"#.into(),
-            format!("I choose {good}"),
-            format!("{good}\n{good}"),
+            format!("I choose {good}, maybe"),
+            format!("{good}\n{good} then stop"),
             good.replace("White", "white"),
             good.replace("White", "Black"),
             good.replace("Pawn", "Queen"),
@@ -325,6 +325,26 @@ fn history_output_is_strict_and_checks_identity_color_capture_and_annotations() 
     c.representation.history_format = HistoryFormat::Semantic;
     c.representation.output_format = OutputFormat::Numeric;
     assert!(c.representation.validate().is_err());
+}
+
+#[test]
+fn trailing_moves_use_the_configured_representation() {
+    for (format, answer) in [
+        (OutputFormat::Uci, "My choice: e2e4"),
+        (OutputFormat::Semantic, "My choice: White Pawn e2-e4"),
+        (
+            OutputFormat::Numeric,
+            "My choice: White Pawn: (5,2) -> (5,4)",
+        ),
+        (
+            OutputFormat::NumericJson,
+            "My choice: {\"from\":[5,2],\"to\":[5,4],\"promotion\":null}",
+        ),
+    ] {
+        let mut m = Match::new(Variant::Gothic, Color::White);
+        assert_eq!(m.accept_answer(answer, format).unwrap().to_uci(), "e2e4");
+        assert_eq!(m.uci_history(), ["e2e4"]);
+    }
 }
 
 #[test]

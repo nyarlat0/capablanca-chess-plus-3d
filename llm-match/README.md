@@ -116,6 +116,8 @@ Artemis сначала выдаёт краткий `<thinking>...</thinking>`, �
 соседнего проекта:
 
 - `{{chess-rules}}` — выбранные правила в начальном system prompt;
+- `{{side-to-move}}` — `White` или `Black` из текущей позиции движка. Доступна
+  во всех вариантах и профилях, в `content`, `user_prompt` и `post_history`;
 - `{{board-state}}` — явный side to move, сохранённые права рокировки,
   en-passant target, initial king jump для Terachess II, CURRENT PIECES и ASCII;
 - `{{wrong-move}}` — JSON-список отклонённых final moves текущего хода и указание,
@@ -322,26 +324,24 @@ LLM-конфигурация классики **отдельная**: [classic-p
 | --- | --- |
 | `LLM_CLASSIC_PROFILES_FILE` | Путь от `.env`, по умолчанию `classic-profiles.toml` |
 | `LLM_CLASSIC_PROFILE` | `with-history` или `no-history` |
-| `LLM_CLASSIC_SYSTEM_TEMPLATE_WITH_HISTORY` | System prompt классики с историей; переопределяет путь из classic TOML |
-| `LLM_CLASSIC_SYSTEM_TEMPLATE_NO_HISTORY` | System prompt классики без истории; переопределяет путь из classic TOML |
+| `LLM_CLASSIC_SYSTEM_TEMPLATE` | Общий system prompt классики для обоих режимов истории |
 | `--llm-classic-profile` | CLI-переопределение, приоритет над env и `.env` |
-| `active_profile` в classic TOML | По умолчанию `with-history` |
+| `active_profile` в classic TOML | По умолчанию `no-history` |
 
 Адрес Kobold, instruct/context/reasoning и sampler preset остаются общими
 транспортными настройками `.env`; system prompt выбирается из classic TOML,
-пути `system_template` относительны этому TOML. Два отдельных system prompt
-можно переключать непосредственно в `.env`:
+общий верхнеуровневый `system_template` относителен этому TOML.
+Его можно переопределить непосредственно в `.env`:
 
 ```dotenv
-LLM_CLASSIC_SYSTEM_TEMPLATE_WITH_HISTORY=templates/classic/WithHistory.json
-LLM_CLASSIC_SYSTEM_TEMPLATE_NO_HISTORY=templates/classic/NoHistory.json
+LLM_CLASSIC_SYSTEM_TEMPLATE=templates/classic/gemma_think_history.json
 ```
 
 Для эксперимента скопируй нужный JSON и укажи новый путь. Относительные пути
-этих двух переменных считаются от `.env`, абсолютные тоже поддерживаются.
+этой переменной считаются от `.env`, абсолютные тоже поддерживаются.
 Приоритет: переменная процесса → `.env` → `system_template` из classic TOML
-(если переменная отсутствует). Выбор зависит от `include_history`, а не имени
-профиля; неиспользуемый шаблон не читается. Изменения действуют в новой партии,
+(если переменная отсутствует). Старые `_WITH_HISTORY`/`_NO_HISTORY` переменные
+больше не используются. Шаблон не зависит от `include_history`. Изменения действуют в новой партии,
 пересборка не требуется. Содержимое classic-сиспромптов не ограничено:
 все директивы необязательны, разрешён и пустой текст. Нужен только корректный
 JSON шаблона. Без `fen`/`ascii` позиция автоматически в текст не добавляется;
@@ -363,6 +363,8 @@ cargo run -p llm-match -- --variant Classic --moves 'e2e4 e7e5 g1f3 b8c6' --prin
 
 - `{{ascii}}` — ASCII текущего `Position`;
 - `{{fen}}` — FEN того же `Position`, включая очередь, права и счётчики;
+- `{{side-to-move}}` — `White` или `Black`, в зависимости от текущей очереди хода;
+- `{{last-move}}` — последний принятый SAN-ход, даже в `no-history`; до первого хода — пустая строка;
 - `{{classic-san-history}}` — принятые ходы в PGN-movetext, например
   `1. e4 e5 2. Nf3 Nc6`. Это текст ходов без PGN-заголовков/комментариев;
   при старте с хода чёрных сохраняется номер: `23... a1=Q+`.
@@ -377,10 +379,30 @@ SAN формируется движком из позиции **до** кажд�
 `{{classic-san-history}}` остаётся необязательной PGN-вставкой для пользовательских
 шаблонов; стандартные шаблоны её не используют, чтобы не дублировать сообщения.
 
-В обоих режимах модель отвечает **одним каноническим SAN-ходом**: `Nf3`,
-`exd5`, `O-O`, `axb8=Q+`, `Qh4#`. Без номера хода, пояснений и markdown.
+Поле JSON `user_prompt` необязательно. Оно рендерится тем же `prompt-core`
+с теми же директивами и `if`-блоками, затем добавляется отдельным последним
+сообщением User, перед системным `post_history`. В постоянную историю оно
+не записывается; учитывается в бюджете контекста и не обрезается вместе с историей.
+Например:
+
+```json
+{
+  "name": "Classic experiment",
+  "content": "Play chess. End your answer with a canonical SAN move.",
+  "user_prompt": "{{#if last-move}}Last move: {{last-move}}. {{/if}}Choose your move.",
+  "post_history": "AUTHORITATIVE POSITION\n{{fen}}\n{{ascii}}\n{{wrong-move}}"
+}
+```
+
+В обоих режимах ход читается **из конца ответа**: `Nf3`,
+`exd5`, `O-O`, `axb8=Q+`, `Qh4#`. Произвольный текст перед ним разрешён:
+`My choice: Nf3` принимается как `Nf3`. После хода допускаются только пробелы;
+пунктуация, закрывающие Markdown-ограждения и пояснения после него не удаляются.
+Такое извлечение конечного хода действует и для других output formats.
+Если последний ход нелегален, более ранние ходы из ответа не подбираются.
+В историю и обратную связь входит только извлечённый ход.
 Разрешение неоднозначности учитывает только легальные исходные фигуры;
-лишняя/недостающая disambiguation, неверный `+/#`, `0-0`, UCI и prose не
+лишняя/недостающая disambiguation, неверный `+/#`, `0-0` и UCI не
 исправляются. CLI-ввод человека и `--moves` остаются UCI для совместимости.
 
 Тихие reasoning/transport retries сохранены. Только настоящий final SAN

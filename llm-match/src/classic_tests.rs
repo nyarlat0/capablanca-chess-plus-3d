@@ -1,6 +1,72 @@
 use super::*;
 
 #[test]
+fn common_classic_template_renders_ephemeral_user_after_san_history() {
+    let mut m = Match::new(Variant::Classic, Color::Black);
+    for profile in ["with-history", "no-history"] {
+        let mut c = Config::load_classic_with_profile(Some(profile)).unwrap();
+        assert_eq!(m.prompt_data_with(&c).unwrap().custom["last-move"], "");
+        c.system.content = "BEGIN".into();
+        c.system.user_prompt =
+            "QUESTION {{#if last-move}}{{last-move}}{{else}}none{{/if}} {{fen}} {{ascii}}".into();
+        c.system.post_history = "POST {{last-move}}".into();
+        m.accept_human("e2e4").unwrap();
+        let data = m.prompt_data_with(&c).unwrap();
+        assert_eq!(data.custom["last-move"], "e4");
+        assert_eq!(data.messages.len(), usize::from(profile == "with-history"));
+        c.instruct.input_sequence = "[USER]".into();
+        c.instruct.last_input_sequence = "[LAST USER]".into();
+        c.instruct.system_sequence = "[SYSTEM]".into();
+        c.instruct.system_same_as_user = false;
+        let text = PromptBuilder::new()
+            .build(&c.context, &c.instruct, &c.system, &data)
+            .unwrap()
+            .text;
+        assert!(text.contains("[LAST USER]QUESTION e4"), "{text}");
+        assert!(text.find("QUESTION e4").unwrap() < text.find("[SYSTEM]POST e4").unwrap());
+        assert!(text.contains(&m.game.position().to_fen()));
+        assert_eq!(m.uci_history(), ["e2e4"]);
+        m = Match::new(Variant::Classic, Color::Black);
+    }
+    let a = Config::load_classic_with_profile(Some("with-history")).unwrap();
+    let b = Config::load_classic_with_profile(Some("no-history")).unwrap();
+    assert_eq!(
+        serde_json::to_value(a.system).unwrap(),
+        serde_json::to_value(b.system).unwrap()
+    );
+}
+
+#[test]
+fn final_san_suffix_accepts_prose_but_never_substitutes_an_earlier_move() {
+    let mut c = Config::load_classic_with_profile(Some("with-history")).unwrap();
+    c.reasoning.prefix = "<thinking>".into();
+    c.reasoning.suffix = "</thinking>".into();
+    let mut m = Match::new(Variant::Classic, Color::White);
+    for text in [
+        "<thinking>e4",
+        "<thinking>e4</thinking>",
+        "e4 followed by prose",
+    ] {
+        assert!(m.accept_configured_answer(text, &c).is_err());
+        assert!(m.wrong_moves().is_empty());
+        assert!(m.uci_history().is_empty());
+    }
+    assert!(
+        m.accept_configured_answer("Could play e4, but my answer: Nf6", &c)
+            .is_err()
+    );
+    assert_eq!(m.wrong_moves(), ["Nf6"]);
+    assert!(m.uci_history().is_empty());
+    m.accept_configured_answer(
+        "<thinking>Consider options.</thinking>My choice: 1.e4  ",
+        &c,
+    )
+    .unwrap();
+    assert_eq!(m.uci_history(), ["e2e4"]);
+    assert_eq!(m.prompt_data_with(&c).unwrap().messages[0].content, "e4");
+}
+
+#[test]
 fn classic_history_and_directives_are_engine_derived_and_separate() {
     let mut m = Match::new(Variant::Classic, Color::Black);
     let c = Config::load_classic_with_profile(Some("with-history")).unwrap();
@@ -75,14 +141,14 @@ fn classic_rejects_prose_uci_and_noncanonical_san_without_changing_state() {
     let fen = m.game.position().to_fen();
     for bad in [
         "e2e4",
-        "1. e4",
-        "I choose e4",
+        "1. e4 then stop",
+        "I choose e4 then stop",
         "e4!",
-        "e4 e5",
-        "<thinking>e4",
+        "e4 e5 then stop",
+        "<thinking>e4 unfinished",
         "nf3",
     ] {
-        assert!(m.accept_configured_answer(bad, &c).is_err());
+        assert!(m.accept_configured_answer(bad, &c).is_err(), "{bad}");
         assert!(m.wrong_moves().is_empty());
     }
     assert!(m.accept_configured_answer("Nf6", &c).is_err());

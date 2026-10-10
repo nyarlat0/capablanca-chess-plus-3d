@@ -123,9 +123,9 @@ async fn classic_san_retries_keep_only_accepted_san_history() {
             Reply::Http(503),
             Reply::Text("<thinking>finished</thinking>"),
             Reply::Text("e7e5"),
-            Reply::Text("I choose e5"),
+            Reply::Text("I choose e5 but wait"),
             Reply::Text("<thinking>secret</thinking>e6+"),
-            Reply::Text("<thinking>secret</thinking>e5"),
+            Reply::Text("<thinking>secret</thinking>My final choice: e5"),
         ],
         512,
     );
@@ -165,7 +165,7 @@ async fn classic_san_retries_keep_only_accepted_san_history() {
 #[tokio::test]
 async fn illegal_retries_keep_history_and_board_then_commit_only_valid_answer() {
     let server = Server::new(vec![
-        "I choose e7e5",
+        "I choose e7e5 but wait",
         "Black Pawn e7-e4",
         " Black Pawn e7-e5\n",
     ]);

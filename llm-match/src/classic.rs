@@ -16,20 +16,19 @@ pub struct ClassicConfig {
 #[serde(deny_unknown_fields)]
 struct Profiles {
     active_profile: String,
+    system_template: String,
     profiles: BTreeMap<String, Profile>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Profile {
     include_history: bool,
-    system_template: String,
 }
 impl ClassicConfig {
     pub(crate) fn load(
         path: &Path,
         selected: Option<&str>,
-        with_history_template: Option<&Path>,
-        no_history_template: Option<&Path>,
+        common_template: Option<&Path>,
     ) -> Result<Self> {
         let file: Profiles = toml::from_str(
             &std::fs::read_to_string(path)
@@ -43,13 +42,8 @@ impl ClassicConfig {
         let fallback = path
             .parent()
             .unwrap_or(Path::new("."))
-            .join(&profile.system_template);
-        let override_path = if profile.include_history {
-            with_history_template
-        } else {
-            no_history_template
-        };
-        let template_path = override_path.unwrap_or(&fallback);
+            .join(&file.system_template);
+        let template_path = common_template.unwrap_or(&fallback);
         let system: SystemPromptTemplate =
             serde_json::from_slice(&std::fs::read(template_path).with_context(|| {
                 format!(
@@ -118,6 +112,8 @@ pub(crate) fn prompt(
             Vec::new()
         },
         custom: json!({"ascii":crate::prompts::ascii_board(position), "fen":position.to_fen(),
+            "side-to-move":match position.side_to_move() { Color::White => "White", Color::Black => "Black" },
+            "last-move":plies.last().map(|p| p.san.as_str()).unwrap_or(""),
             "classic-san-history":if config.include_history { history(plies) } else { String::new() },
             "wrong-move":wrong}),
         ..Default::default()

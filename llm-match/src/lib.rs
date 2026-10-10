@@ -77,6 +77,9 @@ impl Match {
     }
 
     pub fn accept_configured_answer(&mut self, answer: &str, config: &Config) -> Result<Move> {
+        let final_text =
+            output::final_answer(&config.reasoning, answer)?.context("incomplete reasoning")?;
+        let answer = final_text.as_str();
         if self.variant != Variant::Classic {
             ensure!(
                 config.classic.is_none(),
@@ -92,7 +95,8 @@ impl Match {
             self.game.position().side_to_move() == self.model_side,
             "not the model turn"
         );
-        let answer = answer.trim();
+        let answer = output::trailing_move(answer, |s| classic::san_shape(s))
+            .context("expected final SAN move")?;
         ensure!(classic::san_shape(answer), "expected one SAN move");
         let result = self
             .game
@@ -141,6 +145,10 @@ impl Match {
             self.game.position().side_to_move() == self.model_side,
             "not the model turn"
         );
+        let answer = output::trailing_move(answer, |s| {
+            parse_model_move(s, format, self.game.position()).is_ok()
+        })
+        .context("expected final move in configured format")?;
         let (decoded, promotion) =
             representation::decode_model_move(answer, format, self.game.position())?;
         tracing::debug!("model answer: {}", answer.trim());
@@ -286,6 +294,19 @@ impl Match {
             &self.json_history,
             profile,
         );
+        let mut full_profile = profile.clone();
+        full_profile.history_mode = HistoryMode::Full;
+        let full_history = render_history(
+            &self.history,
+            &self.numeric_history,
+            &self.uci_history,
+            &self.json_history,
+            &full_profile,
+        );
+        let last_move = full_history
+            .last()
+            .map(|m| m.content.as_str())
+            .unwrap_or("");
         let history_instruction = representation::history_instruction(profile, messages.len());
         let mut board = render_state(self.game.position(), profile.state_format);
         use std::fmt::Write;
@@ -300,7 +321,9 @@ impl Match {
             character: "Chess model".into(),
             messages,
             custom: json!({
+                "side-to-move": match self.game.position().side_to_move() { Color::White => "White", Color::Black => "Black" },
                 "chess-rules": render_rules(self.variant, profile, template)?,
+                "last-move": last_move,
                 "board-state": board,
                 "wrong-move": wrong,
                 "representation-instructions": representation::grounding(profile.state_format),
@@ -385,18 +408,20 @@ pub async fn generate_move(
         let Some(answer) = output::final_answer(&config.reasoning, &raw)? else {
             continue;
         };
-        if if config.classic.is_some() {
-            !classic::san_shape(&answer)
-        } else {
-            parse_model_move(
-                &answer,
-                config.representation.output_format,
-                state.game.position(),
-            )
-            .is_err()
-        } {
+        let Some(answer) = output::trailing_move(&answer, |s| {
+            if config.classic.is_some() {
+                classic::san_shape(s)
+            } else {
+                parse_model_move(
+                    s,
+                    config.representation.output_format,
+                    state.game.position(),
+                )
+                .is_ok()
+            }
+        }) else {
             continue;
-        }
+        };
         match state.accept_configured_answer(&answer, config) {
             Ok(chess_move) => return Ok(chess_move),
             Err(_) => progress(attempt, &answer),

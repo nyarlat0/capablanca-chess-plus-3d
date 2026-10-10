@@ -106,10 +106,7 @@ impl Config {
         let base = path.parent().unwrap_or(Path::new("."));
         let classic = if classic_mode {
             let env_profile = get("LLM_CLASSIC_PROFILE").ok();
-            let with_history = get("LLM_CLASSIC_SYSTEM_TEMPLATE_WITH_HISTORY")
-                .ok()
-                .map(|p| base.join(p));
-            let no_history = get("LLM_CLASSIC_SYSTEM_TEMPLATE_NO_HISTORY")
+            let common = get("LLM_CLASSIC_SYSTEM_TEMPLATE")
                 .ok()
                 .map(|p| base.join(p));
             Some(crate::ClassicConfig::load(
@@ -118,8 +115,7 @@ impl Config {
                         .unwrap_or_else(|_| "classic-profiles.toml".into()),
                 ),
                 profile_override.or(env_profile.as_deref()),
-                with_history.as_deref(),
-                no_history.as_deref(),
+                common.as_deref(),
             )?)
         } else {
             None

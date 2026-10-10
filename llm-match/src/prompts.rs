@@ -70,7 +70,6 @@ pub(crate) fn ascii_board(position: &Position) -> String {
     let mut text = String::new();
     let size = position.board().size();
     let rules = position.rules();
-    text.push_str("\nASCII BOARD\n");
     for rank in (0..size.ranks()).rev() {
         write!(text, "{:>2}", rank + 1).unwrap();
         for file in 0..size.files() {

@@ -1,6 +1,19 @@
 use anyhow::{Result, ensure};
 use prompt_core::ReasoningTemplate;
 
+/// A complete move must end the answer. Never choose an earlier legal move
+/// instead of the final attempt; the predicate checks representation only.
+pub(crate) fn trailing_move(text: &str, syntax: impl Fn(&str) -> bool) -> Option<&str> {
+    let text = text.trim();
+    std::iter::once(0)
+        .chain(text.char_indices().filter_map(|(i, c)| {
+            (c.is_whitespace() || matches!(c, ':' | '>' | '`' | '"' | '.' | ',' | ';' | '(' | '['))
+                .then_some(i + c.len_utf8())
+        }))
+        .map(|i| &text[i..])
+        .find(|s| !s.is_empty() && syntax(s))
+}
+
 /// None means an incomplete/empty reasoning generation, never model feedback.
 /// Removes only explicit reasoning blocks, never extracts a move from prose.
 pub(crate) fn final_answer(template: &ReasoningTemplate, raw: &str) -> Result<Option<String>> {
