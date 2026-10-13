@@ -11,6 +11,8 @@ use std::{
 #[derive(Clone)]
 pub struct Config {
     pub classic: Option<crate::ClassicConfig>,
+    pub pipeline: crate::pipeline::Templates,
+    pub stage_max_attempts: usize,
     pub profile_name: String,
     pub representation: crate::Representation,
     pub rules_templates: std::collections::BTreeMap<String, String>,
@@ -60,7 +62,7 @@ impl Config {
     pub fn summary(&self) -> String {
         if let Some(c) = &self.classic {
             format!(
-                "classic chess | history: {} | output: SAN",
+                "4-stage pipeline | classic chess | history: {} | output: SAN",
                 if c.include_history {
                     "full SAN"
                 } else {
@@ -68,7 +70,7 @@ impl Config {
                 }
             )
         } else {
-            self.representation.summary()
+            format!("4-stage pipeline | {}", self.representation.summary())
         }
     }
     /// Relative template paths are relative to the env file. Process env wins.
@@ -104,18 +106,17 @@ impl Config {
                 .with_context(|| format!("missing {key} in {}", path.display()))
         };
         let base = path.parent().unwrap_or(Path::new("."));
+        let pipeline = crate::pipeline::Templates::load(base, &get)?;
         let classic = if classic_mode {
             let env_profile = get("LLM_CLASSIC_PROFILE").ok();
-            let common = get("LLM_CLASSIC_SYSTEM_TEMPLATE")
-                .ok()
-                .map(|p| base.join(p));
+
             Some(crate::ClassicConfig::load(
                 &base.join(
                     get("LLM_CLASSIC_PROFILES_FILE")
                         .unwrap_or_else(|_| "classic-profiles.toml".into()),
                 ),
                 profile_override.or(env_profile.as_deref()),
-                common.as_deref(),
+                pipeline.analyst.clone(),
             )?)
         } else {
             None
@@ -155,31 +156,11 @@ impl Config {
         let context = read_json(&base.join(get("LLM_CONTEXT_TEMPLATE")?))?;
         let instruct = read_json(&base.join(get("LLM_INSTRUCT_TEMPLATE")?))?;
         let reasoning = read_json(&base.join(get("LLM_REASONING_TEMPLATE")?))?;
-        let system: SystemPromptTemplate = if let Some(c) = &classic {
-            c.system.clone()
-        } else {
-            read_json(&base.join(get("LLM_SYSTEM_TEMPLATE")?))?
-        };
-        if !classic_mode {
-            for directive in [
-                "{{representation-instructions}}",
-                "{{history-instructions}}",
-                "{{output-instructions}}",
-            ] {
-                ensure!(
-                    system.content.contains(directive) || system.post_history.contains(directive),
-                    "system template must contain {directive} to support representation profiles"
-                );
-            }
-            ensure!(
-                system.post_history.contains("{{board-state}}"),
-                "post_history must contain board-state"
-            );
-            ensure!(
-                system.post_history.contains("{{wrong-move}}"),
-                "post_history must contain wrong-move"
-            );
-        }
+        let system = pipeline.analyst.clone();
+        let stage_max_attempts: usize = get("LLM_STAGE_MAX_ATTEMPTS")
+            .unwrap_or_else(|_| "3".into())
+            .parse()?;
+        ensure!(stage_max_attempts > 0, "stage attempts must be positive");
         let preset = Preset::from_value(read_json(&base.join(get("LLM_PRESET")?))?)?;
         let timeout_seconds = get("LLM_REQUEST_TIMEOUT_SECONDS")?.parse()?;
         let max_attempts = get("LLM_MAX_ATTEMPTS")?.parse()?;
@@ -188,6 +169,8 @@ impl Config {
             "timeout and attempts must be positive"
         );
         Ok(Self {
+            pipeline,
+            stage_max_attempts,
             classic,
             profile_name,
             representation,

@@ -80,8 +80,8 @@ pub(crate) fn decode_model_move(
 
     let answer = strip_optional_json_fence(answer);
 
-    let mv: NumericMove =
-        serde_json::from_str(answer).context("expected exactly one numeric move JSON object")?;
+    let mv: NumericMove = crate::output::parse_json(answer)
+        .context("expected exactly one numeric move JSON object")?;
     let from = square_from_numeric(mv.from, position.board().size())?;
     let to = square_from_numeric(mv.to, position.board().size())?;
     let promotion = match mv.promotion {

@@ -16,6 +16,7 @@ async fn main() -> Result<()> {
     let mut human = Color::White;
     let mut print_prompt = false;
     let mut replay = String::new();
+    let mut initial_fen = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -24,6 +25,8 @@ async fn main() -> Result<()> {
             }
             s if s.starts_with("--llm-profile=") || s.starts_with("--llm-classic-profile=") => {}
             "--print-prompt" => print_prompt = true,
+            "--fen" => initial_fen = Some(args.next().context("missing quoted initial FEN")?),
+            s if s.starts_with("--fen=") => initial_fen = Some(s[6..].to_owned()),
             "--moves" => replay = args.next().context("missing quoted UCI history")?,
             "--url" => {
                 endpoint = Some(llm_match::normalize_endpoint(
@@ -37,7 +40,7 @@ async fn main() -> Result<()> {
             }
             "--help" => {
                 println!(
-                    "llm-match [--variant Classic|Gothic|Embassy|Grand|Shako|Pemba|TerachessII] [--black] [--url http://aistation:5001] [--llm-profile NAME] [--llm-classic-profile with-history|no-history] [--print-prompt] [--moves 'e2e4 e7e5']\nEnter a UCI move, or quit. Defaults come from llm-match/.env. Classic chess uses its separate SAN configuration."
+                    "llm-match [--variant Classic|Gothic|Embassy|Grand|Shako|Pemba|TerachessII] [--black] [--url http://aistation:5001] [--llm-profile NAME] [--llm-classic-profile with-history|no-history] [--fen 'FEN'] [--print-prompt] [--moves 'e2e4 e7e5']\nEnter a UCI move, or quit. Defaults come from llm-match/.env. Classic chess uses its separate SAN configuration."
                 );
                 return Ok(());
             }
@@ -48,7 +51,11 @@ async fn main() -> Result<()> {
     if let Some(endpoint) = endpoint {
         config.endpoint = endpoint;
     }
-    let mut game = llm_match::Match::new(variant, human.opposite());
+    let mut game = match initial_fen {
+        Some(fen) => llm_match::Match::from_fen(variant, human.opposite(), &fen)
+            .context("invalid initial FEN for selected variant")?,
+        None => llm_match::Match::new(variant, human.opposite()),
+    };
     eprintln!(
         "LLM representation profile: {}\n{}",
         config.profile_name,
@@ -62,13 +69,7 @@ async fn main() -> Result<()> {
         }
     }
     if print_prompt {
-        let data = game.prompt_data_with(&config)?;
-        println!(
-            "{}",
-            prompt_core::PromptBuilder::new()
-                .build(&config.context, &config.instruct, &config.system, &data)?
-                .text
-        );
+        println!("{}", llm_match::pipeline::preview(&game, &config)?);
         return Ok(());
     }
     loop {

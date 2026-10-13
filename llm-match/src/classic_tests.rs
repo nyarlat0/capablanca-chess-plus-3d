@@ -15,6 +15,7 @@ fn common_classic_template_renders_ephemeral_user_after_san_history() {
         assert_eq!(data.custom["last-move"], "e4");
         assert_eq!(data.messages.len(), usize::from(profile == "with-history"));
         c.instruct.input_sequence = "[USER]".into();
+        c.instruct.wrap = false;
         c.instruct.last_input_sequence = "[LAST USER]".into();
         c.instruct.system_sequence = "[SYSTEM]".into();
         c.instruct.system_same_as_user = false;
@@ -95,9 +96,10 @@ fn classic_history_and_directives_are_engine_derived_and_separate() {
                 String::new()
             }
         );
-        let built = PromptBuilder::new()
-            .build(&c.context, &c.instruct, &c.system, &data)
-            .unwrap();
+        let built = prompt_core::BuiltPrompt {
+            text: crate::pipeline::preview(&m, &c).unwrap(),
+            stop_sequences: Vec::new(),
+        };
         assert_eq!(data.messages.len(), if show { 4 } else { 0 });
         if show {
             for (message, (san, role)) in data.messages.iter().zip([

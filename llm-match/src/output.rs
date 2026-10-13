@@ -1,6 +1,61 @@
 use anyhow::{Result, ensure};
 use prompt_core::ReasoningTemplate;
 
+/// Accept a whole JSON response, optionally wrapped in one Markdown code block.
+/// Never extract objects from prose or choose between multiple blocks.
+pub(crate) fn parse_json<T: serde::de::DeserializeOwned>(answer: &str) -> Result<T> {
+    let answer = answer.trim();
+    let payload = if answer.starts_with("```") {
+        let (header, rest) = answer
+            .split_once('\n')
+            .ok_or_else(|| anyhow::anyhow!("unclosed JSON code block"))?;
+        ensure!(
+            matches!(header.trim_end(), "```json" | "```"),
+            "expected a JSON code block"
+        );
+        let (body, closing) = rest
+            .rsplit_once('\n')
+            .ok_or_else(|| anyhow::anyhow!("missing closing code fence"))?;
+        ensure!(closing.trim() == "```", "missing closing code fence");
+        body
+    } else {
+        answer
+    };
+    Ok(serde_json::from_str(payload)?)
+}
+
+#[cfg(test)]
+mod json_fence_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_plain_and_fenced_json() {
+        for text in [
+            r#"{"move":"e4"}"#,
+            "```json\n{\"move\":\"e4\"}\n```",
+            "  ```\r\n{\"move\":\"e4\"}\r\n```\n",
+        ] {
+            let value: serde_json::Value = parse_json(text).unwrap();
+            assert_eq!(value["move"], "e4");
+        }
+    }
+
+    #[test]
+    fn rejects_prose_multiple_blocks_and_invalid_json() {
+        for text in [
+            "Here:\n```json\n{}\n```",
+            "```json\n{}\n```\nThanks",
+            "```json\n{}",
+            "```json\n{}\n```\n```json\n{}\n```",
+            "```python\n{}\n```",
+            "```json\n{bad}\n```",
+            "```json\n{} {}\n```",
+        ] {
+            assert!(parse_json::<serde_json::Value>(text).is_err(), "{text}");
+        }
+    }
+}
+
 /// A complete move must end the answer. Never choose an earlier legal move
 /// instead of the final attempt; the predicate checks representation only.
 pub(crate) fn trailing_move(text: &str, syntax: impl Fn(&str) -> bool) -> Option<&str> {

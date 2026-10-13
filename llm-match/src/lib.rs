@@ -1,5 +1,6 @@
 mod classic;
 mod config;
+pub mod pipeline;
 pub use classic::ClassicConfig;
 mod move_text;
 mod output;
@@ -21,13 +22,14 @@ mod representation_tests;
 #[cfg(test)]
 mod tests;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use capablanca_chess_plus::{Color, Game, GameOutcome, Move, Variant};
 pub use config::{Config, normalize_endpoint};
-use prompt_core::{KoboldClient, PromptBuilder, PromptData, PromptMessage, PromptRole};
+#[cfg(test)]
+use prompt_core::PromptBuilder;
+use prompt_core::{PromptData, PromptMessage, PromptRole};
 pub use prompts::{board_state, chess_rules};
 use serde_json::json;
-use std::time::Duration;
 
 /// Canonical history for synchronization; semantic accepted moves for prompting.
 #[derive(Clone)]
@@ -44,6 +46,14 @@ pub struct Match {
 }
 
 impl Match {
+    /// Start at an engine-parsed position. FEN does not contain prior move history.
+    pub fn from_fen(variant: Variant, model_side: Color, fen: &str) -> Result<Self> {
+        let position = capablanca_chess_plus::Position::from_fen(variant.rules(), fen)?;
+        let mut state = Self::new(variant, model_side);
+        state.game = Game::new(position);
+        Ok(state)
+    }
+
     pub fn new(variant: Variant, model_side: Color) -> Self {
         Self {
             game: Game::new(variant.starting_position()),
@@ -68,6 +78,12 @@ impl Match {
     }
     pub fn numeric_history(&self) -> &[PromptMessage] {
         &self.numeric_history
+    }
+    /// Record an already parsed final rejection without replaying it into the board.
+    pub fn record_rejected_final(&mut self, answer: &str) {
+        if !self.wrong_moves.iter().any(|m| m == answer) {
+            self.wrong_moves.push(answer.into());
+        }
     }
     pub fn wrong_moves(&self) -> &[String] {
         &self.wrong_moves
@@ -335,106 +351,11 @@ impl Match {
     }
 }
 
-/// Rejected attempts survive a request error so a manual retry can continue.
+/// Four independent roles; only the final engine-approved move is committed.
 pub async fn generate_move(
     state: &mut Match,
     config: &Config,
-    mut progress: impl FnMut(usize, &str),
+    progress: impl FnMut(usize, &str),
 ) -> Result<Move> {
-    ensure!(
-        state.game.position().side_to_move() == state.model_side,
-        "not the model turn"
-    );
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(config.timeout_seconds))
-        .build()?;
-    ensure!(config.max_attempts > 0, "max_attempts must be positive");
-    config.preset.generation_length()?;
-    // Validate deterministic configuration before consuming any attempts.
-    output::final_answer(&config.reasoning, "")?;
-    let endpoint = normalize_endpoint(&config.endpoint)?;
-    let mut client = None;
-    let builder = PromptBuilder::new();
-    let mut system = config.system.clone();
-    if config.classic.is_none() && !system.content.contains("{{chess-rules}}") {
-        system.content.push_str("\n{{chess-rules}}");
-    }
-    let mut last_transport_error = None;
-    for attempt in 1..=config.max_attempts {
-        let result: Result<String> = async {
-            if client.is_none() {
-                client =
-                    Some(KoboldClient::connect_with_client(endpoint.clone(), http.clone()).await?);
-            }
-            let client = client.as_ref().unwrap();
-            let data = state.prompt_data_with(config)?;
-            let fitted = builder
-                .build_with_budget(
-                    &config.context,
-                    &config.instruct,
-                    &system,
-                    &data,
-                    client,
-                    client.context_budget(&config.preset)?,
-                ).await?;
-            if fitted.dropped_messages > 0 {
-                tracing::debug!("LLM context fitting: dropped {} oldest history messages from this request only", fitted.dropped_messages);
-            }
-            let prompt = fitted.prompt;
-            client
-                .generate(
-                    &prompt.text,
-                    &config.preset,
-                    &prompt.stop_sequences,
-                )
-                .await
-        }
-        .await;
-        let raw = match result {
-            Ok(raw) => {
-                last_transport_error = None;
-                raw
-            }
-            Err(error) if output::transient(&error) => {
-                last_transport_error = Some(error);
-                if attempt < config.max_attempts {
-                    tokio::time::sleep(Duration::from_millis(100 * (1u64 << (attempt - 1).min(4))))
-                        .await;
-                }
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-        let Some(answer) = output::final_answer(&config.reasoning, &raw)? else {
-            continue;
-        };
-        let Some(answer) = output::trailing_move(&answer, |s| {
-            if config.classic.is_some() {
-                classic::san_shape(s)
-            } else {
-                parse_model_move(
-                    s,
-                    config.representation.output_format,
-                    state.game.position(),
-                )
-                .is_ok()
-            }
-        }) else {
-            continue;
-        };
-        match state.accept_configured_answer(&answer, config) {
-            Ok(chess_move) => return Ok(chess_move),
-            Err(_) => progress(attempt, &answer),
-        }
-    }
-    if let Some(error) = last_transport_error {
-        return Err(error.context(format!(
-            "KoboldCPP unavailable after {} attempts",
-            config.max_attempts
-        )));
-    }
-    bail!(
-        "No legal final move after {} attempts. Retry to continue this unchanged position.",
-        config.max_attempts
-    )
+    pipeline::generate(state, config, progress).await
 }

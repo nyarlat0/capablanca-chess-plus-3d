@@ -107,36 +107,33 @@ fn promotion_suffix_is_required_and_canonical() {
 }
 
 #[test]
-fn post_history_directives_render_after_accepted_moves_only() {
-    let config = Config::load().unwrap();
+fn user_prompt_directives_render_after_accepted_moves_only() {
+    let mut config = Config::load().unwrap();
+    config
+        .pipeline
+        .analyst
+        .user_prompt
+        .push_str("\n{{#if wrong-move}}Rejected moves: {{wrong-move}}{{/if}}");
     let mut state = Match::new(Variant::Gothic, Color::Black);
     state.accept_human("e2e4").unwrap();
     assert!(state.accept_model("e7e4").is_err());
-    let built = PromptBuilder::new()
-        .build(
-            &config.context,
-            &config.instruct,
-            &config.system,
-            &state.prompt_data(),
-        )
-        .unwrap();
+    let built = prompt_core::BuiltPrompt {
+        text: crate::pipeline::preview(&state, &config).unwrap(),
+        stop_sequences: Vec::new(),
+    };
     let history = built.text.find("White Pawn e2-e4").unwrap();
     let board = built.text.find("AUTHORITATIVE CURRENT POSITION").unwrap();
     let rejected = built.text.find("Rejected moves").unwrap();
-    assert!(history < board && board < rejected);
+    assert!(history < board && history < rejected);
     assert!(built.text[rejected..].contains("e7e4"));
     assert!(!built.text.contains("{{board-state}}"));
     assert!(!built.text.contains("{{wrong-move}}"));
     assert!(!built.text.contains("e7e5")); // legal replies are never supplied
     state.accept_model("e7e5").unwrap();
-    let built = PromptBuilder::new()
-        .build(
-            &config.context,
-            &config.instruct,
-            &config.system,
-            &state.prompt_data(),
-        )
-        .unwrap();
+    let built = prompt_core::BuiltPrompt {
+        text: crate::pipeline::preview(&state, &config).unwrap(),
+        stop_sequences: Vec::new(),
+    };
     assert!(!built.text.contains("Rejected moves"));
     assert!(!built.text.contains("e7e4"));
 }
@@ -327,23 +324,33 @@ fn explicit_rights_and_authoritative_legend() {
 fn no_position_serialization_or_legal_move_list_in_any_variant_prompt() {
     let config = Config::load().unwrap();
     for variant in Variant::ALL {
+        if variant == Variant::Classic {
+            continue;
+        } // Classic intentionally receives FEN.
         let state = Match::new(variant, Color::White);
-        let built = PromptBuilder::new()
-            .build(
-                &config.context,
-                &config.instruct,
-                &config.system,
-                &state.prompt_data(),
-            )
-            .unwrap();
-        assert!(!built.text.contains("FEN"));
-        assert!(!built.text.contains(&state.game().position().to_fen()));
-        for mv in state.game().position().legal_moves() {
-            assert!(
-                !built.text.contains(&mv.to_uci()),
-                "leaked {} for {variant:?}",
-                mv.to_uci()
-            );
+        for stage in [
+            crate::pipeline::Stage::Analyst,
+            crate::pipeline::Stage::Proposer,
+            crate::pipeline::Stage::Verifier,
+            crate::pipeline::Stage::Selector,
+        ] {
+            let built = PromptBuilder::new()
+                .build(
+                    &config.context,
+                    &config.instruct,
+                    &crate::pipeline::template(&config, stage),
+                    &crate::pipeline::prompt_data(&state, &config, stage).unwrap(),
+                )
+                .unwrap();
+            assert!(!built.text.contains("FEN"));
+            assert!(!built.text.contains(&state.game().position().to_fen()));
+            for mv in state.game().position().legal_moves() {
+                assert!(
+                    !built.text.contains(&mv.to_uci()),
+                    "leaked {} for {variant:?}",
+                    mv.to_uci()
+                );
+            }
         }
     }
 }

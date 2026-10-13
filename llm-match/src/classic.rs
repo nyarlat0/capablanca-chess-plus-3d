@@ -16,7 +16,8 @@ pub struct ClassicConfig {
 #[serde(deny_unknown_fields)]
 struct Profiles {
     active_profile: String,
-    system_template: String,
+    #[serde(default, rename = "system_template")]
+    _legacy_system_template: Option<String>,
     profiles: BTreeMap<String, Profile>,
 }
 #[derive(Deserialize)]
@@ -28,7 +29,7 @@ impl ClassicConfig {
     pub(crate) fn load(
         path: &Path,
         selected: Option<&str>,
-        common_template: Option<&Path>,
+        system: SystemPromptTemplate,
     ) -> Result<Self> {
         let file: Profiles = toml::from_str(
             &std::fs::read_to_string(path)
@@ -39,24 +40,6 @@ impl ClassicConfig {
             .profiles
             .get(name)
             .with_context(|| format!("unknown classic chess profile {name}"))?;
-        let fallback = path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join(&file.system_template);
-        let template_path = common_template.unwrap_or(&fallback);
-        let system: SystemPromptTemplate =
-            serde_json::from_slice(&std::fs::read(template_path).with_context(|| {
-                format!(
-                    "cannot read classic system template {}",
-                    template_path.display()
-                )
-            })?)
-            .with_context(|| {
-                format!(
-                    "invalid classic system template {}",
-                    template_path.display()
-                )
-            })?;
         Ok(Self {
             name: name.into(),
             include_history: profile.include_history,

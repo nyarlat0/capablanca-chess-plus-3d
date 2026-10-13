@@ -331,11 +331,8 @@ fn update_match(
     for event in events {
         match event {
             Event::Rejected(attempt, answer) => {
-                let config = session.config.clone();
                 if let Some(state) = &mut session.state {
-                    if let Some(config) = &config {
-                        let _ = state.accept_configured_answer(&answer, config);
-                    }
+                    state.record_rejected_final(&answer);
                 }
                 session.status =
                     format!("LLM: rejected attempt {attempt}, requesting another move…");
@@ -604,6 +601,35 @@ mod tests {
             session.state.as_ref().unwrap().numeric_history()[1].content,
             "Black Pawn: (5,7) -> (5,5)"
         );
+    }
+
+    #[test]
+    fn rejected_event_does_not_replay_a_legal_move_with_wrong_candidate_coordinates() {
+        let mut world = world();
+        world.run_system_once(update_match).unwrap();
+        let generation = world.resource::<ChessMatch>().generation;
+        let before = world
+            .resource::<LlmSession>()
+            .state
+            .as_ref()
+            .unwrap()
+            .game()
+            .position()
+            .to_fen();
+        let (tx, rx) = mpsc::channel();
+        tx.send(Event::Rejected(1, "Black Pawn e7-e5".into()))
+            .unwrap();
+        let (cancel, _rx) = tokio::sync::oneshot::channel();
+        world.resource_mut::<LlmSession>().pending = Some(Pending {
+            generation,
+            events: Mutex::new(rx),
+            _cancel: cancel,
+        });
+        world.run_system_once(update_match).unwrap();
+        let state = world.resource::<LlmSession>().state.as_ref().unwrap();
+        assert_eq!(state.game().position().to_fen(), before);
+        assert_eq!(state.uci_history(), ["e2e4"]);
+        assert_eq!(state.wrong_moves(), ["Black Pawn e7-e5"]);
     }
 
     #[test]

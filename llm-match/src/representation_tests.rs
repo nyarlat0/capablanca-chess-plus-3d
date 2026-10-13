@@ -83,7 +83,7 @@ fn numeric_state_rights_inventory_and_no_mirroring() {
     assert!(!s.contains("ASCII BOARD"));
     assert!(!s.contains("FEN"));
     assert!(!s.contains(&p.to_fen()));
-    assert!(render_state(&p, StateFormat::NumericAscii).contains("ASCII BOARD"));
+    assert!(render_state(&p, StateFormat::NumericAscii).contains(&crate::prompts::ascii_board(&p)));
     let t = render_state(
         &Variant::TerachessII.starting_position(),
         StateFormat::Numeric,
@@ -404,14 +404,15 @@ async fn context_fitting_only_trims_requests_when_necessary_and_preserves_state(
     }
     let m = replay();
     let c = config("classic");
-    let data = m.prompt_data_with(&c).unwrap();
+    let data = crate::pipeline::prompt_data(&m, &c, crate::pipeline::Stage::Analyst).unwrap();
+    let system = crate::pipeline::template(&c, crate::pipeline::Stage::Analyst);
     let before = m.game.position().to_fen();
     for trim in [false, true] {
         let fitted = PromptBuilder::new()
             .build_with_budget(
                 &c.context,
                 &c.instruct,
-                &c.system,
+                &system,
                 &data,
                 &Counter(trim),
                 prompt_core::ContextBudget::new(16384, 4000),
@@ -488,9 +489,15 @@ fn classic_compatibility_and_all_profiles_have_no_assistance_leaks() {
             } // separate SAN configuration
             c.representation = profile.clone();
             let m = Match::new(variant, Color::White);
-            let data = m.prompt_data_with(&c).unwrap();
+            let data =
+                crate::pipeline::prompt_data(&m, &c, crate::pipeline::Stage::Analyst).unwrap();
             let built = PromptBuilder::new()
-                .build(&c.context, &c.instruct, &c.system, &data)
+                .build(
+                    &c.context,
+                    &c.instruct,
+                    &crate::pipeline::template(&c, crate::pipeline::Stage::Analyst),
+                    &data,
+                )
                 .unwrap();
             assert!(!built.text.contains("FEN"));
             for mv in m.game().position().legal_moves() {

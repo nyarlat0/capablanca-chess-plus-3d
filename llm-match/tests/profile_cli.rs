@@ -1,7 +1,7 @@
 use std::process::Command;
 
 #[test]
-fn classic_system_templates_can_be_overridden_independently_from_env_file_and_process() {
+fn stage_templates_can_be_overridden_from_env_file_and_process() {
     use std::{
         collections::BTreeMap,
         fs,
@@ -61,7 +61,7 @@ fn classic_system_templates_can_be_overridden_independently_from_env_file_and_pr
             .to_string_lossy()
             .into_owned(),
     );
-    env.insert("LLM_CLASSIC_SYSTEM_TEMPLATE".into(), "with.json".into());
+    env.insert("LLM_ANALYST_TEMPLATE".into(), "with.json".into());
     fs::write(
         dir.0.join(".env"),
         env.iter()
@@ -76,7 +76,7 @@ fn classic_system_templates_can_be_overridden_independently_from_env_file_and_pr
         }
         cmd.env("LLM_MATCH_ENV", dir.0.join(".env"));
         if let Some(path) = override_path {
-            cmd.env("LLM_CLASSIC_SYSTEM_TEMPLATE", path);
+            cmd.env("LLM_ANALYST_TEMPLATE", path);
         }
         cmd.args([
             "--variant",
@@ -176,7 +176,7 @@ fn cli_profile_overrides_environment_and_unknown_profile_fails_without_network()
         String::from_utf8_lossy(&run.stderr)
     );
     let prompt = String::from_utf8(run.stdout).unwrap();
-    assert!(prompt.contains("ASCII BOARD"));
+    assert!(prompt.contains("a b c d e f g h i j"));
     assert!(prompt.contains("Black Pawn e7-e5"));
     assert!(prompt.contains("White Pawn e2-e4"));
     let run = Command::new(exe)
@@ -196,4 +196,48 @@ fn cli_profile_overrides_environment_and_unknown_profile_fails_without_network()
         .unwrap();
     assert!(!run.status.success());
     assert!(String::from_utf8_lossy(&run.stderr).contains("unknown LLM profile"));
+}
+#[test]
+fn cli_initial_fen_and_replay() {
+    let exe = env!("CARGO_BIN_EXE_llm-match");
+    let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 17";
+    let output = Command::new(exe)
+        .args([
+            "--variant",
+            "Classic",
+            "--fen",
+            fen,
+            "--moves",
+            "e7e5",
+            "--print-prompt",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("rnbqkbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq e6 0 18")
+    );
+    for args in [vec!["--fen"], vec!["--fen", "bad", "--print-prompt"]] {
+        assert!(
+            !Command::new(exe)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+    let state = llm_match::Match::from_fen(
+        capablanca_chess_plus::Variant::Classic,
+        capablanca_chess_plus::Color::Black,
+        fen,
+    )
+    .unwrap();
+    assert!(state.uci_history().is_empty());
+    assert_eq!(state.game().position().to_fen(), fen);
 }

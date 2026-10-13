@@ -1,0 +1,9 @@
+{
+  "genamt": 9000,
+  "temp": 1.0,
+  "top_p": 0.95,
+  "min_p": 0.0,
+  "top_k": 20,
+  "rep_pen": 1.0,
+  "presence_pen": 0
+}
