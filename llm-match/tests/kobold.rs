@@ -206,6 +206,48 @@ async fn structured_stages_accept_markdown_json_after_reasoning() {
 }
 
 #[tokio::test]
+async fn each_stage_sends_its_own_sampler_and_response_budget() {
+    let server = Server::script(
+        vec![
+            analysis(),
+            normal_proposal(),
+            verify(1, true),
+            verify(2, false),
+            verify(3, false),
+            select(1, "e5"),
+        ],
+        512,
+    );
+    let mut c = cfg(&server);
+    let preset = |tokens, temp| {
+        Some(prompt_core::Preset::from_value(json!({"genamt":tokens,"temp":temp})).unwrap())
+    };
+    c.stage_presets = llm_match::StagePresets {
+        analyst: preset(101, 0.1),
+        proposer: preset(202, 0.2),
+        verifier: preset(303, 0.3),
+        selector: preset(404, 0.4),
+    };
+    let mut m = state();
+    llm_match::generate_move(&mut m, &c, |_, _| panic!("unexpected rejection"))
+        .await
+        .unwrap();
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), 6);
+    for (request, (tokens, temperature)) in requests.iter().zip([
+        (101, 0.1),
+        (202, 0.2),
+        (303, 0.3),
+        (303, 0.3),
+        (303, 0.3),
+        (404, 0.4),
+    ]) {
+        assert_eq!(request["max_tokens"], tokens);
+        assert_eq!(request["temperature"], temperature);
+    }
+}
+
+#[tokio::test]
 async fn independent_stages_commit_only_selected_move() {
     let server = Server::script(
         vec![

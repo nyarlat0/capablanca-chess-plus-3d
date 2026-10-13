@@ -22,11 +22,54 @@ pub struct Config {
     pub reasoning: ReasoningTemplate,
     pub system: SystemPromptTemplate,
     pub preset: Preset,
+    pub stage_presets: StagePresets,
     pub timeout_seconds: u64,
     pub max_attempts: usize,
 }
 
+/// Missing stage overrides use the legacy shared preset.
+#[derive(Clone, Default)]
+pub struct StagePresets {
+    pub analyst: Option<Preset>,
+    pub proposer: Option<Preset>,
+    pub verifier: Option<Preset>,
+    pub selector: Option<Preset>,
+}
+
+impl StagePresets {
+    fn load(base: &Path, get: impl Fn(&str) -> Result<String>) -> Result<Self> {
+        let read = |key: &str| -> Result<Option<Preset>> {
+            let Ok(value) = get(key) else { return Ok(None) };
+            ensure!(!value.trim().is_empty(), "{key} must name a preset file");
+            let path = base.join(value);
+            let preset = Preset::from_value(read_json(&path)?)
+                .with_context(|| format!("invalid {key}: {}", path.display()))?;
+            preset
+                .generation_length()
+                .with_context(|| format!("invalid generation budget in {key}"))?;
+            Ok(Some(preset))
+        };
+        Ok(Self {
+            analyst: read("LLM_ANALYST_PRESET")?,
+            proposer: read("LLM_PROPOSER_PRESET")?,
+            verifier: read("LLM_VERIFIER_PRESET")?,
+            selector: read("LLM_SELECTOR_PRESET")?,
+        })
+    }
+}
+
 impl Config {
+    pub fn preset_for_stage(&self, stage: crate::pipeline::Stage) -> &Preset {
+        use crate::pipeline::Stage;
+        match stage {
+            Stage::Analyst => &self.stage_presets.analyst,
+            Stage::Proposer => &self.stage_presets.proposer,
+            Stage::Verifier => &self.stage_presets.verifier,
+            Stage::Selector => &self.stage_presets.selector,
+        }
+        .as_ref()
+        .unwrap_or(&self.preset)
+    }
     pub fn load_for_variant(variant: capablanca_chess_plus::Variant) -> Result<Self> {
         if variant != capablanca_chess_plus::Variant::Classic {
             return Self::load();
@@ -162,6 +205,7 @@ impl Config {
             .parse()?;
         ensure!(stage_max_attempts > 0, "stage attempts must be positive");
         let preset = Preset::from_value(read_json(&base.join(get("LLM_PRESET")?))?)?;
+        let stage_presets = StagePresets::load(base, &get)?;
         let timeout_seconds = get("LLM_REQUEST_TIMEOUT_SECONDS")?.parse()?;
         let max_attempts = get("LLM_MAX_ATTEMPTS")?.parse()?;
         ensure!(
@@ -181,6 +225,7 @@ impl Config {
             reasoning,
             system,
             preset,
+            stage_presets,
             timeout_seconds,
             max_attempts,
         })
@@ -212,4 +257,35 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
         &std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?,
     )
     .with_context(|| format!("invalid JSON in {}", path.display()))
+}
+
+#[cfg(test)]
+mod stage_preset_tests {
+    use super::*;
+    #[test]
+    fn optional_overrides_load_relative_to_env_and_missing_ones_fall_back() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let loaded = StagePresets::load(root, |key| {
+            if key == "LLM_ANALYST_PRESET" {
+                Ok("presets/analyst.json".into())
+            } else {
+                anyhow::bail!("unset")
+            }
+        })
+        .unwrap();
+        assert!(loaded.analyst.is_some());
+        assert!(loaded.proposer.is_none());
+        let mut c = Config::load_classic_with_profile(Some("no-history")).unwrap();
+        c.stage_presets = loaded;
+        assert!(std::ptr::eq(
+            c.preset_for_stage(crate::pipeline::Stage::Proposer),
+            &c.preset
+        ));
+        assert!(!std::ptr::eq(
+            c.preset_for_stage(crate::pipeline::Stage::Analyst),
+            &c.preset
+        ));
+        assert!(StagePresets::load(root, |_| Ok("presets/missing-file.json".into())).is_err());
+        assert!(StagePresets::load(root, |_| Ok(String::new())).is_err());
+    }
 }

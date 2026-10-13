@@ -193,6 +193,7 @@ async fn request_parsed<T>(
     parse: impl Fn(&str) -> Result<T>,
 ) -> Result<T> {
     let system = template(config, stage);
+    let preset = config.preset_for_stage(stage);
     let mut last_error = None;
     for attempt in 1..=config.stage_max_attempts {
         tracing::info!(?stage, attempt, "LLM stage");
@@ -204,7 +205,7 @@ async fn request_parsed<T>(
                 );
             }
             let client = client.as_ref().unwrap();
-            let options = ChatGenerationRequest::from_preset(Vec::new(), &config.preset)?;
+            let options = ChatGenerationRequest::from_preset(Vec::new(), preset)?;
             let fitted = PromptBuilder::new()
                 .build_chat_with_budget(
                     &config.context,
@@ -212,7 +213,7 @@ async fn request_parsed<T>(
                     data,
                     client,
                     &options,
-                    client.context_budget(&config.preset)?,
+                    client.context_budget(preset)?,
                 )
                 .await?;
             Ok(client.generate_chat(&fitted.request).await?.text)
@@ -267,7 +268,14 @@ pub async fn generate(
         config.max_attempts > 0 && config.stage_max_attempts > 0,
         "attempt limits must be positive"
     );
-    config.preset.generation_length()?;
+    for stage in [
+        Stage::Analyst,
+        Stage::Proposer,
+        Stage::Verifier,
+        Stage::Selector,
+    ] {
+        config.preset_for_stage(stage).generation_length()?;
+    }
     output::final_answer(&config.reasoning, "")?;
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(config.timeout_seconds))

@@ -24,7 +24,7 @@ mod tests;
 
 use anyhow::{Context, Result, ensure};
 use capablanca_chess_plus::{Color, Game, GameOutcome, Move, Variant};
-pub use config::{Config, normalize_endpoint};
+pub use config::{Config, StagePresets, normalize_endpoint};
 #[cfg(test)]
 use prompt_core::PromptBuilder;
 use prompt_core::{PromptData, PromptMessage, PromptRole};

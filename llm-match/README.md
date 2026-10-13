@@ -55,12 +55,28 @@ cargo run -p llm-match -- --variant Gothic --url http://aistation:5001
 | `LLM_VERIFIER_TEMPLATE` | `templates/pipeline/verifier.json` |
 | `LLM_SELECTOR_TEMPLATE` | `templates/pipeline/selector.json` |
 | `LLM_PRESET` | Sampler preset в формате prompt-core/SillyTavern |
+| `LLM_ANALYST_PRESET` | `presets/analyst.json` — настройки аналитика |
+| `LLM_PROPOSER_PRESET` | `presets/proposer.json` — настройки предложения ходов |
+| `LLM_VERIFIER_PRESET` | `presets/verifier.json` — настройки проверки кандидатов |
+| `LLM_SELECTOR_PRESET` | `presets/selector.json` — настройки выбора хода |
 | `LLM_REQUEST_TIMEOUT_SECONDS` | Таймаут каждого HTTP-запроса |
 | `LLM_MAX_ATTEMPTS` | Максимум раундов proposer → verifier → selector, сейчас 8 |
 | `LLM_STAGE_MAX_ATTEMPTS` | Максимум запросов одного этапа/кандидата, включая тихие повторы; по умолчанию 3 |
 | `LLM_PROFILES_FILE` | TOML-файл экспериментов, по умолчанию `representation-profiles.toml` |
 | `LLM_PROFILE` | Имя профиля, переопределяющее `active_profile` из TOML |
 | `LLM_RULES_DIR` | Каталог отдельных файлов правил, по умолчанию `rules` |
+
+Пресеты четырёх ролей независимы: можно отдельно менять `temp`, `top_p`,
+`top_k`, штрафы, `genamt` и другие поддерживаемые `prompt-core` параметры.
+И запрос, и резерв ответа при расчёте контекстного бюджета используют пресет
+именно текущей роли. Все проверки кандидатов используют verifier-пресет.
+Начальные четыре файла скопированы из `Qwen3.8.json` без изменения настроек.
+Пути считаются относительно `.env`; переменная окружения процесса имеет приоритет.
+Если `LLM_<ROLE>_PRESET` отсутствует, эта роль использует общий `LLM_PRESET`
+(совместимость со старыми конфигурациями). Ошибочный явно указанный файл не
+заменяется общим пресетом молча. Файлы читаются при загрузке конфигурации:
+после редактирования перезапусти CLI или создай новую LLM-партию во фронтенде.
+Пересборка не нужна.
 
 Все четыре этапа используют **Chat Completion** (`/v1/chat/completions`)
 через `prompt-core::generate_chat`: отдельные сообщения `system/user/assistant`,
