@@ -3,7 +3,9 @@ mod protocol;
 use crate::{Config, Match, OutputFormat, StateFormat, classic, output};
 use anyhow::{Context, Result, bail, ensure};
 use capablanca_chess_plus::{Move, Square};
-use prompt_core::{KoboldClient, PromptBuilder, PromptData, SystemPromptTemplate};
+use prompt_core::{
+    ChatGenerationRequest, KoboldClient, PromptBuilder, PromptData, SystemPromptTemplate,
+};
 use protocol::*;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -157,14 +159,13 @@ pub(crate) fn template(config: &Config, stage: Stage) -> SystemPromptTemplate {
 }
 
 pub fn preview(state: &Match, config: &Config) -> Result<String> {
-    Ok(PromptBuilder::new()
-        .build(
+    Ok(serde_json::to_string_pretty(
+        &PromptBuilder::new().build_chat(
             &config.context,
-            &config.instruct,
             &template(config, Stage::Analyst),
             &prompt_data(state, config, Stage::Analyst)?,
-        )?
-        .text)
+        )?,
+    )?)
 }
 
 async fn request<T: DeserializeOwned>(
@@ -203,23 +204,18 @@ async fn request_parsed<T>(
                 );
             }
             let client = client.as_ref().unwrap();
+            let options = ChatGenerationRequest::from_preset(Vec::new(), &config.preset)?;
             let fitted = PromptBuilder::new()
-                .build_with_budget(
+                .build_chat_with_budget(
                     &config.context,
-                    &config.instruct,
                     &system,
                     data,
                     client,
+                    &options,
                     client.context_budget(&config.preset)?,
                 )
                 .await?;
-            client
-                .generate(
-                    &fitted.prompt.text,
-                    &config.preset,
-                    &fitted.prompt.stop_sequences,
-                )
-                .await
+            Ok(client.generate_chat(&fitted.request).await?.text)
         }
         .await;
         let raw = match response {
@@ -410,6 +406,38 @@ pub async fn generate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn chat_preview_preserves_accepted_history_roles() {
+        let config = Config::load_classic_with_profile(Some("with-history")).unwrap();
+        let mut state = Match::new(
+            capablanca_chess_plus::Variant::Classic,
+            capablanca_chess_plus::Color::Black,
+        );
+        state.accept_human("e2e4").unwrap();
+        state.accept_model("e7e5").unwrap();
+        state.accept_human("g1f3").unwrap();
+        let messages: Vec<prompt_core::ChatMessage> =
+            serde_json::from_str(&preview(&state, &config).unwrap()).unwrap();
+        use prompt_core::ChatRole;
+        assert_eq!(messages[0].role, ChatRole::System);
+        for (message, (role, content)) in messages[1..4].iter().zip([
+            (ChatRole::User, "e4"),
+            (ChatRole::Assistant, "e5"),
+            (ChatRole::User, "Nf3"),
+        ]) {
+            assert_eq!(message.role, role);
+            assert_eq!(message.content, content);
+        }
+        assert_eq!(messages.last().unwrap().role, ChatRole::User);
+        assert!(
+            messages
+                .last()
+                .unwrap()
+                .content
+                .contains(&state.game().position().to_fen())
+        );
+    }
+
     #[test]
     fn custom_stage_templates_are_used_verbatim_without_implicit_instructions() {
         for classic in [true, false] {

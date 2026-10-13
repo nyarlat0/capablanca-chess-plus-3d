@@ -14,6 +14,7 @@ use std::{
 struct Server {
     endpoint: String,
     prompts: Arc<Mutex<Vec<String>>>,
+    requests: Arc<Mutex<Vec<Value>>>,
     stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
 }
@@ -29,6 +30,8 @@ impl Server {
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let prompts = Arc::new(Mutex::new(Vec::new()));
         let recorded = prompts.clone();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let recorded_requests = requests.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
         let thread = thread::spawn(move || {
@@ -67,22 +70,40 @@ impl Server {
                     "/api/extra/true_max_context_length" | "/api/v1/config/max_context_length" => {
                         json!({"value":16384})
                     }
-                    "/api/extra/tokencount" => json!({"value":token_count}),
-                    "/api/v1/generate" => {
+                    "/api/extra/tokencount" => {
                         let request: Value = serde_json::from_slice(&body).unwrap();
-                        recorded
-                            .lock()
+                        let prompt = request["messages"]
+                            .as_array()
                             .unwrap()
-                            .push(request["prompt"].as_str().unwrap().into());
+                            .iter()
+                            .map(|m| m["content"].as_str().unwrap())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        json!({"value":token_count, "prompt":prompt})
+                    }
+                    "/v1/chat/completions" => {
+                        let request: Value = serde_json::from_slice(&body).unwrap();
+                        assert!(request.get("prompt").is_none());
+                        let prompt = request["messages"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|m| m["content"].as_str().unwrap())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        recorded.lock().unwrap().push(prompt);
+                        recorded_requests.lock().unwrap().push(request);
                         match answers.next().expect("unexpected extra generation") {
-                            Reply::Text(text) => json!({"results":[{"text":text}]}),
+                            Reply::Text(text) => {
+                                json!({"choices":[{"message":{"role":"assistant","content":text}}]})
+                            }
                             Reply::Http(code) => {
                                 status = code;
                                 json!({"error":"test error"})
                             }
                             Reply::Slow(text) => {
                                 thread::sleep(Duration::from_millis(1200));
-                                json!({"results":[{"text":text}]})
+                                json!({"choices":[{"message":{"role":"assistant","content":text}}]})
                             }
                         }
                     }
@@ -100,6 +121,7 @@ impl Server {
         Self {
             endpoint,
             prompts,
+            requests,
             stop,
             thread: Some(thread),
         }
@@ -205,6 +227,26 @@ async fn independent_stages_commit_only_selected_move() {
     assert_eq!(m.classic_san_history(), "1. e4 e5");
     let p = server.prompts.lock().unwrap();
     assert_eq!(p.len(), 6);
+    let requests = server.requests.lock().unwrap();
+    for request in requests.iter() {
+        assert_eq!(request["stream"], false);
+        assert_eq!(request["continue_assistant_turn"], false);
+        assert!(request["max_tokens"].as_u64().unwrap() > 0);
+        assert_eq!(request["stop"], json!([]));
+        let messages = request["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages.last().unwrap()["role"], "user");
+        assert!(
+            messages
+                .iter()
+                .all(|m| !m["content"].as_str().unwrap().contains("<|im_start|>"))
+        );
+    }
+    assert_eq!(
+        requests[0]["messages"][1],
+        json!({"role":"user","content":"e4"})
+    );
+    assert_eq!(requests[2]["messages"].as_array().unwrap().len(), 2);
     assert!(p[1].contains("ANALYST_PRIVATE_FACT"));
     assert!(p[1].contains("Any format, including {braces}, is fine."));
     assert!(p.iter().all(|prompt| !prompt.contains("PRIVATE_THINKING")));

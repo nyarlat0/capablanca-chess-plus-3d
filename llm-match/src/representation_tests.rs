@@ -383,22 +383,35 @@ fn every_profile_has_an_identical_no_history_partner_and_matching_output() {
 #[tokio::test]
 async fn context_fitting_only_trims_requests_when_necessary_and_preserves_state() {
     struct Counter(bool);
-    impl prompt_core::TokenCounter for Counter {
-        fn count_tokens<'a>(
+    impl prompt_core::ChatTokenCounter for Counter {
+        fn preview_chat<'a>(
             &'a self,
-            text: &'a str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<u64>> + Send + 'a>>
-        {
+            request: &'a prompt_core::ChatGenerationRequest,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = anyhow::Result<prompt_core::ChatPreview>>
+                    + Send
+                    + 'a,
+            >,
+        > {
             Box::pin(async move {
-                Ok(
-                    if self.0
-                        && (text.contains("White Pawn e2-e4") || text.contains("Black Pawn e7-e5"))
-                    {
-                        20000
-                    } else {
-                        512
-                    },
-                )
+                let text = request
+                    .messages
+                    .iter()
+                    .map(|m| m.content.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let tokens = if self.0
+                    && (text.contains("White Pawn e2-e4") || text.contains("Black Pawn e7-e5"))
+                {
+                    20000
+                } else {
+                    512
+                };
+                Ok(prompt_core::ChatPreview {
+                    prompt: text,
+                    tokens,
+                })
             })
         }
     }
@@ -407,27 +420,29 @@ async fn context_fitting_only_trims_requests_when_necessary_and_preserves_state(
     let data = crate::pipeline::prompt_data(&m, &c, crate::pipeline::Stage::Analyst).unwrap();
     let system = crate::pipeline::template(&c, crate::pipeline::Stage::Analyst);
     let before = m.game.position().to_fen();
+    let mut options = prompt_core::ChatGenerationRequest::new(Vec::new());
+    options.parameters = serde_json::json!({"max_tokens":4000});
     for trim in [false, true] {
         let fitted = PromptBuilder::new()
-            .build_with_budget(
+            .build_chat_with_budget(
                 &c.context,
-                &c.instruct,
                 &system,
                 &data,
                 &Counter(trim),
+                &options,
                 prompt_core::ContextBudget::new(16384, 4000),
             )
             .await
             .unwrap();
         assert_eq!(fitted.dropped_messages, if trim { 2 } else { 0 });
-        assert!(fitted.prompt.text.contains("Black Pawn a7-a6"));
+        assert!(fitted.preview.prompt.contains("Black Pawn a7-a6"));
         assert!(
             fitted
+                .preview
                 .prompt
-                .text
                 .contains("AUTHORITATIVE CURRENT POSITION")
         );
-        assert_eq!(fitted.prompt.text.contains("White Pawn e2-e4"), !trim);
+        assert_eq!(fitted.preview.prompt.contains("White Pawn e2-e4"), !trim);
         assert_eq!(data.messages.len(), 6);
         assert_eq!(m.uci_history().len(), 6);
         assert_eq!(m.game.position().to_fen(), before);
