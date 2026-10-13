@@ -14,6 +14,7 @@ use std::{collections::HashSet, path::Path, time::Duration};
 #[derive(Clone)]
 pub struct Templates {
     pub analyst: SystemPromptTemplate,
+    pub grounder: SystemPromptTemplate,
     pub proposer: SystemPromptTemplate,
     pub verifier: SystemPromptTemplate,
     pub selector: SystemPromptTemplate,
@@ -30,6 +31,7 @@ impl Templates {
         };
         Ok(Self {
             analyst: read("LLM_ANALYST_TEMPLATE", "analyst")?,
+            grounder: read("LLM_GROUNDER_TEMPLATE", "grounder")?,
             proposer: read("LLM_PROPOSER_TEMPLATE", "proposer")?,
             verifier: read("LLM_VERIFIER_TEMPLATE", "verifier")?,
             selector: read("LLM_SELECTOR_TEMPLATE", "selector")?,
@@ -40,6 +42,7 @@ impl Templates {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     Analyst,
+    Grounder,
     Proposer,
     Verifier,
     Selector,
@@ -100,7 +103,7 @@ fn candidate_input(c: &Candidate) -> Value {
 pub fn prompt_data(state: &Match, config: &Config, stage: Stage) -> Result<PromptData> {
     let mut data = state.prompt_data_with(config)?;
     let original = data.custom.clone();
-    let private = matches!(stage, Stage::Verifier | Stage::Selector);
+    let private = matches!(stage, Stage::Grounder | Stage::Verifier | Stage::Selector);
     if private {
         data.messages.clear();
     }
@@ -151,6 +154,7 @@ pub fn prompt_data(state: &Match, config: &Config, stage: Stage) -> Result<Promp
 pub(crate) fn template(config: &Config, stage: Stage) -> SystemPromptTemplate {
     match stage {
         Stage::Analyst => &config.pipeline.analyst,
+        Stage::Grounder => &config.pipeline.grounder,
         Stage::Proposer => &config.pipeline.proposer,
         Stage::Verifier => &config.pipeline.verifier,
         Stage::Selector => &config.pipeline.selector,
@@ -270,6 +274,7 @@ pub async fn generate(
     );
     for stage in [
         Stage::Analyst,
+        Stage::Grounder,
         Stage::Proposer,
         Stage::Verifier,
         Stage::Selector,
@@ -290,11 +295,22 @@ pub async fn generate(
         |answer| Ok(answer.to_owned()),
     )
     .await?;
+    let mut grounder_data = prompt_data(state, config, Stage::Grounder)?;
+    grounder_data.custom["analysis"] = json!(analysis);
+    let grounded_analysis: String = request_parsed(
+        &mut client,
+        &http,
+        config,
+        Stage::Grounder,
+        &grounder_data,
+        |answer| Ok(answer.to_owned()),
+    )
+    .await?;
     let mut excluded: HashSet<String> = state.wrong_moves.iter().cloned().collect();
     for round in 1..=config.max_attempts {
         tracing::info!(round, "LLM candidate round");
         let mut data = prompt_data(state, config, Stage::Proposer)?;
-        data.custom["analysis"] = json!(analysis);
+        data.custom["analysis"] = json!(grounded_analysis);
         let mut sorted: Vec<_> = excluded.iter().cloned().collect();
         sorted.sort();
         data.custom["excluded-moves"] = json!(serde_json::to_string(&sorted)?);
@@ -313,9 +329,7 @@ pub async fn generate(
                 for c in &p.candidates {
                     bounded(&c.id, 32)?;
                     ensure!(ids.insert(&c.id), "duplicate candidate id");
-                    check_move(&c.proposed_move, state, config)?;
-                    square(&c.from, state, config)?;
-                    square(&c.to, state, config)?;
+                    move_text(&c.proposed_move, config)?;
                 }
                 Ok(())
             },
@@ -326,6 +340,10 @@ pub async fn generate(
         for c in proposal.candidates {
             let text = move_text(&c.proposed_move, config)?;
             if excluded.contains(&text) || !seen.insert(text.clone()) {
+                continue;
+            }
+            if validate_candidate(state, config, &c).is_err() {
+                excluded.insert(text);
                 continue;
             }
             tracing::info!(candidate_id = %c.id, "LLM independent verification");
@@ -386,18 +404,7 @@ pub async fn generate(
             .find(|(c, _)| c.id == selection.candidate_id)
             .unwrap();
         let text = move_text(&selection.final_move, config)?;
-        let mut trial = state.clone();
-        let result = trial
-            .accept_configured_answer(&text, config)
-            .and_then(|mv| {
-                ensure!(
-                    mv.from == square(&selected.from, state, config)?
-                        && mv.to == square(&selected.to, state, config)?,
-                    "selected coordinates differ from move"
-                );
-                Ok(mv)
-            });
-        if let Ok(mv) = result {
+        if let Ok((trial, mv)) = validate_candidate(state, config, selected) {
             *state = trial;
             return Ok(mv);
         }
@@ -411,9 +418,66 @@ pub async fn generate(
     )
 }
 
+/// Validate only the proposed move, on a disposable clone; never expose engine alternatives.
+fn validate_candidate(
+    state: &Match,
+    config: &Config,
+    candidate: &Candidate,
+) -> Result<(Match, Move)> {
+    let mut trial = state.clone();
+    check_move(&candidate.proposed_move, state, config)?;
+    let text = move_text(&candidate.proposed_move, config)?;
+    let mv = trial.accept_configured_answer(&text, config)?;
+    ensure!(
+        mv.from == square(&candidate.from, state, config)?
+            && mv.to == square(&candidate.to, state, config)?,
+        "candidate coordinates differ from move"
+    );
+    Ok((trial, mv))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legality_gate_handles_special_moves_and_king_safety_on_disposable_clones() {
+        use capablanca_chess_plus::{Color, Variant};
+        let config = Config::load_classic_with_profile(Some("no-history")).unwrap();
+        for (fen, san, from, to, valid) in [
+            ("4k3/8/8/8/8/8/8/4K2R w K - 0 1", "O-O", "e1", "g1", true),
+            ("4k3/8/8/8/8/8/8/4K2R w - - 0 1", "O-O", "e1", "g1", false),
+            (
+                "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1",
+                "exd6",
+                "e5",
+                "d6",
+                true,
+            ),
+            (
+                "4k3/8/8/3pP3/8/8/8/4K3 w - - 0 1",
+                "exd6",
+                "e5",
+                "d6",
+                false,
+            ),
+            ("7k/P7/8/8/8/8/8/4K3 w - - 0 1", "a8=Q+", "a7", "a8", true),
+            ("7k/P7/8/8/8/8/8/4K3 w - - 0 1", "a8", "a7", "a8", false),
+            ("k3r3/8/8/8/8/8/4R3/4K3 w - - 0 1", "Rf2", "e2", "f2", false),
+        ] {
+            let state = Match::from_fen(Variant::Classic, Color::White, fen).unwrap();
+            let candidate: Candidate =
+                serde_json::from_value(json!({"id":"c1","move":san,"from":from,"to":to})).unwrap();
+            assert_eq!(
+                validate_candidate(&state, &config, &candidate).is_ok(),
+                valid,
+                "{san}: {fen}"
+            );
+            assert_eq!(state.game().position().to_fen(), fen);
+            assert!(state.uci_history().is_empty());
+            assert!(state.wrong_moves().is_empty());
+        }
+    }
+
     #[test]
     fn chat_preview_preserves_accepted_history_roles() {
         let config = Config::load_classic_with_profile(Some("with-history")).unwrap();
@@ -465,6 +529,7 @@ mod tests {
             );
             for stage in [
                 Stage::Analyst,
+                Stage::Grounder,
                 Stage::Proposer,
                 Stage::Verifier,
                 Stage::Selector,
@@ -475,6 +540,7 @@ mod tests {
                 })).unwrap();
                 let slot = match stage {
                     Stage::Analyst => &mut config.pipeline.analyst,
+                    Stage::Grounder => &mut config.pipeline.grounder,
                     Stage::Proposer => &mut config.pipeline.proposer,
                     Stage::Verifier => &mut config.pipeline.verifier,
                     Stage::Selector => &mut config.pipeline.selector,

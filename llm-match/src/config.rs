@@ -31,6 +31,7 @@ pub struct Config {
 #[derive(Clone, Default)]
 pub struct StagePresets {
     pub analyst: Option<Preset>,
+    pub grounder: Option<Preset>,
     pub proposer: Option<Preset>,
     pub verifier: Option<Preset>,
     pub selector: Option<Preset>,
@@ -51,6 +52,7 @@ impl StagePresets {
         };
         Ok(Self {
             analyst: read("LLM_ANALYST_PRESET")?,
+            grounder: read("LLM_GROUNDER_PRESET")?,
             proposer: read("LLM_PROPOSER_PRESET")?,
             verifier: read("LLM_VERIFIER_PRESET")?,
             selector: read("LLM_SELECTOR_PRESET")?,
@@ -63,6 +65,7 @@ impl Config {
         use crate::pipeline::Stage;
         match stage {
             Stage::Analyst => &self.stage_presets.analyst,
+            Stage::Grounder => &self.stage_presets.grounder,
             Stage::Proposer => &self.stage_presets.proposer,
             Stage::Verifier => &self.stage_presets.verifier,
             Stage::Selector => &self.stage_presets.selector,
@@ -105,7 +108,7 @@ impl Config {
     pub fn summary(&self) -> String {
         if let Some(c) = &self.classic {
             format!(
-                "4-stage pipeline | classic chess | history: {} | output: SAN",
+                "5-stage pipeline + engine legality gate | classic chess | history: {} | output: SAN",
                 if c.include_history {
                     "full SAN"
                 } else {
@@ -113,7 +116,10 @@ impl Config {
                 }
             )
         } else {
-            format!("4-stage pipeline | {}", self.representation.summary())
+            format!(
+                "5-stage pipeline + engine legality gate | {}",
+                self.representation.summary()
+            )
         }
     }
     /// Relative template paths are relative to the env file. Process env wins.

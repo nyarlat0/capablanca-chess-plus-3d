@@ -330,6 +330,7 @@ fn no_position_serialization_or_legal_move_list_in_any_variant_prompt() {
         let state = Match::new(variant, Color::White);
         for stage in [
             crate::pipeline::Stage::Analyst,
+            crate::pipeline::Stage::Grounder,
             crate::pipeline::Stage::Proposer,
             crate::pipeline::Stage::Verifier,
             crate::pipeline::Stage::Selector,
