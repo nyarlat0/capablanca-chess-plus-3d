@@ -154,7 +154,7 @@ fn candidates(moves: &[(&str, &str, &str)]) -> Reply {
 }
 fn verify(id: usize, accept: bool) -> Reply {
     text(
-        json!({"candidate_id":format!("c{id}"),"verdict":if accept {"ACCEPT"} else {"REJECT"},"reason":format!("VERIFIER_NOTE_{id}")}),
+        json!({"verdict":if accept {"ACCEPT"} else {"REJECT"},"tactical_result":format!("TACTICAL_RESULT_{id}")}),
     )
 }
 fn select(id: usize, mv: &str) -> Reply {
@@ -319,8 +319,14 @@ async fn independent_stages_commit_only_selected_move() {
     assert!(!p[3].contains("\"move\":\"d5\""));
     assert!(!p[3].contains("\"move\":\"Nf6\""));
     assert!(!p[6].contains("\"move\":\"d5\""));
-    assert!(!p[6].contains("VERIFIER_NOTE_2"));
-    assert!(p[6].contains("VERIFIER_NOTE_1"));
+    assert!(!p[6].contains("TACTICAL_RESULT_2"));
+    assert!(p[6].contains(r#""tactical_result":"TACTICAL_RESULT_1""#));
+    assert!(p[6].contains(r#""tactical_result":"TACTICAL_RESULT_3""#));
+    assert!(!p[6].contains("verifier_note"));
+    for prompt in &p[3..6] {
+        assert!(!prompt.contains(r#""id""#));
+        assert!(!prompt.contains("candidate_id"));
+    }
     for mv in state().game().position().legal_moves() {
         for prompt in p.iter() {
             assert!(!prompt.contains(&mv.to_uci()));
@@ -425,6 +431,7 @@ async fn engine_gate_filters_illegal_and_mismatched_candidates_without_committin
             grounding(),
             candidates(&[("e6+", "e7", "e6"), ("e5", "d7", "e5"), ("Qh4", "d8", "h4")]),
             candidates(&[("e6+", "e7", "e6"), ("e5", "e7", "e5"), ("d5", "d7", "d5")]),
+            verify(2, false),
             verify(3, true),
             select(3, "d5"),
         ],
@@ -440,13 +447,53 @@ async fn engine_gate_filters_illegal_and_mismatched_candidates_without_committin
     assert_eq!(m.uci_history(), ["e2e4", "d7d5"]);
     assert!(m.wrong_moves().is_empty());
     let p = server.prompts.lock().unwrap();
-    assert_eq!(p.len(), 6);
+    assert_eq!(p.len(), 7);
     assert!(p[3].contains("e6+"));
     assert!(p[3].contains("Qh4"));
     assert!(p[3].contains("GROUNDED_FACT"));
     assert!(!p[3].contains("ANALYST_PRIVATE_FACT"));
     assert!(!p[4].contains("e6+"));
-    assert!(p[4].contains(r#""move":"d5""#));
+    assert!(p[4].contains(r#""move":"e5""#));
+    assert!(p[5].contains(r#""move":"d5""#));
+}
+
+#[tokio::test]
+async fn incorrect_metadata_cannot_poison_same_legal_move_and_valid_duplicates_are_deduplicated() {
+    let server = Server::script(
+        vec![
+            analysis(),
+            grounding(),
+            candidates(&[
+                ("Nxd5", "c6", "d5"),
+                ("Nxd5", "f6", "d5"),
+                ("Nxd5", "f6", "d5"),
+            ]),
+            verify(2, true),
+            select(2, "Nxd5"),
+        ],
+        512,
+    );
+    let mut m = llm_match::Match::from_fen(
+        Variant::Classic,
+        Color::Black,
+        "r1bqkb1r/pp2pppp/2n2n2/2PN4/5B2/8/PPP1PPPP/R2QKBNR b KQkq - 0 5",
+    )
+    .unwrap();
+    llm_match::generate_move(&mut m, &cfg(&server), |_, _| panic!("unexpected rejection"))
+        .await
+        .unwrap();
+    assert_eq!(m.uci_history(), ["f6d5"]);
+    assert!(m.wrong_moves().is_empty());
+    let p = server.prompts.lock().unwrap();
+    assert_eq!(p.len(), 5); // only one verifier call, for the first valid candidate
+    assert!(p[3].contains(r#""from":"f6""#));
+    assert!(!p[3].contains(r#""from":"c6""#));
+    assert!(!p[3].contains("candidate_id"));
+    assert!(!p[3].contains(r#""id""#));
+    assert!(p[4].contains(r#""id":"c2""#));
+    assert!(p[4].contains(r#""tactical_result":"TACTICAL_RESULT_2""#));
+    assert!(!p[4].contains(r#""id":"c1""#));
+    assert!(!p[4].contains(r#""id":"c3""#));
 }
 
 #[tokio::test]
@@ -526,8 +573,8 @@ async fn malformed_verifier_is_not_a_rejection() {
             analysis(),
             grounding(),
             normal_proposal(),
-            verify(4, true),
-            text(json!({"candidate_id":"c1","verdict":"MAYBE","reason":"x"})),
+            text(json!({"candidate_id":"c1","verdict":"ACCEPT","tactical_result":"x"})),
+            text(json!({"verdict":"ACCEPT","tactical_result":"  "})),
             verify(1, true),
             verify(2, false),
             verify(3, false),

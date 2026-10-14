@@ -1,0 +1,10 @@
+{
+  "genamt": 4096,
+  "thinking_budget_tokens": 1536,
+  "temp": 0.5,
+  "top_p": 0.95,
+  "min_p": 0.025,
+  "top_k": 64,
+  "rep_pen": 1.0,
+  "presence_pen": 0
+}

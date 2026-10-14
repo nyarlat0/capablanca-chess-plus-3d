@@ -28,10 +28,17 @@ pub enum Verdict {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Verification {
-    pub candidate_id: String,
     pub verdict: Verdict,
-    #[serde(default)]
-    pub reason: String,
+    pub tactical_result: String,
+}
+impl Verification {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.tactical_result.trim().is_empty(),
+            "tactical_result must be non-empty"
+        );
+        Ok(())
+    }
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -57,17 +64,32 @@ mod tests {
         )
         .unwrap();
         assert!(p.candidates[0].rationale.is_empty());
-        let v: Verification =
-            serde_json::from_str(r#"{"candidate_id":"c1","verdict":"ACCEPT"}"#).unwrap();
-        assert!(v.reason.is_empty());
-        let v: Verification = serde_json::from_value(serde_json::json!({"candidate_id":"c1","verdict":"ACCEPT","reason":"free explanation ".repeat(100)})).unwrap();
-        assert!(v.reason.len() > 320);
+    }
+    #[test]
+    fn verification_requires_tactical_result_and_no_echoed_identity() {
+        let good: Verification = serde_json::from_str(r#"{"verdict":"ACCEPT","tactical_result":"No forcing refutation found after the recapture."}"#).unwrap();
+        good.validate().unwrap();
+        for bad in [
+            r#"{"verdict":"ACCEPT","tactical_result":"x","candidate_id":"c1"}"#,
+            r#"{"verdict":"ACCEPT"}"#,
+            r#"{"verdict":"ACCEPT","reason":"x"}"#,
+            r#"{"verdict":"ACCEPT","tactical_result":null}"#,
+        ] {
+            assert!(serde_json::from_str::<Verification>(bad).is_err());
+        }
+        for empty in ["", " \n\t"] {
+            let v: Verification = serde_json::from_value(
+                serde_json::json!({"verdict":"REJECT","tactical_result":empty}),
+            )
+            .unwrap();
+            assert!(v.validate().is_err());
+        }
     }
     #[test]
     fn structured_results_reject_invalid_verdicts_and_ambiguous_fields() {
         for bad in [
-            r#"{"candidate_id":"a","verdict":"maybe","reason":"x"}"#,
-            r#"{"candidate_id":"a","verdict":"ACCEPT","reason":"x","extra":0}"#,
+            r#"{"verdict":"maybe","tactical_result":"x"}"#,
+            r#"{"verdict":"ACCEPT","tactical_result":"x","extra":0}"#,
         ] {
             assert!(serde_json::from_str::<Verification>(bad).is_err());
         }

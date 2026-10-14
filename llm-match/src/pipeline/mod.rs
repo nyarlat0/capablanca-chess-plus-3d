@@ -339,30 +339,38 @@ pub async fn generate(
         let mut accepted = Vec::new();
         for c in proposal.candidates {
             let text = move_text(&c.proposed_move, config)?;
-            if excluded.contains(&text) || !seen.insert(text.clone()) {
+            if excluded.contains(&text) {
                 continue;
             }
-            if validate_candidate(state, config, &c).is_err() {
-                excluded.insert(text);
+            let (_, mv) = match resolve_candidate(state, config, &c) {
+                Ok(resolved) => resolved,
+                Err(_) => {
+                    excluded.insert(text);
+                    continue;
+                }
+            };
+            if validate_metadata(state, config, &c, mv).is_err() {
+                continue;
+            }
+            if !seen.insert(mv) {
                 continue;
             }
             tracing::info!(candidate_id = %c.id, "LLM independent verification");
             let mut data = prompt_data(state, config, Stage::Verifier)?;
-            data.custom["candidate"] = json!(serde_json::to_string(&candidate_input(&c))?);
+            data.custom["candidate"] = json!(serde_json::to_string(&json!({
+                "move": c.proposed_move, "from": c.from, "to": c.to
+            }))?);
             let verification: Verification = request(
                 &mut client,
                 &http,
                 config,
                 Stage::Verifier,
                 &data,
-                |v: &Verification| {
-                    ensure!(v.candidate_id == c.id, "wrong candidate id");
-                    Ok(())
-                },
+                Verification::validate,
             )
             .await?;
             if verification.verdict == Verdict::ACCEPT {
-                accepted.push((c, verification.reason));
+                accepted.push((c, verification.tactical_result));
             } else {
                 excluded.insert(text);
             }
@@ -375,7 +383,7 @@ pub async fn generate(
             .iter()
             .map(|(c, note)| {
                 let mut v = candidate_input(c);
-                v["verifier_note"] = json!(note);
+                v["tactical_result"] = json!(note);
                 v
             })
             .collect();
@@ -424,16 +432,35 @@ fn validate_candidate(
     config: &Config,
     candidate: &Candidate,
 ) -> Result<(Match, Move)> {
+    let (trial, mv) = resolve_candidate(state, config, candidate)?;
+    validate_metadata(state, config, candidate, mv)?;
+    Ok((trial, mv))
+}
+
+fn resolve_candidate(
+    state: &Match,
+    config: &Config,
+    candidate: &Candidate,
+) -> Result<(Match, Move)> {
     let mut trial = state.clone();
     check_move(&candidate.proposed_move, state, config)?;
     let text = move_text(&candidate.proposed_move, config)?;
     let mv = trial.accept_configured_answer(&text, config)?;
+    Ok((trial, mv))
+}
+
+fn validate_metadata(
+    state: &Match,
+    config: &Config,
+    candidate: &Candidate,
+    mv: Move,
+) -> Result<()> {
     ensure!(
         mv.from == square(&candidate.from, state, config)?
             && mv.to == square(&candidate.to, state, config)?,
         "candidate coordinates differ from move"
     );
-    Ok((trial, mv))
+    Ok(())
 }
 
 #[cfg(test)]
