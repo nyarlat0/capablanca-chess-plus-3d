@@ -12,7 +12,7 @@
 
 1. Запусти KoboldCPP с загруженной моделью и доступным API.
 2. Проверь [`.env`](.env): адрес KoboldCPP, context/instruct/reasoning для своей
-   модели, sampler presets и пять путей `LLM_*_TEMPLATE` этапов.
+   модели и настройки активного pipeline (по умолчанию двухэтапного).
 3. Запусти `cargo run -p bevy-front`, выбери **LLM**, вариант, цвет и адрес
    KoboldCPP. Нажми начало игры. Ползунка сложности у LLM нет.
 4. Внизу показывается ожидание, повтор после недопустимого ответа или ошибка.
@@ -35,6 +35,104 @@ cargo run -p llm-match -- --variant Gothic --url http://aistation:5001
 не запуская рендерер.
 
 ## Настройки без пересборки
+
+### Двухэтапный режим (по умолчанию)
+
+`LLM_PIPELINE=two-stage`: **Proposer → engine legality gate → Adversarial Selector
+→ финальная проверка/commit**. Обычный успешный ход — ровно **две генерации**
+через Chat Completion. Токенизация/preview — дополнительные HTTP-запросы,
+но не генерации и не скрытые LLM-стадии. Качество относительно legacy необходимо
+проверять партиями; меньше запросов само по себе не доказывает усиления игры.
+
+Proposer самостоятельно анализирует позицию и выдаёт 3–5 кандидатов в порядке
+предпочтения, без ID и дублирующих координат:
+
+```json
+{"candidates":[{"move":"e5","rationale":"Краткая идея"},{"move":"d5","rationale":"Другая идея"},{"move":"Nf6","rationale":"Третья идея"}]}
+```
+
+Поле `move` сохраняет формат выбранного профиля: SAN для Classic, semantic,
+numeric, UCI или numeric JSON для fairy-вариантов. В numeric JSON координаты
+содержатся только внутри `move`, не дублируются рядом. История Proposer сохраняет
+настройки профиля. Gate проверяет только предложенные ходы на клонах матча и
+дедуплицирует легальные по `Move`. Не вызывает поиск, оценки, расчёт разменов
+или генерацию подсказок. Внутренняя генерация движком при проверке легальности
+не передаётся модели и не используется для выбора альтернатив.
+
+Selector получает исходную авторитетную позицию и только `id/move` прошедших gate
+кандидатов. История, reasoning и rationale Proposer исключены. Чтобы не передавать
+его рейтинг, host сортирует список лексикографически по canonical UCI **внутри
+Rust** и назначает ID; этот порядок не является шахматной рекомендацией.
+Selector самостоятельно проверяет тактические опровержения, форсированные линии
+и стратегические последствия. Ответ строго один из:
+
+```json
+{"choice":"c2"}
+```
+```json
+{"choice":"reject_all"}
+```
+
+Если gate не оставил ходов или Selector отверг все, повторяется Proposer с
+exclusions. Ошибка формата/транспорта Selector повторяет только Selector с тем
+же входом, не успешный Proposer. Рейтинги, оценки и альтернативы от движка не
+добавляются. Commit повторно проверяет только выбранный ход. Exclusions не
+добавляются в постоянную принятую историю.
+
+Настройки в `.env`:
+
+| Ключ | По умолчанию |
+|---|---|
+| `LLM_PIPELINE` | `two-stage`; для прежней архитектуры — `legacy` |
+| `LLM_TWO_PROPOSER_TEMPLATE` | `templates/two_stage/proposer.json` |
+| `LLM_TWO_SELECTOR_TEMPLATE` | `templates/two_stage/selector.json` |
+| `LLM_TWO_PROPOSER_PRESET` | `presets/two_proposer.json` |
+| `LLM_TWO_SELECTOR_PRESET` | `presets/two_selector.json` |
+| `LLM_TWO_PROPOSER_REASONING_TEMPLATE` | `templates/reasoning/Think_XML.json` |
+| `LLM_TWO_SELECTOR_REASONING_TEMPLATE` | `templates/reasoning/Think_XML.json` |
+
+Режим модели задаётся непосредственно в JSON системного промпта, например
+`{REASON:deeptree}` или `{REASON:xlogic}`. Rust не выбирает режим, не подставляет
+его и не ограничивает список значений. Настройки `*_REASONING_TEMPLATE` выше
+задают только разбор границ reasoning-блока в ответе, а не режим модели.
+Синтаксис режимов описан в [карточке DavidAU/Qwen3.8-27B-Turbo-Brilliance-50X](https://huggingface.co/DavidAU/Qwen3.8-27B-Turbo-Brilliance-50X-Reasoning-Instruct-NEO-MAX-MTP-GGUF).
+Загрузи эту модель и соответствующий chat template в KoboldCPP самостоятельно;
+клиент не скачивает и не переключает модель. Defaults: 4096 токенов ответа,
+thinking budget 3072, temperature 0.8/0.6 для Proposer/Selector. Это начальные
+настройки, не доказанный оптимум. `x*` может увеличить затраты reasoning;
+лимиты и таймауты продолжают действовать. Файлы пресетов и reasoning обоих
+этапов полностью независимы, старые legacy-файлы не переписаны.
+
+JSON строго проверяется по схеме, включая неизвестные/дублирующиеся поля.
+Markdown-обёртка допускается. В two-stage локально исправляются только лишние
+запятые перед `}`/`]` вне строк и отсутствующая закрывающая Markdown-ограда
+вокруг **полного** JSON. Значения, ходы и поля не придумываются и не исправляются;
+текст из прозы не извлекается. Такие исправления не требуют повторной генерации.
+Незакрытый `<think>` и reasoning без финального ответа повторяются тихо;
+обрезанные строки/JSON не дописываются догадками. Более сложные нарушения схемы
+повторяют только ошибочный этап в пределах `LLM_STAGE_MAX_ATTEMPTS`.
+
+Метрики `llm_stage_metrics` пишутся через tracing: stage, attempt/retries,
+elapsed_ms, input_tokens, output_tokens и reason. Input — точный серверный preview;
+output — повторная токенизация полного сырого ответа, включая reasoning,
+**не** недоступный через текущий prompt-core счётчик sampled tokens/usage.
+При сбое подсчёта output — `None`, не ноль; подсчёт ограничен двумя секундами
+и не повторяет генерацию. Время включает подготовку, генерацию и подсчёт.
+`llm_candidate_rejected` содержит round и категорию причины (`illegal_move`,
+`duplicate_engine_move`, `already_excluded`, `selector_reject_all`,
+`final_engine_rejection`). `llm_format_repair` отмечает локальное исправление.
+Содержимое reasoning не логируется и не передаётся между этапами.
+
+Сравнение с legacy без изменения файлов:
+
+```sh
+LLM_PIPELINE=two-stage cargo run -p llm-match -- --variant Classic --fen 'FEN' --black
+LLM_PIPELINE=legacy cargo run -p llm-match -- --variant Classic --fen 'FEN' --black
+```
+
+`--print-prompt` теперь показывает начальные сообщения Proposer в two-stage,
+Analyst в legacy. Следующие разделы пятиэтапного протокола относятся к **legacy**;
+описания представлений, вариантов, accepted history и UI общие для обоих режимов.
 
 `.env`, профили и правила читаются при создании матча, не встраиваются в бинарник
 рабочего пути генерации. Настройки фиксируются до следующей партии, чтобы
@@ -104,7 +202,7 @@ instruct/context stop strings не передаются в chat-запросы.
 `<thinking>`. Нешахматный общий `strip_from_output` из prompt-core здесь не
 используется: шахматному адаптеру нужно отличать незавершённый блок от ответа.
 
-## Пять LLM-этапов и проверка движком
+## Legacy: пять LLM-этапов и проверка движком
 
 Single-pass runtime заменён для всех вариантов. Classic получает FEN + ASCII;
 fairy-варианты получают состояние и геометрию согласно выбранному профилю.

@@ -1,5 +1,6 @@
 //! Independent, bounded LLM stages. No engine candidate generation is used here.
 mod protocol;
+pub mod two_stage;
 use crate::{Config, Match, OutputFormat, StateFormat, classic, output};
 use anyhow::{Context, Result, bail, ensure};
 use capablanca_chess_plus::{Move, Square};
@@ -163,13 +164,29 @@ pub(crate) fn template(config: &Config, stage: Stage) -> SystemPromptTemplate {
 }
 
 pub fn preview(state: &Match, config: &Config) -> Result<String> {
+    let stage = if config.pipeline_mode == two_stage::PipelineMode::TwoStage {
+        Stage::Proposer
+    } else {
+        Stage::Analyst
+    };
     Ok(serde_json::to_string_pretty(
         &PromptBuilder::new().build_chat(
             &config.context,
-            &template(config, Stage::Analyst),
-            &prompt_data(state, config, Stage::Analyst)?,
+            &request_template(config, stage),
+            &request_data(state, config, stage)?,
         )?,
     )?)
+}
+
+fn request_template(config: &Config, stage: Stage) -> SystemPromptTemplate {
+    if config.pipeline_mode == two_stage::PipelineMode::TwoStage {
+        return config.two_stage.stage(stage).template.clone();
+    }
+    template(config, stage)
+}
+
+fn request_data(state: &Match, config: &Config, stage: Stage) -> Result<PromptData> {
+    prompt_data(state, config, stage)
 }
 
 async fn request<T: DeserializeOwned>(
@@ -196,10 +213,22 @@ async fn request_parsed<T>(
     data: &PromptData,
     parse: impl Fn(&str) -> Result<T>,
 ) -> Result<T> {
-    let system = template(config, stage);
-    let preset = config.preset_for_stage(stage);
+    let system = request_template(config, stage);
+    let dual = config.pipeline_mode == two_stage::PipelineMode::TwoStage;
+    let preset = if dual {
+        &config.two_stage.stage(stage).preset
+    } else {
+        config.preset_for_stage(stage)
+    };
+    let reasoning = if dual {
+        &config.two_stage.stage(stage).reasoning
+    } else {
+        &config.reasoning
+    };
     let mut last_error = None;
     for attempt in 1..=config.stage_max_attempts {
+        let started = std::time::Instant::now();
+        let mut input_tokens = None;
         tracing::info!(?stage, attempt, "LLM stage");
         let response: Result<String> = async {
             if client.is_none() {
@@ -220,12 +249,22 @@ async fn request_parsed<T>(
                     client.context_budget(preset)?,
                 )
                 .await?;
+            input_tokens = Some(fitted.preview.tokens);
             Ok(client.generate_chat(&fitted.request).await?.text)
         }
         .await;
         let raw = match response {
             Ok(raw) => raw,
             Err(e) if output::transient(&e) => {
+                tracing::info!(
+                    ?stage,
+                    attempt,
+                    retries = attempt - 1,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    ?input_tokens,
+                    reason = "transport_retry",
+                    "llm_stage_metrics"
+                );
                 last_error = Some(e);
                 if attempt < config.stage_max_attempts {
                     tokio::time::sleep(Duration::from_millis(100 * (1 << (attempt - 1).min(4))))
@@ -233,18 +272,58 @@ async fn request_parsed<T>(
                 }
                 continue;
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                tracing::info!(
+                    ?stage,
+                    attempt,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    ?input_tokens,
+                    reason = "fatal_request",
+                    "llm_stage_metrics"
+                );
+                return Err(e);
+            }
         };
-        let Some(answer) = output::final_answer(&config.reasoning, &raw)? else {
+        let output_tokens = match tokio::time::timeout(
+            Duration::from_secs(2),
+            client.as_ref().unwrap().count_tokens(&raw),
+        )
+        .await
+        {
+            Ok(Ok(tokens)) => Some(tokens),
+            _ => None,
+        };
+        let record = |reason: &str| {
+            tracing::info!(
+                ?stage,
+                attempt,
+                retries = attempt - 1,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                ?input_tokens,
+                ?output_tokens,
+                output_tokens_source = "retokenized_raw_including_reasoning",
+                reason,
+                "llm_stage_metrics"
+            )
+        };
+        let Some(answer) = output::final_answer(reasoning, &raw)? else {
+            record("incomplete_reasoning");
             continue;
         };
         // Bound payload size, not the analyst's choice of format.
         if answer.trim().is_empty() || answer.len() > 32_768 {
+            record("empty_or_oversized_answer");
             continue;
         }
         match parse(&answer) {
-            Ok(value) => return Ok(value),
-            Err(e) => last_error = Some(e),
+            Ok(value) => {
+                record("accepted_response");
+                return Ok(value);
+            }
+            Err(e) => {
+                record("invalid_protocol");
+                last_error = Some(e);
+            }
         }
     }
     Err(last_error
@@ -257,6 +336,9 @@ pub async fn generate(
     config: &Config,
     mut rejected: impl FnMut(usize, &str),
 ) -> Result<Move> {
+    if config.pipeline_mode == two_stage::PipelineMode::TwoStage {
+        return two_stage::generate(state, config, rejected).await;
+    }
     ensure!(
         state.game.position().side_to_move() == state.model_side,
         "not the model turn"

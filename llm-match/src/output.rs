@@ -1,6 +1,61 @@
 use anyhow::{Result, ensure};
 use prompt_core::ReasoningTemplate;
 
+/// Syntax-only local recovery: fences and trailing commas outside strings.
+/// No content extraction, field defaults, move substitutions or legality repair.
+pub(crate) fn parse_json_repaired<T: serde::de::DeserializeOwned>(answer: &str) -> Result<T> {
+    if let Ok(value) = parse_json(answer) {
+        return Ok(value);
+    }
+    let trimmed = answer.trim();
+    let body = if trimmed.starts_with("```") {
+        let (header, rest) = trimmed
+            .split_once('\n')
+            .ok_or_else(|| anyhow::anyhow!("missing fenced body"))?;
+        ensure!(
+            matches!(header.trim_end(), "```json" | "```"),
+            "not a JSON fence"
+        );
+        match rest.rsplit_once('\n') {
+            Some((body, closing)) if closing.trim() == "```" => body,
+            _ => rest, // A missing closing Markdown fence does not truncate a complete JSON value.
+        }
+    } else {
+        trimmed
+    };
+    let bytes = body.as_bytes();
+    let mut fixed = Vec::with_capacity(bytes.len());
+    let (mut string, mut escaped) = (false, false);
+    for (i, &byte) in bytes.iter().enumerate() {
+        if string {
+            fixed.push(byte);
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                string = false;
+            }
+        } else {
+            if byte == b'"' {
+                string = true;
+            }
+            if byte == b','
+                && bytes[i + 1..]
+                    .iter()
+                    .find(|b| !b.is_ascii_whitespace())
+                    .is_some_and(|b| matches!(b, b'}' | b']'))
+            {
+                continue;
+            }
+            fixed.push(byte);
+        }
+    }
+    let value = serde_json::from_slice(&fixed)?;
+    tracing::info!(reason = "json_syntax_repaired_locally", "llm_format_repair");
+    Ok(value)
+}
+
 /// Accept a whole JSON response, optionally wrapped in one Markdown code block.
 /// Never extract objects from prose or choose between multiple blocks.
 pub(crate) fn parse_json<T: serde::de::DeserializeOwned>(answer: &str) -> Result<T> {
@@ -27,6 +82,34 @@ pub(crate) fn parse_json<T: serde::de::DeserializeOwned>(answer: &str) -> Result
 #[cfg(test)]
 mod json_fence_tests {
     use super::*;
+
+    #[test]
+    fn local_repair_never_changes_strings_or_infers_missing_content() {
+        let value: serde_json::Value =
+            parse_json_repaired(r#"{"s":"literal ,} and escaped \"",}"#).unwrap();
+        assert_eq!(value["s"], "literal ,} and escaped \"");
+        for raw in [
+            r#"{"s":"unfinished"#,
+            r#"{"s":}"#,
+            r#"prose {"s":1}"#,
+            "```json\n{}\n```\n```json\n{}\n```",
+            "{'choice':'c1'}",
+        ] {
+            assert!(parse_json_repaired::<serde_json::Value>(raw).is_err());
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Only {
+            #[allow(dead_code)]
+            choice: String,
+        }
+        for raw in [
+            r#"{"choice":"c1","choice":"c2",}"#,
+            r#"{"choice":"c1","extra":true,}"#,
+        ] {
+            assert!(parse_json_repaired::<Only>(raw).is_err());
+        }
+    }
 
     #[test]
     fn accepts_plain_and_fenced_json() {

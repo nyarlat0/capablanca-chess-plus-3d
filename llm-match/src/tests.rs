@@ -109,6 +109,7 @@ fn promotion_suffix_is_required_and_canonical() {
 #[test]
 fn user_prompt_directives_render_after_accepted_moves_only() {
     let mut config = Config::load().unwrap();
+    config.pipeline_mode = crate::pipeline::two_stage::PipelineMode::Legacy;
     config
         .pipeline
         .analyst

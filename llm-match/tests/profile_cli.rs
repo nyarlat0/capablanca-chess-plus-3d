@@ -50,6 +50,7 @@ fn stage_templates_can_be_overridden_from_env_file_and_process() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
+    env.insert("LLM_PIPELINE".into(), "legacy".into());
     for value in env.values_mut() {
         if value.starts_with("templates/") || value.starts_with("presets/") {
             *value = root.join(&*value).to_string_lossy().into_owned();

@@ -10,6 +10,8 @@ use std::{
 
 #[derive(Clone)]
 pub struct Config {
+    pub pipeline_mode: crate::pipeline::two_stage::PipelineMode,
+    pub two_stage: crate::pipeline::two_stage::Settings,
     pub classic: Option<crate::ClassicConfig>,
     pub pipeline: crate::pipeline::Templates,
     pub stage_max_attempts: usize,
@@ -106,9 +108,17 @@ impl Config {
         Self::from_env_mode(&path, profile, true)
     }
     pub fn summary(&self) -> String {
+        let pipeline = match self.pipeline_mode {
+            crate::pipeline::two_stage::PipelineMode::TwoStage => {
+                "two-stage pipeline + legality gate"
+            }
+            crate::pipeline::two_stage::PipelineMode::Legacy => {
+                "legacy 5-stage pipeline + legality gate"
+            }
+        };
         if let Some(c) = &self.classic {
             format!(
-                "5-stage pipeline + engine legality gate | classic chess | history: {} | output: SAN",
+                "{pipeline} | classic chess | history: {} | output: SAN",
                 if c.include_history {
                     "full SAN"
                 } else {
@@ -116,10 +126,7 @@ impl Config {
                 }
             )
         } else {
-            format!(
-                "5-stage pipeline + engine legality gate | {}",
-                self.representation.summary()
-            )
+            format!("{pipeline} | {}", self.representation.summary())
         }
     }
     /// Relative template paths are relative to the env file. Process env wins.
@@ -155,6 +162,10 @@ impl Config {
                 .with_context(|| format!("missing {key} in {}", path.display()))
         };
         let base = path.parent().unwrap_or(Path::new("."));
+        let pipeline_mode = get("LLM_PIPELINE")
+            .unwrap_or_else(|_| "two-stage".into())
+            .parse()?;
+        let two_stage = crate::pipeline::two_stage::Settings::load(base, &get)?;
         let pipeline = crate::pipeline::Templates::load(base, &get)?;
         let classic = if classic_mode {
             let env_profile = get("LLM_CLASSIC_PROFILE").ok();
@@ -219,6 +230,8 @@ impl Config {
             "timeout and attempts must be positive"
         );
         Ok(Self {
+            pipeline_mode,
+            two_stage,
             pipeline,
             stage_max_attempts,
             classic,
