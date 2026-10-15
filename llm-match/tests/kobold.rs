@@ -311,8 +311,8 @@ async fn two_stage_preserves_preference_order_after_illegal_and_duplicate_filter
 #[tokio::test]
 async fn two_stage_repairs_syntax_locally_without_regeneration() {
     let server = Server::script(vec![
-        Reply::Text("<think>PRIVATE_THINK</think>```json\n{\"candidates\":[{\"move\":\"e5\",\"rationale\":\"A,} string\",},{\"move\":\"d5\",\"rationale\":\"B\"},{\"move\":\"Nf6\",\"rationale\":\"C\"},],}\n```".into()),
-        Reply::Text("<think>private</think>```json\n{\"choice\":\"c2\",}".into()),
+        Reply::Text("Preface <think>PRIVATE_THINK</think>PROPOSER_EXTRA_TEXT\n```json\n{\"candidates\":[{\"move\":\"e5\",\"rationale\":\"A,} string\",},{\"move\":\"d5\",\"rationale\":\"B\"},{\"move\":\"Nf6\",\"rationale\":\"C\"},],}\n```".into()),
+        Reply::Text("Preface <think>private</think>SELECTOR_EXTRA_TEXT\n```json\n{\"choice\":\"c2\",}".into()),
     ], 512);
     let mut m = state();
     llm_match::generate_move(&mut m, &two_cfg(&server), |_, _| panic!())
@@ -321,6 +321,30 @@ async fn two_stage_repairs_syntax_locally_without_regeneration() {
     let p = server.prompts.lock().unwrap();
     assert_eq!(p.len(), 2);
     assert!(!p[1].contains("PRIVATE_THINK"));
+    assert!(!p[1].contains("PROPOSER_EXTRA_TEXT"));
+    assert_eq!(m.uci_history(), ["e2e4", "d7d5"]);
+}
+
+#[tokio::test]
+async fn two_stage_accepts_final_plain_json_after_arbitrary_text() {
+    let Reply::Text(proposal) = ranked(&["e5", "d5", "Nf6"]) else {
+        unreachable!()
+    };
+    let server = Server::script(
+        vec![
+            Reply::Text(format!(
+                "My observations and an earlier {{\"draft\":true}}.\n{proposal}"
+            )),
+            Reply::Text("I prefer the second candidate.\n{\"choice\":\"c2\"}".into()),
+        ],
+        512,
+    );
+    let mut m = state();
+    llm_match::generate_move(&mut m, &two_cfg(&server), |_, _| panic!())
+        .await
+        .unwrap();
+    assert_eq!(m.uci_history(), ["e2e4", "d7d5"]);
+    assert_eq!(server.prompts.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -461,10 +485,10 @@ async fn two_stage_exhausted_rounds_preserve_board_and_history() {
 async fn two_stage_reasoning_and_transport_retries_are_silent() {
     let server = Server::script(
         vec![
-            Reply::Text("<think>unfinished".into()),
+            Reply::Text("Preface <think>unfinished {\"candidates\":[]}".into()),
             Reply::Http(503),
             ranked(&["e5", "d5", "Nf6"]),
-            Reply::Text("<think>finished</think>".into()),
+            Reply::Text("Preface <think>{\"choice\":\"c1\"}</think>".into()),
             choice("c2"),
         ],
         512,

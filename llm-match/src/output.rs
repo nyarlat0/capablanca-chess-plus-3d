@@ -1,6 +1,59 @@
 use anyhow::{Result, ensure};
 use prompt_core::ReasoningTemplate;
 
+/// Parse only the final object (or final JSON fence), ignoring preceding prose.
+/// Locate the boundary before typed deserialization: an invalid final schema
+/// must never cause fallback to an earlier object or a nested object.
+pub(crate) fn parse_final_json<T: serde::de::DeserializeOwned>(answer: &str) -> Result<T> {
+    let answer = answer.trim();
+    if let Some((before, closing)) = answer.rsplit_once('\n')
+        && closing.trim() == "```"
+    {
+        for (offset, _) in before.rmatch_indices("```") {
+            let line_start = before[..offset].rfind('\n').map_or(0, |i| i + 1);
+            if !before[line_start..offset].trim().is_empty() {
+                continue;
+            }
+            let fence = &answer[offset..];
+            let header = fence.lines().next().unwrap_or_default().trim_end();
+            ensure!(
+                matches!(header, "```json" | "```"),
+                "expected a final JSON fence"
+            );
+            return parse_json_repaired(fence);
+        }
+        anyhow::bail!("missing opening JSON fence");
+    }
+    ensure!(answer.ends_with('}'), "expected a final JSON object");
+    let bytes = answer.as_bytes();
+    let mut stack = Vec::new();
+    let mut quoted = false;
+    for i in (0..bytes.len()).rev() {
+        let byte = bytes[i];
+        if byte == b'"' {
+            let escapes = bytes[..i].iter().rev().take_while(|&&b| b == b'\\').count();
+            if escapes % 2 == 0 {
+                quoted = !quoted;
+            }
+        }
+        if quoted || byte == b'"' {
+            continue;
+        }
+        match byte {
+            b'}' | b']' => stack.push(byte),
+            b'{' | b'[' => {
+                let expected = if byte == b'{' { b'}' } else { b']' };
+                ensure!(stack.pop() == Some(expected), "mismatched JSON delimiters");
+                if stack.is_empty() {
+                    return parse_json_repaired(&answer[i..]);
+                }
+            }
+            _ => {}
+        }
+    }
+    anyhow::bail!("incomplete final JSON object")
+}
+
 /// Syntax-only local recovery: fences and trailing commas outside strings.
 /// No content extraction, field defaults, move substitutions or legality repair.
 pub(crate) fn parse_json_repaired<T: serde::de::DeserializeOwned>(answer: &str) -> Result<T> {
@@ -84,6 +137,35 @@ mod json_fence_tests {
     use super::*;
 
     #[test]
+    fn final_json_ignores_prefix_but_keeps_the_final_schema_strict() {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Choice {
+            choice: String,
+        }
+        for raw in [
+            "Рассуждения { arbitrary text\n{\"choice\":\"c2\"}",
+            "{\"choice\":\"c1\"}\nThen:\n```json\n{\"choice\":\"c2\",}\n```",
+            "Reasoning\n```\r\n{\"choice\":\"c2\"}\r\n```  ",
+        ] {
+            assert_eq!(parse_final_json::<Choice>(raw).unwrap().choice, "c2");
+        }
+        for raw in [
+            "{\"choice\":\"c1\"}\n{\"wrong\":{\"choice\":\"c2\"}}",
+            "{\"choice\":\"c1\"}\n{\"choice\":}",
+            "{\"choice\":\"c1\",\"choice\":\"c2\"}",
+            "{\"choice\":\"c1\"} trailing prose",
+            "Earlier\n```python\n{\"choice\":\"c1\"}\n```",
+        ] {
+            assert!(parse_final_json::<Choice>(raw).is_err(), "{raw}");
+        }
+        let value: serde_json::Value = parse_final_json(
+            r#"Prefix " { fake } {"move":{"from":[2,8],"to":[3,6]},"rationale":"brace } and escaped \" and ```"}"#
+        ).unwrap();
+        assert_eq!(value["move"]["from"][0], 2);
+    }
+
+    #[test]
     fn local_repair_never_changes_strings_or_infers_missing_content() {
         let value: serde_json::Value =
             parse_json_repaired(r#"{"s":"literal ,} and escaped \"",}"#).unwrap();
@@ -155,6 +237,20 @@ pub(crate) fn trailing_move(text: &str, syntax: impl Fn(&str) -> bool) -> Option
 /// None means an incomplete/empty reasoning generation, never model feedback.
 /// Removes only explicit reasoning blocks, never extracts a move from prose.
 pub(crate) fn final_answer(template: &ReasoningTemplate, raw: &str) -> Result<Option<String>> {
+    final_answer_impl(template, raw, false)
+}
+
+/// Structured stages allow prose before reasoning, but still discard the entire
+/// generation when any reasoning block is unfinished or has no final answer.
+pub(crate) fn final_json_answer(template: &ReasoningTemplate, raw: &str) -> Result<Option<String>> {
+    final_answer_impl(template, raw, true)
+}
+
+fn final_answer_impl(
+    template: &ReasoningTemplate,
+    raw: &str,
+    allow_prose: bool,
+) -> Result<Option<String>> {
     ensure!(
         template.prefix.is_empty() == template.suffix.is_empty(),
         "reasoning prefix and suffix must both be configured (or both empty)"
@@ -195,7 +291,7 @@ pub(crate) fn final_answer(template: &ReasoningTemplate, raw: &str) -> Result<Op
         had_reasoning = true;
         // A reasoning block must precede the final answer, not splice together
         // coordinate fragments or extract a move preceding reasoning.
-        if !rest[..start].trim().is_empty() {
+        if !allow_prose && !rest[..start].trim().is_empty() {
             return Ok(None);
         }
         let body = &rest[start + prefix.len()..];

@@ -170,7 +170,7 @@ pub(super) async fn generate(
             Stage::Proposer,
             &data,
             |answer| {
-                let proposal: RankedProposal = output::parse_json_repaired(answer)?;
+                let proposal: RankedProposal = output::parse_final_json(answer)?;
                 ensure!(
                     (3..=5).contains(&proposal.candidates.len()),
                     "expected 3-5 ranked candidates"
@@ -240,7 +240,7 @@ pub(super) async fn generate(
             Stage::Selector,
             &data,
             |answer| {
-                let choice: Choice = output::parse_json_repaired(answer)?;
+                let choice: Choice = output::parse_final_json(answer)?;
                 ensure!(
                     choice.choice == "reject_all"
                         || legal.iter().any(|(c, _)| c.id == choice.choice),

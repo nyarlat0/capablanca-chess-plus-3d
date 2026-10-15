@@ -198,7 +198,11 @@ async fn request<T: DeserializeOwned>(
     validate: impl Fn(&T) -> Result<()>,
 ) -> Result<T> {
     request_parsed(client, http, config, stage, data, |answer| {
-        let value = output::parse_json(answer)?;
+        let value = if matches!(stage, Stage::Proposer | Stage::Selector) {
+            output::parse_final_json(answer)?
+        } else {
+            output::parse_json(answer)?
+        };
         validate(&value)?;
         Ok(value)
     })
@@ -306,7 +310,12 @@ async fn request_parsed<T>(
                 "llm_stage_metrics"
             )
         };
-        let Some(answer) = output::final_answer(reasoning, &raw)? else {
+        let answer = if matches!(stage, Stage::Proposer | Stage::Selector) {
+            output::final_json_answer(reasoning, &raw)?
+        } else {
+            output::final_answer(reasoning, &raw)?
+        };
+        let Some(answer) = answer else {
             record("incomplete_reasoning");
             continue;
         };
