@@ -203,6 +203,48 @@ fn choice(id: &str) -> Reply {
 }
 
 #[tokio::test]
+async fn single_stage_commits_first_legal_candidate_with_one_generation() {
+    for (moves, expected) in [
+        (vec!["Nf6", "e5", "d5"], "g8f6"),
+        (vec!["e6+", "Nf6", "e5"], "g8f6"),
+        (vec!["e6+", "Qh4", "e5"], "e7e5"),
+    ] {
+        let server = Server::script(vec![ranked(&moves)], 512);
+        let mut c = two_cfg(&server);
+        c.pipeline_mode = llm_match::pipeline::two_stage::PipelineMode::SingleStage;
+        c.two_stage.selector.template.content = "SELECTOR_MUST_NOT_RUN".into();
+        let mut m = state();
+        llm_match::generate_move(&mut m, &c, |_, _| panic!())
+            .await
+            .unwrap();
+        assert_eq!(m.uci_history(), ["e2e4", expected]);
+        assert!(m.wrong_moves().is_empty());
+        let prompts = server.prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 1);
+        assert!(!prompts[0].contains("SELECTOR_MUST_NOT_RUN"));
+    }
+}
+
+#[tokio::test]
+async fn single_stage_retries_only_proposer_when_all_candidates_are_illegal() {
+    let server = Server::script(
+        vec![ranked(&["e6+", "Qh4", "Ke7"]), ranked(&["e6+", "e5", "d5"])],
+        512,
+    );
+    let mut c = two_cfg(&server);
+    c.pipeline_mode = llm_match::pipeline::two_stage::PipelineMode::SingleStage;
+    let mut m = state();
+    llm_match::generate_move(&mut m, &c, |_, _| panic!())
+        .await
+        .unwrap();
+    assert_eq!(m.uci_history(), ["e2e4", "e7e5"]);
+    let p = server.prompts.lock().unwrap();
+    assert_eq!(p.len(), 2);
+    assert!(p[1].contains("Qh4"));
+    assert!(m.wrong_moves().is_empty());
+}
+
+#[tokio::test]
 async fn two_stage_success_is_exactly_two_generations_and_selector_is_independent() {
     let server = Server::script(
         vec![
@@ -224,7 +266,7 @@ async fn two_stage_success_is_exactly_two_generations_and_selector_is_independen
     llm_match::generate_move(&mut m, &c, |_, _| panic!())
         .await
         .unwrap();
-    assert_eq!(m.uci_history(), ["e2e4", "e7e5"]);
+    assert_eq!(m.uci_history(), ["e2e4", "d7d5"]);
     let p = server.prompts.lock().unwrap();
     assert_eq!(p.len(), 2);
     assert!(p[0].contains("CUSTOM_PROPOSER {REASON:custom-proposer}"));
@@ -232,7 +274,8 @@ async fn two_stage_success_is_exactly_two_generations_and_selector_is_independen
     assert!(!p[1].contains("PRIVATE_PROPOSER_IDEA"));
     assert!(!p[1].contains("rationale"));
     assert!(!p[1].contains("1. e4"));
-    assert!(p[1].contains(r#"{"id":"c1","move":"d5"}"#));
+    assert!(p[1].contains(r#"{"id":"c1","move":"e5"}"#));
+    assert!(p[1].contains(r#"{"id":"c2","move":"d5"}"#));
     let requests = server.requests.lock().unwrap();
     assert_eq!(requests[0]["max_tokens"], 1000);
     assert_eq!(requests[1]["max_tokens"], 2000);
@@ -240,6 +283,29 @@ async fn two_stage_success_is_exactly_two_generations_and_selector_is_independen
     for mv in state().game().position().legal_moves() {
         assert!(p.iter().all(|s| !s.contains(&mv.to_uci())));
     }
+}
+
+#[tokio::test]
+async fn two_stage_preserves_preference_order_after_illegal_and_duplicate_filtering() {
+    let server = Server::script(
+        vec![ranked(&["e6+", "Nf6", "e5", "Nf6", "d5"]), choice("c2")],
+        512,
+    );
+    let mut m = state();
+    llm_match::generate_move(&mut m, &two_cfg(&server), |_, _| panic!())
+        .await
+        .unwrap();
+    assert_eq!(m.uci_history(), ["e2e4", "e7e5"]); // Selector may choose a lower-ranked move.
+    let p = server.prompts.lock().unwrap();
+    assert_eq!(p.len(), 2);
+    assert!(
+        p[1].contains(
+            r#"[{"id":"c1","move":"Nf6"},{"id":"c2","move":"e5"},{"id":"c3","move":"d5"}]"#
+        )
+    );
+    assert!(!p[1].contains("e6+"));
+    assert!(!p[1].contains("PRIVATE_PROPOSER_IDEA"));
+    assert!(!p[1].contains("rationale"));
 }
 
 #[tokio::test]
@@ -293,7 +359,7 @@ async fn two_stage_reject_all_and_no_legal_candidates_retry_with_exclusions() {
         llm_match::generate_move(&mut m, &two_cfg(&server), |_, _| panic!())
             .await
             .unwrap();
-        assert_eq!(m.uci_history(), ["e2e4", "b8c6"]);
+        assert_eq!(m.uci_history(), ["e2e4", "e7e6"]);
         assert!(m.wrong_moves().is_empty());
         let p = server.prompts.lock().unwrap();
         assert_eq!(p.len(), if first_is_legal { 4 } else { 3 });

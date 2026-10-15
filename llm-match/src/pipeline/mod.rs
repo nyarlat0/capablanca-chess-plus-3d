@@ -164,7 +164,7 @@ pub(crate) fn template(config: &Config, stage: Stage) -> SystemPromptTemplate {
 }
 
 pub fn preview(state: &Match, config: &Config) -> Result<String> {
-    let stage = if config.pipeline_mode == two_stage::PipelineMode::TwoStage {
+    let stage = if config.pipeline_mode != two_stage::PipelineMode::Legacy {
         Stage::Proposer
     } else {
         Stage::Analyst
@@ -179,7 +179,7 @@ pub fn preview(state: &Match, config: &Config) -> Result<String> {
 }
 
 fn request_template(config: &Config, stage: Stage) -> SystemPromptTemplate {
-    if config.pipeline_mode == two_stage::PipelineMode::TwoStage {
+    if config.pipeline_mode != two_stage::PipelineMode::Legacy {
         return config.two_stage.stage(stage).template.clone();
     }
     template(config, stage)
@@ -214,13 +214,13 @@ async fn request_parsed<T>(
     parse: impl Fn(&str) -> Result<T>,
 ) -> Result<T> {
     let system = request_template(config, stage);
-    let dual = config.pipeline_mode == two_stage::PipelineMode::TwoStage;
-    let preset = if dual {
+    let ranked_pipeline = config.pipeline_mode != two_stage::PipelineMode::Legacy;
+    let preset = if ranked_pipeline {
         &config.two_stage.stage(stage).preset
     } else {
         config.preset_for_stage(stage)
     };
-    let reasoning = if dual {
+    let reasoning = if ranked_pipeline {
         &config.two_stage.stage(stage).reasoning
     } else {
         &config.reasoning
@@ -336,7 +336,7 @@ pub async fn generate(
     config: &Config,
     mut rejected: impl FnMut(usize, &str),
 ) -> Result<Move> {
-    if config.pipeline_mode == two_stage::PipelineMode::TwoStage {
+    if config.pipeline_mode != two_stage::PipelineMode::Legacy {
         return two_stage::generate(state, config, rejected).await;
     }
     ensure!(

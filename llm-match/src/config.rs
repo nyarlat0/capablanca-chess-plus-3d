@@ -109,6 +109,9 @@ impl Config {
     }
     pub fn summary(&self) -> String {
         let pipeline = match self.pipeline_mode {
+            crate::pipeline::two_stage::PipelineMode::SingleStage => {
+                "single-stage proposer + first legal move"
+            }
             crate::pipeline::two_stage::PipelineMode::TwoStage => {
                 "two-stage pipeline + legality gate"
             }
@@ -163,7 +166,7 @@ impl Config {
         };
         let base = path.parent().unwrap_or(Path::new("."));
         let pipeline_mode = get("LLM_PIPELINE")
-            .unwrap_or_else(|_| "two-stage".into())
+            .unwrap_or_else(|_| "single-stage".into())
             .parse()?;
         let two_stage = crate::pipeline::two_stage::Settings::load(base, &get)?;
         let pipeline = crate::pipeline::Templates::load(base, &get)?;

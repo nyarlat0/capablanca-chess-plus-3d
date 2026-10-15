@@ -1,10 +1,11 @@
-//! Two independent model turns; engine use is limited to legality and commit.
+//! Ranked proposer with optional independent selector; engine use is legality and commit only.
 use super::*;
 use prompt_core::{Preset, ReasoningTemplate};
 use serde::Deserialize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PipelineMode {
+    SingleStage,
     TwoStage,
     Legacy,
 }
@@ -12,9 +13,10 @@ impl std::str::FromStr for PipelineMode {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self> {
         match s {
+            "single-stage" => Ok(Self::SingleStage),
             "two-stage" => Ok(Self::TwoStage),
             "legacy" => Ok(Self::Legacy),
-            _ => bail!("LLM_PIPELINE must be two-stage or legacy"),
+            _ => bail!("LLM_PIPELINE must be single-stage, two-stage or legacy"),
         }
     }
 }
@@ -156,7 +158,7 @@ pub(super) async fn generate(
     let mut client = None;
     let mut excluded: HashSet<String> = state.wrong_moves.iter().cloned().collect();
     for round in 1..=config.max_attempts {
-        tracing::info!(round, pipeline = "two-stage", "LLM candidate round");
+        tracing::info!(round, pipeline = ?config.pipeline_mode, "LLM candidate round");
         let mut data = request_data(state, config, Stage::Proposer)?;
         let mut exclusions: Vec<_> = excluded.iter().cloned().collect();
         exclusions.sort();
@@ -200,6 +202,11 @@ pub(super) async fn generate(
                 rationale: String::new(),
             };
             match resolve_candidate(state, config, &candidate) {
+                Ok((trial, mv)) if config.pipeline_mode == PipelineMode::SingleStage => {
+                    // Commit the first legal move in proposer order; do not inspect later candidates.
+                    *state = trial;
+                    return Ok(mv);
+                }
                 Ok((_, mv)) if seen.insert(mv) => legal.push((candidate, mv)),
                 Ok(_) => tracing::info!(
                     round,
@@ -215,8 +222,7 @@ pub(super) async fn generate(
         if legal.is_empty() {
             continue;
         }
-        // Remove proposer ranking as well as rationale. This ordering is lexical, not chess advice.
-        legal.sort_by_key(|(_, mv)| mv.to_uci());
+        // Stable filtering preserves proposer preference; rationale stays private.
         for (i, (c, _)) in legal.iter_mut().enumerate() {
             c.id = format!("c{}", i + 1);
         }
@@ -275,7 +281,7 @@ pub(super) async fn generate(
         }
     }
     bail!(
-        "No legal selected move after {} two-stage rounds",
+        "No legal selected move after {} ranked-proposer rounds",
         config.max_attempts
     )
 }
