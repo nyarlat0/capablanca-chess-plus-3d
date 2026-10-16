@@ -341,6 +341,8 @@ impl Match {
                 "chess-rules": render_rules(self.variant, profile, template)?,
                 "last-move": last_move,
                 "board-state": board,
+                "piece-list": prompts::piece_list(self.game.position()),
+                "piece-list-num": prompts::piece_list_num(self.game.position()),
                 "wrong-move": wrong,
                 "representation-instructions": representation::grounding(profile.state_format),
                 "output-instructions": representation::output_instruction(profile.output_format),

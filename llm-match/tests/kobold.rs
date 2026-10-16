@@ -233,6 +233,9 @@ async fn single_stage_retries_only_proposer_when_all_candidates_are_illegal() {
     );
     let mut c = two_cfg(&server);
     c.pipeline_mode = llm_match::pipeline::two_stage::PipelineMode::SingleStage;
+    c.two_stage.proposer.template.user_prompt.push_str(
+        "{{#if excluded-moves}}EXCLUSIONS_PRESENT {{excluded-moves}}{{else}}EXCLUSIONS_EMPTY{{/if}}",
+    );
     let mut m = state();
     llm_match::generate_move(&mut m, &c, |_, _| panic!())
         .await
@@ -240,6 +243,10 @@ async fn single_stage_retries_only_proposer_when_all_candidates_are_illegal() {
     assert_eq!(m.uci_history(), ["e2e4", "e7e5"]);
     let p = server.prompts.lock().unwrap();
     assert_eq!(p.len(), 2);
+    assert!(p[0].contains("EXCLUSIONS_EMPTY"));
+    assert!(!p[0].contains("EXCLUSIONS_PRESENT"));
+    assert!(p[1].contains("EXCLUSIONS_PRESENT"));
+    assert!(!p[1].contains("EXCLUSIONS_EMPTY"));
     assert!(p[1].contains("Qh4"));
     assert!(m.wrong_moves().is_empty());
 }
@@ -858,13 +865,23 @@ async fn all_rejected_is_bounded_and_selector_cannot_invent_move() {
         512,
     );
     let mut m = state();
-    let c = cfg(&server);
+    let mut c = cfg(&server);
+    c.pipeline.proposer.user_prompt.push_str(
+        "{{#if excluded-moves}}EXCLUSIONS_PRESENT {{excluded-moves}}{{else}}EXCLUSIONS_EMPTY{{/if}}",
+    );
     assert!(
         llm_match::generate_move(&mut m, &c, |_, _| panic!())
             .await
             .is_err()
     );
     assert_eq!(server.prompts.lock().unwrap().len(), 7);
+    {
+        let prompts = server.prompts.lock().unwrap();
+        assert!(prompts[2].contains("EXCLUSIONS_EMPTY"));
+        assert!(!prompts[2].contains("EXCLUSIONS_PRESENT"));
+        assert!(prompts[6].contains("EXCLUSIONS_PRESENT"));
+        assert!(!prompts[6].contains("EXCLUSIONS_EMPTY"));
+    }
     assert!(m.wrong_moves().is_empty());
     assert_eq!(m.uci_history(), ["e2e4"]);
     let server = Server::script(

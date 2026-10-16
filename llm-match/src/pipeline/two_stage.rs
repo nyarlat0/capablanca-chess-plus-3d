@@ -162,7 +162,11 @@ pub(super) async fn generate(
         let mut data = request_data(state, config, Stage::Proposer)?;
         let mut exclusions: Vec<_> = excluded.iter().cloned().collect();
         exclusions.sort();
-        data.custom["excluded-moves"] = json!(serde_json::to_string(&exclusions)?);
+        data.custom["excluded-moves"] = json!(if exclusions.is_empty() {
+            String::new()
+        } else {
+            serde_json::to_string(&exclusions)?
+        });
         let proposal: RankedProposal = request_parsed(
             &mut client,
             &http,

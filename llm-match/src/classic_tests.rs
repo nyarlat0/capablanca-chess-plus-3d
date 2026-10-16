@@ -1,6 +1,86 @@
 use super::*;
 
 #[test]
+fn numeric_piece_list_is_zero_based_and_available_in_all_stages() {
+    let m = Match::from_fen(
+        Variant::Classic,
+        Color::White,
+        "7k/8/5N2/8/8/8/8/K7 b - - 0 1",
+    )
+    .unwrap();
+    let expected = "White King a1 (0,0)\nWhite Knight f6 (5,5)\nBlack King h8 (7,7)\n";
+    assert_eq!(prompts::piece_list_num(m.game().position()), expected);
+    for profile in ["with-history", "no-history"] {
+        let c = Config::load_classic_with_profile(Some(profile)).unwrap();
+        for stage in [
+            pipeline::Stage::Analyst,
+            pipeline::Stage::Grounder,
+            pipeline::Stage::Proposer,
+            pipeline::Stage::Verifier,
+            pipeline::Stage::Selector,
+        ] {
+            let data = pipeline::prompt_data(&m, &c, stage).unwrap();
+            assert_eq!(data.custom["piece-list-num"], expected);
+        }
+    }
+    for variant in Variant::ALL {
+        let m = Match::new(variant, Color::Black);
+        let list = prompts::piece_list_num(m.game().position());
+        assert_eq!(
+            list.lines().count(),
+            m.game().position().board().pieces().count()
+        );
+        for (square, piece) in m.game().position().board().pieces() {
+            let line = format!(
+                "{:?} {} {} ({},{})",
+                piece.color,
+                piece.kind.display_name(),
+                square,
+                square.file(),
+                square.rank()
+            );
+            assert!(list.lines().any(|actual| actual == line));
+        }
+        if variant != Variant::Classic {
+            assert_eq!(m.prompt_data().custom["piece-list-num"], list);
+        }
+    }
+}
+
+#[test]
+fn piece_list_and_history_are_available_to_proposer() {
+    let mut m = Match::new(Variant::Classic, Color::Black);
+    m.accept_human("e2e4").unwrap();
+    m.accept_model("e7e5").unwrap();
+    for profile in ["with-history", "no-history"] {
+        let c = Config::load_classic_with_profile(Some(profile)).unwrap();
+        let data = pipeline::prompt_data(&m, &c, pipeline::Stage::Proposer).unwrap();
+        let pieces = data.custom["piece-list"].as_str().unwrap();
+        assert_eq!(pieces.lines().count(), 32);
+        assert!(pieces.lines().any(|line| line == "White Pawn: e4"));
+        assert!(pieces.lines().any(|line| line == "Black Pawn: e5"));
+        assert!(!pieces.contains("Pawn: e2"));
+        assert_eq!(data.custom["move-history"], "1. e4 e5");
+        assert_eq!(
+            data.messages.len(),
+            if profile == "with-history" { 2 } else { 0 }
+        );
+        let selector = pipeline::prompt_data(&m, &c, pipeline::Stage::Selector).unwrap();
+        assert_eq!(selector.custom["piece-list"], data.custom["piece-list"]);
+        assert!(selector.custom.get("move-history").is_none());
+    }
+    for variant in Variant::ALL {
+        let m = Match::new(variant, Color::Black);
+        let list = prompts::piece_list(m.game().position());
+        assert_eq!(
+            list.lines().count(),
+            m.game().position().board().pieces().count()
+        );
+        assert_eq!(list, prompts::piece_list(m.game().position()));
+    }
+}
+
+#[test]
 fn common_classic_template_renders_ephemeral_user_after_san_history() {
     let mut m = Match::new(Variant::Classic, Color::Black);
     for profile in ["with-history", "no-history"] {
@@ -88,14 +168,7 @@ fn classic_history_and_directives_are_engine_derived_and_separate() {
             data.custom["ascii"],
             prompts::ascii_board(m.game.position())
         );
-        assert_eq!(
-            data.custom["classic-san-history"],
-            if show {
-                m.classic_san_history()
-            } else {
-                String::new()
-            }
-        );
+        assert_eq!(data.custom["classic-san-history"], m.classic_san_history());
         let built = prompt_core::BuiltPrompt {
             text: crate::pipeline::preview(&m, &c).unwrap(),
             stop_sequences: Vec::new(),

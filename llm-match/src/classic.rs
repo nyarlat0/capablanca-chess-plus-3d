@@ -95,9 +95,11 @@ pub(crate) fn prompt(
             Vec::new()
         },
         custom: json!({"ascii":crate::prompts::ascii_board(position), "fen":position.to_fen(),
+            "piece-list":crate::prompts::piece_list(position),
+            "piece-list-num":crate::prompts::piece_list_num(position),
             "side-to-move":match position.side_to_move() { Color::White => "White", Color::Black => "Black" },
             "last-move":plies.last().map(|p| p.san.as_str()).unwrap_or(""),
-            "classic-san-history":if config.include_history { history(plies) } else { String::new() },
+            "classic-san-history":history(plies),
             "wrong-move":wrong}),
         ..Default::default()
     }

@@ -16,6 +16,7 @@ async fn main() -> Result<()> {
     let mut human = Color::White;
     let mut print_prompt = false;
     let mut replay = String::new();
+    let mut moves_format = String::from("uci");
     let mut initial_fen = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -27,7 +28,10 @@ async fn main() -> Result<()> {
             "--print-prompt" => print_prompt = true,
             "--fen" => initial_fen = Some(args.next().context("missing quoted initial FEN")?),
             s if s.starts_with("--fen=") => initial_fen = Some(s[6..].to_owned()),
-            "--moves" => replay = args.next().context("missing quoted UCI history")?,
+            "--moves" => replay = args.next().context("missing quoted move history")?,
+            "--moves-format" => {
+                moves_format = args.next().context("missing moves format: uci or san")?
+            }
             "--url" => {
                 endpoint = Some(llm_match::normalize_endpoint(
                     &args.next().context("missing URL")?,
@@ -42,11 +46,22 @@ async fn main() -> Result<()> {
                 println!(
                     "llm-match [--variant Classic|Gothic|Embassy|Grand|Shako|Pemba|TerachessII] [--black] [--url http://aistation:5001] [--llm-profile NAME] [--llm-classic-profile with-history|no-history] [--fen 'FEN'] [--print-prompt] [--moves 'e2e4 e7e5']\nEnter a UCI move, or quit. Defaults come from llm-match/.env. Classic chess uses its separate SAN configuration."
                 );
+                println!(
+                    "--moves-format uci|san: format of --moves (default uci; san requires Classic). Moves are replayed from --fen or the initial position; SAN input is whitespace-separated moves, without PGN headers or move numbers."
+                );
                 return Ok(());
             }
             _ => bail!("unknown argument {arg}"),
         }
     }
+    anyhow::ensure!(
+        matches!(moves_format.as_str(), "uci" | "san"),
+        "--moves-format must be uci or san"
+    );
+    anyhow::ensure!(
+        moves_format != "san" || variant == Variant::Classic,
+        "SAN replay requires --variant Classic"
+    );
     let mut config = llm_match::Config::load_for_variant(variant)?;
     if let Some(endpoint) = endpoint {
         config.endpoint = endpoint;
@@ -61,7 +76,17 @@ async fn main() -> Result<()> {
         config.profile_name,
         config.summary()
     );
-    for mv in replay.split_whitespace() {
+    for (index, text) in replay.split_whitespace().enumerate() {
+        let decoded = if moves_format == "san" {
+            game.game()
+                .position()
+                .parse_san_move(text)
+                .with_context(|| format!("invalid SAN history move {}: {text}", index + 1))?
+                .to_uci()
+        } else {
+            text.to_owned()
+        };
+        let mv = decoded.as_str();
         if game.game().position().side_to_move() == human {
             game.accept_human(mv)?;
         } else {

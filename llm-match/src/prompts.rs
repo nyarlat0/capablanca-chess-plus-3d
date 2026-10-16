@@ -27,6 +27,52 @@ pub fn chess_rules(variant: Variant) -> String {
     .expect("built-in rules template")
 }
 
+/// One physical piece per line, in deterministic color/file/rank order.
+pub fn piece_list(position: &Position) -> String {
+    render_piece_list(position, false)
+}
+
+/// Algebraic squares plus absolute zero-based (file, rank) coordinates.
+pub fn piece_list_num(position: &Position) -> String {
+    render_piece_list(position, true)
+}
+
+fn render_piece_list(position: &Position, numeric: bool) -> String {
+    let mut pieces: Vec<_> = position.board().pieces().collect();
+    pieces.sort_by_key(|(square, piece)| {
+        (
+            if piece.color == Color::White { 0 } else { 1 },
+            square.file(),
+            square.rank(),
+        )
+    });
+    let mut text = String::new();
+    for (square, piece) in pieces {
+        if numeric {
+            writeln!(
+                text,
+                "{:?} {} {} ({},{})",
+                piece.color,
+                piece.kind.display_name(),
+                square,
+                square.file(),
+                square.rank()
+            )
+            .unwrap();
+            continue;
+        }
+        writeln!(
+            text,
+            "{:?} {}: {}",
+            piece.color,
+            piece.kind.display_name(),
+            square
+        )
+        .unwrap();
+    }
+    text
+}
+
 pub fn board_state(position: &Position) -> String {
     let rules = position.rules();
     let mut text = format!(

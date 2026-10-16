@@ -109,12 +109,33 @@ pub fn prompt_data(state: &Match, config: &Config, stage: Stage) -> Result<Promp
         data.messages.clear();
     }
     data.custom = json!({});
-    for key in ["fen", "ascii", "board-state", "side-to-move", "chess-rules"] {
+    for key in [
+        "fen",
+        "ascii",
+        "board-state",
+        "piece-list",
+        "piece-list-num",
+        "side-to-move",
+        "chess-rules",
+    ] {
         if let Some(value) = original.get(key) {
             data.custom[key] = value.clone();
         }
     }
     if !private {
+        data.custom["move-history"] = json!(if config.classic.is_some() {
+            original
+                .get("classic-san-history")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned()
+        } else {
+            data.messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
         for key in ["last-move", "classic-san-history"] {
             if let Some(value) = original.get(key) {
                 data.custom[key] = value.clone();
@@ -404,7 +425,11 @@ pub async fn generate(
         data.custom["analysis"] = json!(grounded_analysis);
         let mut sorted: Vec<_> = excluded.iter().cloned().collect();
         sorted.sort();
-        data.custom["excluded-moves"] = json!(serde_json::to_string(&sorted)?);
+        data.custom["excluded-moves"] = json!(if sorted.is_empty() {
+            String::new()
+        } else {
+            serde_json::to_string(&sorted)?
+        });
         let proposal: Proposal = request(
             &mut client,
             &http,

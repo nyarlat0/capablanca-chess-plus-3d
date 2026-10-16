@@ -1,6 +1,42 @@
 use std::process::Command;
 
 #[test]
+fn san_replay_matches_uci_and_template_history_is_profile_independent() {
+    let run = |format: &str, moves: &str, profile: &str| {
+        Command::new(env!("CARGO_BIN_EXE_llm-match"))
+            .env("LLM_PIPELINE", "single-stage")
+            .args([
+                "--variant",
+                "Classic",
+                "--moves-format",
+                format,
+                "--moves",
+                moves,
+                "--llm-classic-profile",
+                profile,
+                "--print-prompt",
+            ])
+            .output()
+            .unwrap()
+    };
+    let san = run("san", "e4 e5 Nf3 Nc6", "with-history");
+    assert!(
+        san.status.success(),
+        "{}",
+        String::from_utf8_lossy(&san.stderr)
+    );
+    let uci = run("uci", "e2e4 e7e5 g1f3 b8c6", "with-history");
+    assert!(uci.status.success());
+    assert_eq!(san.stdout, uci.stdout);
+    assert!(String::from_utf8_lossy(&san.stdout).contains("1. e4 e5 2. Nf3 Nc6"));
+    let hidden = run("san", "e4 e5 Nf3 Nc6", "no-history");
+    assert!(hidden.status.success());
+    assert!(String::from_utf8_lossy(&hidden.stdout).contains("1. e4 e5 2. Nf3 Nc6"));
+    assert!(!run("san", "e4 e5 Qh9", "with-history").status.success());
+    assert!(!run("invalid", "e4", "with-history").status.success());
+}
+
+#[test]
 fn stage_templates_can_be_overridden_from_env_file_and_process() {
     use std::{
         collections::BTreeMap,
@@ -154,7 +190,7 @@ fn classic_cli_and_environment_are_separate_from_fairy_profiles() {
         .output()
         .unwrap();
     assert!(run.status.success());
-    assert!(!String::from_utf8(run.stdout).unwrap().contains("1. e4"));
+    assert!(String::from_utf8(run.stdout).unwrap().contains("1. e4"));
 }
 
 #[test]
