@@ -185,7 +185,7 @@ pub(crate) fn template(config: &Config, stage: Stage) -> SystemPromptTemplate {
 }
 
 pub fn preview(state: &Match, config: &Config) -> Result<String> {
-    let stage = if config.pipeline_mode != two_stage::PipelineMode::Legacy {
+    let stage = if config.pipeline_mode.is_ranked() {
         Stage::Proposer
     } else {
         Stage::Analyst
@@ -200,7 +200,7 @@ pub fn preview(state: &Match, config: &Config) -> Result<String> {
 }
 
 fn request_template(config: &Config, stage: Stage) -> SystemPromptTemplate {
-    if config.pipeline_mode != two_stage::PipelineMode::Legacy {
+    if config.pipeline_mode.is_ranked() {
         return config.two_stage.stage(stage).template.clone();
     }
     template(config, stage)
@@ -239,7 +239,7 @@ async fn request_parsed<T>(
     parse: impl Fn(&str) -> Result<T>,
 ) -> Result<T> {
     let system = request_template(config, stage);
-    let ranked_pipeline = config.pipeline_mode != two_stage::PipelineMode::Legacy;
+    let ranked_pipeline = config.pipeline_mode.is_ranked();
     let preset = if ranked_pipeline {
         &config.two_stage.stage(stage).preset
     } else {
@@ -366,7 +366,7 @@ pub async fn generate(
     config: &Config,
     mut rejected: impl FnMut(usize, &str),
 ) -> Result<Move> {
-    if config.pipeline_mode != two_stage::PipelineMode::Legacy {
+    if config.pipeline_mode.is_ranked() {
         return two_stage::generate(state, config, rejected).await;
     }
     ensure!(
@@ -391,6 +391,9 @@ pub async fn generate(
         Stage::Verifier,
         Stage::Selector,
     ] {
+        if stage == Stage::Grounder && config.pipeline_mode == two_stage::PipelineMode::FourStage {
+            continue;
+        }
         config.preset_for_stage(stage).generation_length()?;
     }
     output::final_answer(&config.reasoning, "")?;
@@ -407,17 +410,22 @@ pub async fn generate(
         |answer| Ok(answer.to_owned()),
     )
     .await?;
-    let mut grounder_data = prompt_data(state, config, Stage::Grounder)?;
-    grounder_data.custom["analysis"] = json!(analysis);
-    let grounded_analysis: String = request_parsed(
-        &mut client,
-        &http,
-        config,
-        Stage::Grounder,
-        &grounder_data,
-        |answer| Ok(answer.to_owned()),
-    )
-    .await?;
+    let grounded_analysis = if config.pipeline_mode == two_stage::PipelineMode::Legacy {
+        let mut grounder_data = prompt_data(state, config, Stage::Grounder)?;
+        grounder_data.custom["analysis"] = json!(analysis);
+        let grounded_analysis: String = request_parsed(
+            &mut client,
+            &http,
+            config,
+            Stage::Grounder,
+            &grounder_data,
+            |answer| Ok(answer.to_owned()),
+        )
+        .await?;
+        grounded_analysis
+    } else {
+        analysis
+    };
     let mut excluded: HashSet<String> = state.wrong_moves.iter().cloned().collect();
     for round in 1..=config.max_attempts {
         tracing::info!(round, "LLM candidate round");

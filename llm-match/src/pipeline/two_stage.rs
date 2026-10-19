@@ -7,6 +7,7 @@ use serde::Deserialize;
 pub enum PipelineMode {
     SingleStage,
     TwoStage,
+    FourStage,
     Legacy,
 }
 impl std::str::FromStr for PipelineMode {
@@ -15,9 +16,16 @@ impl std::str::FromStr for PipelineMode {
         match s {
             "single-stage" => Ok(Self::SingleStage),
             "two-stage" => Ok(Self::TwoStage),
+            "four-stage" => Ok(Self::FourStage),
             "legacy" => Ok(Self::Legacy),
-            _ => bail!("LLM_PIPELINE must be single-stage, two-stage or legacy"),
+            _ => bail!("LLM_PIPELINE must be single-stage, two-stage, four-stage or legacy"),
         }
+    }
+}
+
+impl PipelineMode {
+    pub(crate) fn is_ranked(self) -> bool {
+        matches!(self, Self::SingleStage | Self::TwoStage)
     }
 }
 

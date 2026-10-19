@@ -98,7 +98,7 @@ exclusions. Ошибка формата/транспорта Selector повто
 
 | Ключ | По умолчанию |
 |---|---|
-| `LLM_PIPELINE` | `single-stage` по умолчанию; также `two-stage` и `legacy` |
+| `LLM_PIPELINE` | `single-stage` по умолчанию; также `two-stage`, `four-stage` и `legacy` |
 | `LLM_TWO_PROPOSER_TEMPLATE` | `templates/two_stage/proposer.json` |
 | `LLM_TWO_SELECTOR_TEMPLATE` | `templates/two_stage/selector.json` |
 | `LLM_TWO_PROPOSER_PRESET` | `presets/two_proposer.json` |
@@ -116,7 +116,7 @@ exclusions. Ошибка формата/транспорта Selector повто
 thinking budget 3072, temperature 0.8/0.6 для Proposer/Selector. Это начальные
 настройки, не доказанный оптимум. `x*` может увеличить затраты reasoning;
 лимиты и таймауты продолжают действовать. Файлы пресетов и reasoning обоих
-этапов полностью независимы, старые legacy-файлы не переписаны.
+этапов полностью независимы от пресетов многостадийного режима.
 
 JSON строго проверяется по схеме, включая неизвестные/дублирующиеся поля.
 Markdown-обёртка допускается. В two-stage локально исправляются только лишние
@@ -138,6 +138,37 @@ output — повторная токенизация полного сырого
 `final_engine_rejection`). `llm_format_repair` отмечает локальное исправление.
 Содержимое reasoning не логируется и не передаётся между этапами.
 
+### Четыре стадии с разделением задач
+
+```sh
+LLM_PIPELINE=four-stage cargo run --release -p llm-match -- \
+  --variant Classic --moves-format san --moves 'd4 c5 dxc5 d5 Nc3 Nc6 Bf4 Nf6 Nxd5'
+```
+
+Или выставить `LLM_PIPELINE=four-stage` в `llm-match/.env` (работает и для фронтенда).
+
+1. **Analyst**: факты текущей позиции и стратегические приоритеты; без кандидатов,
+   расчёта вариантов и разменов.
+2. **Proposer**: 3–5 ходов с краткой идеей, без повторного анализа и расчёта.
+3. **Engine legality gate**, затем **Verifier** отдельно для каждого легального
+   кандидата: расчёт ответов и разменов; ACCEPT/REJECT и краткий `tactical_result`.
+4. **Selector**: доверяет переданным результатам, сравнивает их и выбирает ход;
+   не перепроверяет тактику и не рассчитывает варианты заново.
+
+Каждый запрос имеет независимый контекст. Verifier не видит идеи Proposer;
+Selector получает только принятые кандидаты и результаты их расчёта.
+С тремя легальными кандидатами успешный ход требует шести LLM-запросов:
+Analyst + Proposer + три Verifier + Selector. Analyst не повторяется при
+повторном подборе кандидатов. Движок только проверяет легальность и применяет ход.
+
+Настройки: существующие `LLM_ANALYST_*`, `LLM_PROPOSER_*`, `LLM_VERIFIER_*`,
+`LLM_SELECTOR_*`; шаблоны — `templates/pipeline/{analyst,proposer,verifier,selector}.json`.
+Форматы Classic/fairy сохранены; в Classic добавлен список фигур с нулевыми
+числовыми координатами по образцу актуального одно-/двухстадийного Proposer.
+Grounder не вызывается в `four-stage`. `legacy` сохраняет дополнительную стадию
+Grounder и использует те же обновлённые четыре шаблона. Архивные `a_*.json`
+и одно-/двухстадийные шаблоны не менялись.
+
 Сравнение с legacy без изменения файлов:
 
 ```sh
@@ -146,7 +177,7 @@ LLM_PIPELINE=legacy cargo run -p llm-match -- --variant Classic --fen 'FEN' --bl
 ```
 
 `--print-prompt` теперь показывает начальные сообщения Proposer в two-stage,
-Analyst в legacy. Следующие разделы пятиэтапного протокола относятся к **legacy**;
+Analyst в four-stage/legacy. Следующие разделы пятиэтапного протокола относятся к **legacy**;
 описания представлений, вариантов, accepted history и UI общие для обоих режимов.
 
 `.env`, профили и правила читаются при создании матча, не встраиваются в бинарник

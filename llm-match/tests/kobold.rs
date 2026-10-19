@@ -193,6 +193,52 @@ fn two_cfg(server: &Server) -> llm_match::Config {
     c.pipeline_mode = llm_match::pipeline::two_stage::PipelineMode::TwoStage;
     c
 }
+
+#[tokio::test]
+async fn four_stage_skips_grounder_and_keeps_calculations_independent() {
+    let server = Server::script(
+        vec![
+            analysis(),
+            normal_proposal(),
+            verify(1, true),
+            verify(2, false),
+            verify(3, false),
+            select(1, "e5"),
+        ],
+        512,
+    );
+    let mut c = cfg(&server);
+    c.pipeline_mode = "four-stage".parse().unwrap();
+    c.pipeline.grounder.content = "GROUNDER_MUST_NOT_RUN".into();
+    c.pipeline.analyst.content = "ANALYST_ONLY".into();
+    c.pipeline.proposer.content = "PROPOSER_ONLY".into();
+    c.pipeline.verifier.content = "VERIFIER_ONLY".into();
+    c.pipeline.selector.content = "SELECTOR_ONLY".into();
+    let mut m = state();
+    llm_match::generate_move(&mut m, &c, |_, _| panic!())
+        .await
+        .unwrap();
+    assert_eq!(m.uci_history(), ["e2e4", "e7e5"]);
+    let p = server.prompts.lock().unwrap();
+    assert_eq!(p.len(), 6);
+    for (index, marker) in [
+        (0, "ANALYST_ONLY"),
+        (1, "PROPOSER_ONLY"),
+        (2, "VERIFIER_ONLY"),
+        (3, "VERIFIER_ONLY"),
+        (4, "VERIFIER_ONLY"),
+        (5, "SELECTOR_ONLY"),
+    ] {
+        assert!(p[index].contains(marker));
+    }
+    assert!(
+        p.iter()
+            .all(|prompt| !prompt.contains("GROUNDER_MUST_NOT_RUN"))
+    );
+    assert!(p[5].contains("tactical_result"));
+    assert!(!p[2].contains("rationale"));
+    assert!(!p[5].contains("rationale"));
+}
 fn ranked(moves: &[&str]) -> Reply {
     text(
         json!({"candidates":moves.iter().map(|mv| json!({"move":mv,"rationale":"PRIVATE_PROPOSER_IDEA"})).collect::<Vec<_>>()}),

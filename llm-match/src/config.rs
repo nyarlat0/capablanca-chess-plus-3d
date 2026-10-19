@@ -115,6 +115,9 @@ impl Config {
             crate::pipeline::two_stage::PipelineMode::TwoStage => {
                 "two-stage pipeline + legality gate"
             }
+            crate::pipeline::two_stage::PipelineMode::FourStage => {
+                "4-stage analyst/proposer/verifier/selector + legality gate"
+            }
             crate::pipeline::two_stage::PipelineMode::Legacy => {
                 "legacy 5-stage pipeline + legality gate"
             }
