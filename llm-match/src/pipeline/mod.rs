@@ -109,6 +109,7 @@ pub fn prompt_data(state: &Match, config: &Config, stage: Stage) -> Result<Promp
         data.messages.clear();
     }
     data.custom = json!({});
+    data.custom["four-stage"] = json!(config.pipeline_mode == two_stage::PipelineMode::FourStage);
     for key in [
         "fen",
         "ascii",
@@ -187,6 +188,8 @@ pub(crate) fn template(config: &Config, stage: Stage) -> SystemPromptTemplate {
 pub fn preview(state: &Match, config: &Config) -> Result<String> {
     let stage = if config.pipeline_mode.is_ranked() {
         Stage::Proposer
+    } else if config.pipeline_mode == two_stage::PipelineMode::FourStage {
+        Stage::Grounder
     } else {
         Stage::Analyst
     };
@@ -391,7 +394,7 @@ pub async fn generate(
         Stage::Verifier,
         Stage::Selector,
     ] {
-        if stage == Stage::Grounder && config.pipeline_mode == two_stage::PipelineMode::FourStage {
+        if stage == Stage::Analyst && config.pipeline_mode == two_stage::PipelineMode::FourStage {
             continue;
         }
         config.preset_for_stage(stage).generation_length()?;
@@ -401,31 +404,28 @@ pub async fn generate(
         .timeout(Duration::from_secs(config.timeout_seconds))
         .build()?;
     let mut client = None;
-    let analysis: String = request_parsed(
-        &mut client,
-        &http,
-        config,
-        Stage::Analyst,
-        &prompt_data(state, config, Stage::Analyst)?,
-        |answer| Ok(answer.to_owned()),
-    )
-    .await?;
-    let grounded_analysis = if config.pipeline_mode == two_stage::PipelineMode::Legacy {
-        let mut grounder_data = prompt_data(state, config, Stage::Grounder)?;
-        grounder_data.custom["analysis"] = json!(analysis);
-        let grounded_analysis: String = request_parsed(
+    let mut grounder_data = prompt_data(state, config, Stage::Grounder)?;
+    if config.pipeline_mode == two_stage::PipelineMode::Legacy {
+        let analysis: String = request_parsed(
             &mut client,
             &http,
             config,
-            Stage::Grounder,
-            &grounder_data,
+            Stage::Analyst,
+            &prompt_data(state, config, Stage::Analyst)?,
             |answer| Ok(answer.to_owned()),
         )
         .await?;
-        grounded_analysis
-    } else {
-        analysis
-    };
+        grounder_data.custom["analysis"] = json!(analysis);
+    }
+    let grounded_analysis: String = request_parsed(
+        &mut client,
+        &http,
+        config,
+        Stage::Grounder,
+        &grounder_data,
+        |answer| Ok(answer.to_owned()),
+    )
+    .await?;
     let mut excluded: HashSet<String> = state.wrong_moves.iter().cloned().collect();
     for round in 1..=config.max_attempts {
         tracing::info!(round, "LLM candidate round");
@@ -481,6 +481,9 @@ pub async fn generate(
             }
             tracing::info!(candidate_id = %c.id, "LLM independent verification");
             let mut data = prompt_data(state, config, Stage::Verifier)?;
+            if config.pipeline_mode == two_stage::PipelineMode::FourStage {
+                data.custom["analysis"] = json!(grounded_analysis);
+            }
             data.custom["candidate"] = json!(serde_json::to_string(&json!({
                 "move": c.proposed_move, "from": c.from, "to": c.to
             }))?);
@@ -631,7 +634,8 @@ mod tests {
 
     #[test]
     fn chat_preview_preserves_accepted_history_roles() {
-        let config = Config::load_classic_with_profile(Some("with-history")).unwrap();
+        let mut config = Config::load_classic_with_profile(Some("with-history")).unwrap();
+        config.pipeline_mode = two_stage::PipelineMode::SingleStage;
         let mut state = Match::new(
             capablanca_chess_plus::Variant::Classic,
             capablanca_chess_plus::Color::Black,

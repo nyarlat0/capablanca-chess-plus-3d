@@ -161,7 +161,8 @@ fn classic_history_and_directives_are_engine_derived_and_separate() {
     assert_eq!(m.uci_history(), ["e2e4", "e7e5", "g1f3", "b8c6"]);
     assert!(m.wrong_moves().is_empty());
     for (name, show) in [("with-history", true), ("no-history", false)] {
-        let c = Config::load_classic_with_profile(Some(name)).unwrap();
+        let mut c = Config::load_classic_with_profile(Some(name)).unwrap();
+        c.pipeline_mode = pipeline::two_stage::PipelineMode::SingleStage;
         let data = m.prompt_data_with(&c).unwrap();
         assert_eq!(data.custom["fen"], m.game.position().to_fen());
         assert_eq!(

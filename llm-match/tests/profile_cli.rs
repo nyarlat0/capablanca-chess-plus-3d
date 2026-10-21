@@ -186,6 +186,7 @@ fn classic_cli_and_environment_are_separate_from_fairy_profiles() {
     }
     let run = Command::new(exe)
         .env("LLM_CLASSIC_PROFILE", "no-history")
+        .env("LLM_PIPELINE", "single-stage")
         .args(["--variant", "Classic", "--moves", "e2e4", "--print-prompt"])
         .output()
         .unwrap();
@@ -197,6 +198,7 @@ fn classic_cli_and_environment_are_separate_from_fairy_profiles() {
 fn cli_profile_overrides_environment_and_unknown_profile_fails_without_network() {
     let exe = env!("CARGO_BIN_EXE_llm-match");
     let run = Command::new(exe)
+        .env("LLM_PIPELINE", "single-stage")
         .env("LLM_PROFILE", "numeric-no-history")
         .args([
             "--llm-profile",

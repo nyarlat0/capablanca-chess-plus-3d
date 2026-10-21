@@ -36,7 +36,10 @@ cargo run -p llm-match -- --variant Gothic --url http://aistation:5001
 
 ## Настройки без пересборки
 
-### Одноступенчатый режим (по умолчанию)
+### Одноступенчатый режим
+
+В поставляемом `.env` выбран `LLM_PIPELINE=four-stage`. Если ключ совсем
+отсутствует, прежний fallback `single-stage` сохранён для совместимости.
 
 `LLM_PIPELINE=single-stage`: Proposer выдаёт ранжированные 3–5 кандидатов,
 движок проверяет их по порядку и сразу применяет **первый легальный ход**.
@@ -98,7 +101,7 @@ exclusions. Ошибка формата/транспорта Selector повто
 
 | Ключ | По умолчанию |
 |---|---|
-| `LLM_PIPELINE` | `single-stage` по умолчанию; также `two-stage`, `four-stage` и `legacy` |
+| `LLM_PIPELINE` | В `.env`: `four-stage`; без ключа: `single-stage`; также `two-stage`, `legacy` |
 | `LLM_TWO_PROPOSER_TEMPLATE` | `templates/two_stage/proposer.json` |
 | `LLM_TWO_SELECTOR_TEMPLATE` | `templates/two_stage/selector.json` |
 | `LLM_TWO_PROPOSER_PRESET` | `presets/two_proposer.json` |
@@ -147,26 +150,32 @@ LLM_PIPELINE=four-stage cargo run --release -p llm-match -- \
 
 Или выставить `LLM_PIPELINE=four-stage` в `llm-match/.env` (работает и для фронтенда).
 
-1. **Analyst**: факты текущей позиции и стратегические приоритеты; без кандидатов,
-   расчёта вариантов и разменов.
+1. **Grounder**: самостоятельно устанавливает статические факты текущей позиции:
+   фигуры, геометрию, занятость, блокеры, атаки и защиты. Не получает анализ
+   Analyst, не предлагает кандидатов, не рассчитывает варианты и размены.
 2. **Proposer**: 3–5 ходов с краткой идеей, без повторного анализа и расчёта.
 3. **Engine legality gate**, затем **Verifier** отдельно для каждого легального
    кандидата: расчёт ответов и разменов; ACCEPT/REJECT и краткий `tactical_result`.
 4. **Selector**: доверяет переданным результатам, сравнивает их и выбирает ход;
    не перепроверяет тактику и не рассчитывает варианты заново.
 
-Каждый запрос имеет независимый контекст. Verifier не видит идеи Proposer;
+Каждый запрос имеет отдельный контекст. Proposer и Verifier получают один и тот же
+компактный результат Grounder через `analysis` и доверяют установленным фактам.
+Verifier рассчитывает только изменения и последствия конкретного хода,
+не повторяя статический анализ. Verifier не видит идеи Proposer;
 Selector получает только принятые кандидаты и результаты их расчёта.
 С тремя легальными кандидатами успешный ход требует шести LLM-запросов:
-Analyst + Proposer + три Verifier + Selector. Analyst не повторяется при
+Grounder + Proposer + три Verifier + Selector. Grounder не повторяется при
 повторном подборе кандидатов. Движок только проверяет легальность и применяет ход.
 
-Настройки: существующие `LLM_ANALYST_*`, `LLM_PROPOSER_*`, `LLM_VERIFIER_*`,
-`LLM_SELECTOR_*`; шаблоны — `templates/pipeline/{analyst,proposer,verifier,selector}.json`.
+Настройки: существующие `LLM_GROUNDER_*`, `LLM_PROPOSER_*`, `LLM_VERIFIER_*`,
+`LLM_SELECTOR_*`; шаблоны — `templates/pipeline/{grounder,proposer,verifier,selector}.json`.
 Форматы Classic/fairy сохранены; в Classic добавлен список фигур с нулевыми
 числовыми координатами по образцу актуального одно-/двухстадийного Proposer.
-Grounder не вызывается в `four-stage`. `legacy` сохраняет дополнительную стадию
-Grounder и использует те же обновлённые четыре шаблона. Архивные `a_*.json`
+Analyst не вызывается в `four-stage`. `legacy` сохраняет цепочку Analyst → Grounder
+→ Proposer → Verifier → Selector и прежние инструкции. Директива `{{#if four-stage}}`
+в общих шаблонах отделяет новые инструкции от legacy; его Verifier по-прежнему
+не получает анализ Grounder. Архивные `a_*.json`
 и одно-/двухстадийные шаблоны не менялись.
 
 Сравнение с legacy без изменения файлов:
@@ -177,7 +186,7 @@ LLM_PIPELINE=legacy cargo run -p llm-match -- --variant Classic --fen 'FEN' --bl
 ```
 
 `--print-prompt` теперь показывает начальные сообщения Proposer в two-stage,
-Analyst в four-stage/legacy. Следующие разделы пятиэтапного протокола относятся к **legacy**;
+Grounder в four-stage, Analyst в legacy. Следующие разделы пятиэтапного протокола относятся к **legacy**;
 описания представлений, вариантов, accepted history и UI общие для обоих режимов.
 
 `.env`, профили и правила читаются при создании матча, не встраиваются в бинарник
