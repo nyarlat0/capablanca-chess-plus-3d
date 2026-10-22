@@ -185,3 +185,40 @@ cargo check -p bevy-front --offline
 ```
 
 Интеграционные тесты используют локальный mock HTTP-сервер, не реальный KoboldCPP.
+# Multimodal board input
+
+Each stage now receives a deterministic **768×768 PNG** of the current engine
+`Position`, together with its matching FEN, in the **last user message**. Existing
+stage text, history settings, selection algorithm, legality gate and retries are
+unchanged. This attachment also applies to single-stage debugging. Images are
+never written into accepted move history; a new position produces a new image,
+and retries reuse the current one. `--print-prompt` includes the actual content
+parts/data URI without calling the model.
+
+The renderer is isolated in `src/board_image.rs`: SVG → resvg → PNG. White is
+always below, a1 is dark, labels appear on all four edges, with no highlights,
+arrows or engine hints. Standard pieces use embedded Cburnett Staunton-style
+SVGs (attribution/license in `assets/pieces/README.md`); coordinates use the
+repository's embedded Fira Mono font, so no system fonts or network assets are
+needed. Fairy boards still work; nonstandard pieces use their engine symbols,
+not misleading standard-piece silhouettes.
+
+Save an offline preview (no LLM or frontend required):
+
+```sh
+cargo run -p llm-match --example board_png -- target/board.png
+cargo run -p llm-match --example board_png -- target/position.png 'r1bqkb1r/pp2pppp/2n2n2/2PN4/5B2/8/PPP1PPPP/R2QKBNR b KQkq - 0 5'
+```
+
+KoboldCpp needs a vision-capable model and matching mmproj. `.env` contains
+`LLM_IMAGE_TOKEN_RESERVE=4096`, an additional per-image input-context reservation,
+not output tokens or a chess setting. Kobold's text tokenizer does not count
+vision embeddings; adjust this reservation to the encoder's actual requirements.
+It is an estimate, not an exact count or universal maximum. Existing generation
+limits and timeouts remain unchanged.
+
+Optional live board-image test (short, one request, no match):
+
+```sh
+KOBOLD_URL=http://aistation:5001 cargo test -p llm-match live_kobold_board_image -- --ignored
+```

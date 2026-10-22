@@ -103,30 +103,37 @@ pub fn preview(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) ->
     debug_state.model_side = debug_state.game.position().side_to_move();
     let state = &debug_state;
     let data = data(state, config, stage, inputs)?;
+    let image = crate::board_image::BoardImage::new(state.game.position())?;
     Ok(serde_json::to_string_pretty(
-        &PromptBuilder::new().build_chat(&config.context, &template(config, stage), &data)?,
+        &super::prompts::build_request(config, stage, &data, &image)?.messages,
     )?)
 }
 
 pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result<String> {
     let data = data(state, config, stage, inputs)?;
+    let image = crate::board_image::BoardImage::new(state.game.position())?;
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(config.timeout_seconds))
         .build()?;
     let mut client = None;
     match stage {
         Stage::Grounder => {
-            request_parsed(&mut client, &http, config, stage, &data, |text| {
+            request_parsed(&mut client, &http, config, stage, &data, &image, |text| {
                 Ok(text.to_owned())
             })
             .await
         }
         Stage::Proposer => {
-            let result: Proposal =
-                request(&mut client, &http, config, stage, &data, |p: &Proposal| {
-                    validate_proposal(p, config)
-                })
-                .await?;
+            let result: Proposal = request(
+                &mut client,
+                &http,
+                config,
+                stage,
+                &data,
+                &image,
+                |p: &Proposal| validate_proposal(p, config),
+            )
+            .await?;
             Ok(serde_json::to_string_pretty(&result)?)
         }
         Stage::Verifier => {
@@ -136,6 +143,7 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
                 config,
                 stage,
                 &data,
+                &image,
                 Verification::validate,
             )
             .await?;
@@ -143,8 +151,14 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
         }
         Stage::Selector => {
             let accepted = candidates(state, config, inputs.accepted_candidates.as_ref().unwrap())?;
-            let result: Selection =
-                request(&mut client, &http, config, stage, &data, |s: &Selection| {
+            let result: Selection = request(
+                &mut client,
+                &http,
+                config,
+                stage,
+                &data,
+                &image,
+                |s: &Selection| {
                     let c = accepted
                         .iter()
                         .find(|c| c.id == s.candidate_id)
@@ -154,8 +168,9 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
                         "selector changed candidate move"
                     );
                     Ok(())
-                })
-                .await?;
+                },
+            )
+            .await?;
             Ok(serde_json::to_string_pretty(&result)?)
         }
     }

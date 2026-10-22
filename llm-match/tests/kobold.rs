@@ -18,6 +18,12 @@ struct Server {
     stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
 }
+
+fn message_text(message: &Value) -> String {
+    let message: prompt_core::ChatCompletionMessage =
+        serde_json::from_value(message.clone()).unwrap();
+    message.text_parts().concat()
+}
 enum Reply {
     Text(String),
     Http(u16),
@@ -81,7 +87,7 @@ impl Server {
                             .as_array()
                             .unwrap()
                             .iter()
-                            .map(|m| m["content"].as_str().unwrap())
+                            .map(message_text)
                             .collect::<Vec<_>>()
                             .join("\n");
                         json!({"value":token_count, "prompt":prompt})
@@ -93,7 +99,7 @@ impl Server {
                             .as_array()
                             .unwrap()
                             .iter()
-                            .map(|m| m["content"].as_str().unwrap())
+                            .map(message_text)
                             .collect::<Vec<_>>()
                             .join("\n");
                         recorded.lock().unwrap().push(prompt);
@@ -310,10 +316,38 @@ async fn four_stage_skips_analyst_and_shares_grounded_facts() {
     c.pipeline.verifier.content = "VERIFIER_ONLY".into();
     c.pipeline.selector.content = "SELECTOR_ONLY".into();
     let mut m = state();
+    let before_fen = m.game().position().to_fen();
     llm_match::generate_move(&mut m, &c, |_, _| panic!())
         .await
         .unwrap();
     assert_eq!(m.uci_history(), ["e2e4", "e7e5"]);
+    let requests = server.requests.lock().unwrap();
+    let mut previous_image = None;
+    for request in requests.iter() {
+        let messages = request["messages"].as_array().unwrap();
+        let last_user = messages.iter().rposition(|m| m["role"] == "user").unwrap();
+        for (i, message) in messages.iter().enumerate() {
+            let message: prompt_core::ChatCompletionMessage =
+                serde_json::from_value(message.clone()).unwrap();
+            assert_eq!(message.image_count(), usize::from(i == last_user));
+        }
+        let content = messages[last_user]["content"].as_array().unwrap();
+        assert!(message_text(&messages[last_user]).contains(&before_fen));
+        let image = content.last().unwrap()["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(image.starts_with("data:image/png;base64,"));
+        if let Some(previous) = &previous_image {
+            assert_eq!(&image, previous);
+        }
+        previous_image = Some(image);
+    }
+    assert!(
+        m.history()
+            .iter()
+            .all(|m| !m.content.contains("data:image"))
+    );
     let p = server.prompts.lock().unwrap();
     assert_eq!(p.len(), 6);
     for (index, marker) in [
@@ -716,8 +750,9 @@ async fn fairy_variants_preserve_every_move_and_coordinate_format() {
                 .unwrap();
             assert_eq!(m.uci_history(), [moves[0].to_uci()]);
             for p in server.prompts.lock().unwrap().iter() {
-                assert!(!p.contains("FEN:"));
-                assert!(!p.contains(&variant.starting_position().to_fen()));
+                // Representation-specific textual rules are unchanged; every
+                // stage now additionally receives an image and matching FEN.
+                assert!(p.contains(&variant.starting_position().to_fen()));
                 if c.representation.state_format == StateFormat::Numeric {
                     assert!(!p.contains("a b c"));
                     assert!(!p.contains("ASCII BOARD"));

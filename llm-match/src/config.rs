@@ -24,6 +24,8 @@ pub struct Config {
     pub stage_presets: StagePresets,
     pub timeout_seconds: u64,
     pub max_attempts: usize,
+    /// Reserve for vision embeddings, in addition to Kobold's text token count.
+    pub image_token_reserve: u64,
 }
 
 /// Missing stage overrides use the shared fallback preset.
@@ -206,6 +208,9 @@ impl Config {
             stage_presets,
             timeout_seconds,
             max_attempts,
+            image_token_reserve: get("LLM_IMAGE_TOKEN_RESERVE")
+                .unwrap_or_else(|_| "4096".into())
+                .parse()?,
         })
     }
 }

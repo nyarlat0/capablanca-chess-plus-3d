@@ -3,7 +3,7 @@ mod legality;
 mod prompts;
 mod protocol;
 use legality::{move_text, resolve_candidate, validate_candidate, validate_metadata};
-use prompts::request_template;
+#[cfg(test)]
 pub(crate) use prompts::template;
 pub use prompts::{Templates, preview, prompt_data};
 mod transport;
@@ -92,6 +92,7 @@ pub async fn generate(
         .timeout(Duration::from_secs(config.timeout_seconds))
         .build()?;
     let mut client = None;
+    let image = crate::board_image::BoardImage::new(state.game.position())?;
     let grounder_data = prompt_data(state, config, Stage::Grounder)?;
     let grounded_analysis: String = request_parsed(
         &mut client,
@@ -99,6 +100,7 @@ pub async fn generate(
         config,
         Stage::Grounder,
         &grounder_data,
+        &image,
         |answer| Ok(answer.to_owned()),
     )
     .await?;
@@ -120,6 +122,7 @@ pub async fn generate(
             config,
             Stage::Proposer,
             &data,
+            &image,
             |p: &Proposal| validate_proposal(p, config),
         )
         .await?;
@@ -155,6 +158,7 @@ pub async fn generate(
                 config,
                 Stage::Verifier,
                 &data,
+                &image,
                 Verification::validate,
             )
             .await?;
@@ -183,6 +187,7 @@ pub async fn generate(
             config,
             Stage::Selector,
             &data,
+            &image,
             |s: &Selection| {
                 let (c, _) = accepted
                     .iter()

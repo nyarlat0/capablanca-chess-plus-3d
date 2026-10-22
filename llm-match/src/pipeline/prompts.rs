@@ -118,13 +118,25 @@ pub(crate) fn template(config: &Config, stage: Stage) -> SystemPromptTemplate {
 
 pub fn preview(state: &Match, config: &Config) -> Result<String> {
     let stage = Stage::Grounder;
+    let image = crate::board_image::BoardImage::new(state.game.position())?;
     Ok(serde_json::to_string_pretty(
-        &PromptBuilder::new().build_chat(
-            &config.context,
-            &request_template(config, stage),
-            &request_data(state, config, stage)?,
-        )?,
+        &build_request(config, stage, &request_data(state, config, stage)?, &image)?.messages,
     )?)
+}
+
+pub(super) fn build_request(
+    config: &Config,
+    stage: Stage,
+    data: &PromptData,
+    image: &crate::board_image::BoardImage,
+) -> Result<prompt_core::ChatCompletionRequest> {
+    let messages =
+        PromptBuilder::new().build_chat(&config.context, &request_template(config, stage), data)?;
+    let mut request: prompt_core::ChatCompletionRequest =
+        ChatGenerationRequest::from_preset(messages, config.preset_for_stage(stage))?.into();
+    image.attach(&mut request)?;
+    request.image_token_reserve = config.image_token_reserve;
+    Ok(request)
 }
 
 pub(super) fn request_template(config: &Config, stage: Stage) -> SystemPromptTemplate {

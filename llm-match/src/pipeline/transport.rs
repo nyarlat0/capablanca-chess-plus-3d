@@ -6,9 +6,10 @@ pub(super) async fn request<T: DeserializeOwned>(
     config: &Config,
     stage: Stage,
     data: &PromptData,
+    image: &crate::board_image::BoardImage,
     validate: impl Fn(&T) -> Result<()>,
 ) -> Result<T> {
-    request_parsed(client, http, config, stage, data, |answer| {
+    request_parsed(client, http, config, stage, data, image, |answer| {
         let value = if matches!(stage, Stage::Proposer | Stage::Selector) {
             output::parse_final_json(answer)?
         } else {
@@ -26,10 +27,10 @@ pub(super) async fn request_parsed<T>(
     config: &Config,
     stage: Stage,
     data: &PromptData,
+    image: &crate::board_image::BoardImage,
     parse: impl Fn(&str) -> Result<T>,
 ) -> Result<T> {
-    let system = request_template(config, stage);
-    let preset = config.preset_for_stage(stage);
+    let request = super::prompts::build_request(config, stage, data, image)?;
     let reasoning = &config.reasoning;
     let mut last_error = None;
     for attempt in 1..=config.stage_max_attempts {
@@ -44,17 +45,7 @@ pub(super) async fn request_parsed<T>(
                 );
             }
             let client = client.as_ref().unwrap();
-            let options = ChatGenerationRequest::from_preset(Vec::new(), preset)?;
-            let fitted = PromptBuilder::new()
-                .build_chat_with_budget(
-                    &config.context,
-                    &system,
-                    data,
-                    client,
-                    &options,
-                    client.context_budget(preset)?,
-                )
-                .await?;
+            let fitted = client.fit_chat(&request).await?;
             input_tokens = Some(fitted.preview.tokens);
             Ok(client.generate_chat(&fitted.request).await?.text)
         }
