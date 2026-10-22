@@ -13,7 +13,6 @@ fn numeric_piece_list_is_zero_based_and_available_in_all_stages() {
     for profile in ["with-history", "no-history"] {
         let c = Config::load_classic_with_profile(Some(profile)).unwrap();
         for stage in [
-            pipeline::Stage::Analyst,
             pipeline::Stage::Grounder,
             pipeline::Stage::Proposer,
             pipeline::Stage::Verifier,
@@ -82,39 +81,30 @@ fn piece_list_and_history_are_available_to_proposer() {
 
 #[test]
 fn common_classic_template_renders_ephemeral_user_after_san_history() {
-    let mut m = Match::new(Variant::Classic, Color::Black);
+    use prompt_core::ChatRole;
     for profile in ["with-history", "no-history"] {
-        let mut c = Config::load_classic_with_profile(Some(profile)).unwrap();
-        assert_eq!(m.prompt_data_with(&c).unwrap().custom["last-move"], "");
-        c.system.content = "BEGIN".into();
-        c.system.user_prompt =
-            "QUESTION {{#if last-move}}{{last-move}}{{else}}none{{/if}} {{fen}} {{ascii}}".into();
-        c.system.post_history = "POST {{last-move}}".into();
+        let mut m = Match::new(Variant::Classic, Color::Black);
+        let c = Config::load_classic_with_profile(Some(profile)).unwrap();
         m.accept_human("e2e4").unwrap();
         let data = m.prompt_data_with(&c).unwrap();
-        assert_eq!(data.custom["last-move"], "e4");
+        let template: prompt_core::SystemPromptTemplate = serde_json::from_value(serde_json::json!({
+            "name":"test","content":"BEGIN","user_prompt":"QUESTION {{last-move}} {{fen}} {{ascii}}","post_history":""
+        })).unwrap();
+        let chat = PromptBuilder::new()
+            .build_chat(&c.context, &template, &data)
+            .unwrap();
+        assert_eq!(chat[0].role, ChatRole::System);
+        assert_eq!(chat.last().unwrap().role, ChatRole::User);
+        assert!(chat.last().unwrap().content.contains("QUESTION e4"));
+        assert!(
+            chat.last()
+                .unwrap()
+                .content
+                .contains(&m.game.position().to_fen())
+        );
         assert_eq!(data.messages.len(), usize::from(profile == "with-history"));
-        c.instruct.input_sequence = "[USER]".into();
-        c.instruct.wrap = false;
-        c.instruct.last_input_sequence = "[LAST USER]".into();
-        c.instruct.system_sequence = "[SYSTEM]".into();
-        c.instruct.system_same_as_user = false;
-        let text = PromptBuilder::new()
-            .build(&c.context, &c.instruct, &c.system, &data)
-            .unwrap()
-            .text;
-        assert!(text.contains("[LAST USER]QUESTION e4"), "{text}");
-        assert!(text.find("QUESTION e4").unwrap() < text.find("[SYSTEM]POST e4").unwrap());
-        assert!(text.contains(&m.game.position().to_fen()));
         assert_eq!(m.uci_history(), ["e2e4"]);
-        m = Match::new(Variant::Classic, Color::Black);
     }
-    let a = Config::load_classic_with_profile(Some("with-history")).unwrap();
-    let b = Config::load_classic_with_profile(Some("no-history")).unwrap();
-    assert_eq!(
-        serde_json::to_value(a.system).unwrap(),
-        serde_json::to_value(b.system).unwrap()
-    );
 }
 
 #[test]
@@ -161,8 +151,7 @@ fn classic_history_and_directives_are_engine_derived_and_separate() {
     assert_eq!(m.uci_history(), ["e2e4", "e7e5", "g1f3", "b8c6"]);
     assert!(m.wrong_moves().is_empty());
     for (name, show) in [("with-history", true), ("no-history", false)] {
-        let mut c = Config::load_classic_with_profile(Some(name)).unwrap();
-        c.pipeline_mode = pipeline::two_stage::PipelineMode::SingleStage;
+        let c = Config::load_classic_with_profile(Some(name)).unwrap();
         let data = m.prompt_data_with(&c).unwrap();
         assert_eq!(data.custom["fen"], m.game.position().to_fen());
         assert_eq!(
@@ -171,7 +160,12 @@ fn classic_history_and_directives_are_engine_derived_and_separate() {
         );
         assert_eq!(data.custom["classic-san-history"], m.classic_san_history());
         let built = prompt_core::BuiltPrompt {
-            text: crate::pipeline::preview(&m, &c).unwrap(),
+            text: serde_json::to_string(
+                &PromptBuilder::new()
+                    .build_chat(&c.context, &c.pipeline.proposer, &data)
+                    .unwrap(),
+            )
+            .unwrap(),
             stop_sequences: Vec::new(),
         };
         assert_eq!(data.messages.len(), if show { 4 } else { 0 });

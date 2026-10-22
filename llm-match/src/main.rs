@@ -12,12 +12,14 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let mut endpoint = None;
-    let mut variant = Variant::Gothic;
+    let mut variant = Variant::Classic;
     let mut human = Color::White;
     let mut print_prompt = false;
     let mut replay = String::new();
     let mut moves_format = String::from("uci");
     let mut initial_fen = None;
+    let mut stage: Option<llm_match::pipeline::Stage> = None;
+    let mut inputs = llm_match::pipeline::debug::Inputs::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -26,6 +28,22 @@ async fn main() -> Result<()> {
             }
             s if s.starts_with("--llm-profile=") || s.starts_with("--llm-classic-profile=") => {}
             "--print-prompt" => print_prompt = true,
+            "--stage" => stage = Some(args.next().context("missing stage name")?.parse()?),
+            "--analysis-file" => {
+                inputs.analysis = Some(std::fs::read_to_string(
+                    args.next().context("missing analysis file")?,
+                )?)
+            }
+            "--candidate-file" => {
+                inputs.candidate = Some(serde_json::from_str(&std::fs::read_to_string(
+                    args.next().context("missing candidate file")?,
+                )?)?)
+            }
+            "--accepted-candidates-file" => {
+                inputs.accepted_candidates = Some(serde_json::from_str(&std::fs::read_to_string(
+                    args.next().context("missing accepted candidates file")?,
+                )?)?)
+            }
             "--fen" => initial_fen = Some(args.next().context("missing quoted initial FEN")?),
             s if s.starts_with("--fen=") => initial_fen = Some(s[6..].to_owned()),
             "--moves" => replay = args.next().context("missing quoted move history")?,
@@ -43,6 +61,9 @@ async fn main() -> Result<()> {
                 variant = Variant::ALL.into_iter().find(|v| format!("{v:?}").to_ascii_lowercase() == name).context("unknown variant (use Gothic, Embassy, Grand, Shako, Pemba, TerachessII, etc.)")?;
             }
             "--help" => {
+                println!(
+                    "Stage debug: --stage grounder|proposer|verifier|selector [--analysis-file facts.txt] [--candidate-file candidate.json] [--accepted-candidates-file accepted.json]. Runs only the chosen stage, without committing a move. --print-prompt previews it offline. Default variant: Classic."
+                );
                 println!(
                     "llm-match [--variant Classic|Gothic|Embassy|Grand|Shako|Pemba|TerachessII] [--black] [--url http://aistation:5001] [--llm-profile NAME] [--llm-classic-profile with-history|no-history] [--fen 'FEN'] [--print-prompt] [--moves 'e2e4 e7e5']\nEnter a UCI move, or quit. Defaults come from llm-match/.env. Classic chess uses its separate SAN configuration."
                 );
@@ -93,6 +114,21 @@ async fn main() -> Result<()> {
             game.accept_model(mv)?;
         }
     }
+    if let Some(stage) = stage {
+        let result = if print_prompt {
+            llm_match::pipeline::debug::preview(&game, &config, stage, &inputs)?
+        } else {
+            llm_match::pipeline::debug::run(&game, &config, stage, &inputs).await?
+        };
+        println!("{result}");
+        return Ok(());
+    }
+    anyhow::ensure!(
+        inputs.analysis.is_none()
+            && inputs.candidate.is_none()
+            && inputs.accepted_candidates.is_none(),
+        "stage input files require --stage"
+    );
     if print_prompt {
         println!("{}", llm_match::pipeline::preview(&game, &config)?);
         return Ok(());

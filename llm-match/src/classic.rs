@@ -1,7 +1,7 @@
-//! Isolated orthodox-chess configuration; fairy representation profiles are untouched.
+//! Classic SAN history and prompt data. No fairy profiles or move formats.
 use anyhow::{Context, Result};
 use capablanca_chess_plus::{Color, Position};
-use prompt_core::{PromptData, PromptMessage, PromptRole, SystemPromptTemplate};
+use prompt_core::{PromptData, PromptMessage, PromptRole};
 use serde::Deserialize;
 use serde_json::json;
 use std::{collections::BTreeMap, path::Path};
@@ -10,14 +10,11 @@ use std::{collections::BTreeMap, path::Path};
 pub struct ClassicConfig {
     pub name: String,
     pub include_history: bool,
-    pub system: SystemPromptTemplate,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Profiles {
     active_profile: String,
-    #[serde(default, rename = "system_template")]
-    _legacy_system_template: Option<String>,
     profiles: BTreeMap<String, Profile>,
 }
 #[derive(Deserialize)]
@@ -26,11 +23,7 @@ struct Profile {
     include_history: bool,
 }
 impl ClassicConfig {
-    pub(crate) fn load(
-        path: &Path,
-        selected: Option<&str>,
-        system: SystemPromptTemplate,
-    ) -> Result<Self> {
+    pub(crate) fn load(path: &Path, selected: Option<&str>) -> Result<Self> {
         let file: Profiles = toml::from_str(
             &std::fs::read_to_string(path)
                 .with_context(|| format!("cannot read {}", path.display()))?,
@@ -43,7 +36,6 @@ impl ClassicConfig {
         Ok(Self {
             name: name.into(),
             include_history: profile.include_history,
-            system,
         })
     }
 }

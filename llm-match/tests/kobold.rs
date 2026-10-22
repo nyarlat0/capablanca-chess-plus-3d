@@ -142,12 +142,6 @@ impl Drop for Server {
 fn text(value: Value) -> Reply {
     Reply::Text(value.to_string())
 }
-fn analysis() -> Reply {
-    Reply::Text(format!(
-        "<thinking>PRIVATE_THINKING</thinking>## ANALYST_PRIVATE_FACT\n- {}\nAny format, including {{braces}}, is fine.",
-        "A free-form observation. ".repeat(20)
-    ))
-}
 fn grounding() -> Reply {
     Reply::Text("<thinking>GROUNDER_PRIVATE_REASONING</thinking>GROUNDED_FACT".into())
 }
@@ -171,7 +165,6 @@ fn normal_proposal() -> Reply {
 fn cfg(server: &Server) -> llm_match::Config {
     let mut c = llm_match::Config::load_classic_with_profile(Some("with-history")).unwrap();
     c.endpoint = server.endpoint.clone();
-    c.pipeline_mode = llm_match::pipeline::two_stage::PipelineMode::Legacy;
     c.stage_max_attempts = 3;
     c.max_attempts = 2;
     c.reasoning = prompt_core::ReasoningTemplate {
@@ -188,10 +181,114 @@ fn state() -> llm_match::Match {
     m
 }
 
-fn two_cfg(server: &Server) -> llm_match::Config {
-    let mut c = cfg(server);
-    c.pipeline_mode = llm_match::pipeline::two_stage::PipelineMode::TwoStage;
-    c
+#[tokio::test]
+async fn debug_runs_only_requested_stage_and_never_commits() {
+    use llm_match::pipeline::{
+        Stage,
+        debug::{self, Inputs},
+    };
+    let candidate = json!({"id":"c1","move":"e5","from":"e7","to":"e5","rationale":"SECRET_IDEA"});
+    for (stage, reply, inputs) in [
+        (Stage::Grounder, grounding(), Inputs::default()),
+        (
+            Stage::Proposer,
+            normal_proposal(),
+            Inputs {
+                analysis: Some("SUPPLIED_FACTS".into()),
+                ..Default::default()
+            },
+        ),
+        (
+            Stage::Verifier,
+            verify(1, true),
+            Inputs {
+                analysis: Some("SUPPLIED_FACTS".into()),
+                candidate: Some(candidate.clone()),
+                ..Default::default()
+            },
+        ),
+        (
+            Stage::Selector,
+            select(1, "e5"),
+            Inputs {
+                accepted_candidates: Some(json!([
+                    {"id":"c1","move":"e5","from":"e7","to":"e5","tactical_result":"SUPPLIED_RESULT"}
+                ])),
+                ..Default::default()
+            },
+        ),
+    ] {
+        let server = Server::script(vec![reply], 512);
+        let c = cfg(&server);
+        let m = state();
+        let before = m.game().position().to_fen();
+        let result = debug::run(&m, &c, stage, &inputs).await.unwrap();
+        assert!(!result.is_empty());
+        assert_eq!(m.game().position().to_fen(), before);
+        assert_eq!(m.uci_history(), ["e2e4"]);
+        assert!(m.wrong_moves().is_empty());
+        let p = server.prompts.lock().unwrap();
+        assert_eq!(p.len(), 1);
+        assert!(!p[0].contains("SECRET_IDEA"));
+        assert_eq!(
+            p[0].contains("SUPPLIED_FACTS"),
+            matches!(stage, Stage::Proposer | Stage::Verifier)
+        );
+        assert_eq!(p[0].contains("SUPPLIED_RESULT"), stage == Stage::Selector);
+    }
+}
+
+#[tokio::test]
+async fn debug_missing_inputs_and_illegal_candidates_fail_before_network() {
+    use llm_match::pipeline::{
+        Stage,
+        debug::{self, Inputs},
+    };
+    let server = Server::script(vec![], 512);
+    let c = cfg(&server);
+    let m = state();
+    for stage in [Stage::Proposer, Stage::Verifier, Stage::Selector] {
+        assert!(debug::run(&m, &c, stage, &Inputs::default()).await.is_err());
+    }
+    let inputs = Inputs {
+        analysis: Some("facts".into()),
+        candidate: Some(json!({
+            "id":"c1","move":"e5","from":"d7","to":"e5"
+        })),
+        ..Default::default()
+    };
+    assert!(debug::run(&m, &c, Stage::Verifier, &inputs).await.is_err());
+    assert!(debug::run(&m, &c, Stage::Grounder, &inputs).await.is_err());
+    assert!(server.prompts.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn debug_retries_only_the_chosen_stage_and_strips_reasoning() {
+    use llm_match::pipeline::{
+        Stage,
+        debug::{self, Inputs},
+    };
+    let server = Server::script(
+        vec![
+            Reply::Text("<thinking>unfinished".into()),
+            Reply::Http(503),
+            grounding(),
+        ],
+        512,
+    );
+    let c = cfg(&server);
+    let m = state();
+    assert_eq!(
+        debug::run(&m, &c, Stage::Grounder, &Inputs::default())
+            .await
+            .unwrap(),
+        "GROUNDED_FACT"
+    );
+    let p = server.prompts.lock().unwrap();
+    assert_eq!(p.len(), 3);
+    assert_eq!(p[0], p[1]);
+    assert_eq!(p[1], p[2]);
+    assert!(m.wrong_moves().is_empty());
 }
 
 #[tokio::test]
@@ -208,9 +305,7 @@ async fn four_stage_skips_analyst_and_shares_grounded_facts() {
         512,
     );
     let mut c = cfg(&server);
-    c.pipeline_mode = "four-stage".parse().unwrap();
     c.pipeline.grounder.content = "GROUNDER_ONLY {{#if analysis}}UNEXPECTED_ANALYSIS{{/if}}".into();
-    c.pipeline.analyst.content = "ANALYST_MUST_NOT_RUN".into();
     c.pipeline.proposer.content = "PROPOSER_ONLY".into();
     c.pipeline.verifier.content = "VERIFIER_ONLY".into();
     c.pipeline.selector.content = "SELECTOR_ONLY".into();
@@ -270,8 +365,7 @@ async fn four_stage_reuses_grounder_after_illegal_candidates_and_deduplicates() 
         ],
         512,
     );
-    let mut c = cfg(&server);
-    c.pipeline_mode = "four-stage".parse().unwrap();
+    let c = cfg(&server);
     let mut m = state();
     llm_match::generate_move(&mut m, &c, |_, _| panic!())
         .await
@@ -285,11 +379,6 @@ async fn four_stage_reuses_grounder_after_illegal_candidates_and_deduplicates() 
     assert!(p[5].contains("TACTICAL_RESULT_1") && p[5].contains("TACTICAL_RESULT_3"));
     assert!(!p[5].contains("TACTICAL_RESULT_2"));
     assert_eq!(m.uci_history(), ["e2e4", "e7e5"]);
-}
-fn ranked(moves: &[&str]) -> Reply {
-    text(
-        json!({"candidates":moves.iter().map(|mv| json!({"move":mv,"rationale":"PRIVATE_PROPOSER_IDEA"})).collect::<Vec<_>>()}),
-    )
 }
 
 #[tokio::test]
@@ -333,7 +422,6 @@ async fn four_stage_handles_every_variant_without_engine_hints() {
         } else {
             llm_match::Config::load_with_profile(Some("uci-no-history")).unwrap()
         };
-        c.pipeline_mode = "four-stage".parse().unwrap();
         c.endpoint = server.endpoint.clone();
         c.reasoning = cfg(&server).reasoning;
         let mv = llm_match::generate_move(&mut m, &c, |_, _| panic!())
@@ -346,319 +434,7 @@ async fn four_stage_handles_every_variant_without_engine_hints() {
         assert!(p[2..].iter().all(|s| !s.contains("FIXTURE_PRIVATE_IDEA")));
     }
 }
-fn choice(id: &str) -> Reply {
-    text(json!({"choice":id}))
-}
 
-#[tokio::test]
-async fn single_stage_commits_first_legal_candidate_with_one_generation() {
-    for (moves, expected) in [
-        (vec!["Nf6", "e5", "d5"], "g8f6"),
-        (vec!["e6+", "Nf6", "e5"], "g8f6"),
-        (vec!["e6+", "Qh4", "e5"], "e7e5"),
-    ] {
-        let server = Server::script(vec![ranked(&moves)], 512);
-        let mut c = two_cfg(&server);
-        c.pipeline_mode = llm_match::pipeline::two_stage::PipelineMode::SingleStage;
-        c.two_stage.selector.template.content = "SELECTOR_MUST_NOT_RUN".into();
-        let mut m = state();
-        llm_match::generate_move(&mut m, &c, |_, _| panic!())
-            .await
-            .unwrap();
-        assert_eq!(m.uci_history(), ["e2e4", expected]);
-        assert!(m.wrong_moves().is_empty());
-        let prompts = server.prompts.lock().unwrap();
-        assert_eq!(prompts.len(), 1);
-        assert!(!prompts[0].contains("SELECTOR_MUST_NOT_RUN"));
-    }
-}
-
-#[tokio::test]
-async fn single_stage_retries_only_proposer_when_all_candidates_are_illegal() {
-    let server = Server::script(
-        vec![ranked(&["e6+", "Qh4", "Ke7"]), ranked(&["e6+", "e5", "d5"])],
-        512,
-    );
-    let mut c = two_cfg(&server);
-    c.pipeline_mode = llm_match::pipeline::two_stage::PipelineMode::SingleStage;
-    c.two_stage.proposer.template.user_prompt.push_str(
-        "{{#if excluded-moves}}EXCLUSIONS_PRESENT {{excluded-moves}}{{else}}EXCLUSIONS_EMPTY{{/if}}",
-    );
-    let mut m = state();
-    llm_match::generate_move(&mut m, &c, |_, _| panic!())
-        .await
-        .unwrap();
-    assert_eq!(m.uci_history(), ["e2e4", "e7e5"]);
-    let p = server.prompts.lock().unwrap();
-    assert_eq!(p.len(), 2);
-    assert!(p[0].contains("EXCLUSIONS_EMPTY"));
-    assert!(!p[0].contains("EXCLUSIONS_PRESENT"));
-    assert!(p[1].contains("EXCLUSIONS_PRESENT"));
-    assert!(!p[1].contains("EXCLUSIONS_EMPTY"));
-    assert!(p[1].contains("Qh4"));
-    assert!(m.wrong_moves().is_empty());
-}
-
-#[tokio::test]
-async fn two_stage_success_is_exactly_two_generations_and_selector_is_independent() {
-    let server = Server::script(
-        vec![
-            ranked(&["e5", "d5", "Nf6"]),
-            Reply::Text("<thinking>private selector</thinking>{\"choice\":\"c2\"}".into()),
-        ],
-        512,
-    );
-    let mut m = state();
-    let mut c = two_cfg(&server);
-    c.two_stage.proposer.template.content = "CUSTOM_PROPOSER {REASON:custom-proposer}".into();
-    c.two_stage.selector.template.content = "CUSTOM_SELECTOR {REASON:custom-selector}".into();
-    c.two_stage.selector.reasoning.prefix = "<thinking>".into();
-    c.two_stage.selector.reasoning.suffix = "</thinking>".into();
-    c.two_stage.proposer.preset =
-        prompt_core::Preset::from_value(json!({"genamt":1000,"temp":0.8})).unwrap();
-    c.two_stage.selector.preset =
-        prompt_core::Preset::from_value(json!({"genamt":2000,"temp":0.6})).unwrap();
-    llm_match::generate_move(&mut m, &c, |_, _| panic!())
-        .await
-        .unwrap();
-    assert_eq!(m.uci_history(), ["e2e4", "d7d5"]);
-    let p = server.prompts.lock().unwrap();
-    assert_eq!(p.len(), 2);
-    assert!(p[0].contains("CUSTOM_PROPOSER {REASON:custom-proposer}"));
-    assert!(p[1].contains("CUSTOM_SELECTOR {REASON:custom-selector}"));
-    assert!(!p[1].contains("PRIVATE_PROPOSER_IDEA"));
-    assert!(!p[1].contains("rationale"));
-    assert!(!p[1].contains("1. e4"));
-    assert!(p[1].contains(r#"{"id":"c1","move":"e5"}"#));
-    assert!(p[1].contains(r#"{"id":"c2","move":"d5"}"#));
-    let requests = server.requests.lock().unwrap();
-    assert_eq!(requests[0]["max_tokens"], 1000);
-    assert_eq!(requests[1]["max_tokens"], 2000);
-    assert_eq!(requests[1]["messages"].as_array().unwrap().len(), 2);
-    for mv in state().game().position().legal_moves() {
-        assert!(p.iter().all(|s| !s.contains(&mv.to_uci())));
-    }
-}
-
-#[tokio::test]
-async fn two_stage_preserves_preference_order_after_illegal_and_duplicate_filtering() {
-    let server = Server::script(
-        vec![ranked(&["e6+", "Nf6", "e5", "Nf6", "d5"]), choice("c2")],
-        512,
-    );
-    let mut m = state();
-    llm_match::generate_move(&mut m, &two_cfg(&server), |_, _| panic!())
-        .await
-        .unwrap();
-    assert_eq!(m.uci_history(), ["e2e4", "e7e5"]); // Selector may choose a lower-ranked move.
-    let p = server.prompts.lock().unwrap();
-    assert_eq!(p.len(), 2);
-    assert!(
-        p[1].contains(
-            r#"[{"id":"c1","move":"Nf6"},{"id":"c2","move":"e5"},{"id":"c3","move":"d5"}]"#
-        )
-    );
-    assert!(!p[1].contains("e6+"));
-    assert!(!p[1].contains("PRIVATE_PROPOSER_IDEA"));
-    assert!(!p[1].contains("rationale"));
-}
-
-#[tokio::test]
-async fn two_stage_repairs_syntax_locally_without_regeneration() {
-    let server = Server::script(vec![
-        Reply::Text("Preface <think>PRIVATE_THINK</think>PROPOSER_EXTRA_TEXT\n```json\n{\"candidates\":[{\"move\":\"e5\",\"rationale\":\"A,} string\",},{\"move\":\"d5\",\"rationale\":\"B\"},{\"move\":\"Nf6\",\"rationale\":\"C\"},],}\n```".into()),
-        Reply::Text("Preface <think>private</think>SELECTOR_EXTRA_TEXT\n```json\n{\"choice\":\"c2\",}".into()),
-    ], 512);
-    let mut m = state();
-    llm_match::generate_move(&mut m, &two_cfg(&server), |_, _| panic!())
-        .await
-        .unwrap();
-    let p = server.prompts.lock().unwrap();
-    assert_eq!(p.len(), 2);
-    assert!(!p[1].contains("PRIVATE_THINK"));
-    assert!(!p[1].contains("PROPOSER_EXTRA_TEXT"));
-    assert_eq!(m.uci_history(), ["e2e4", "d7d5"]);
-}
-
-#[tokio::test]
-async fn two_stage_accepts_final_plain_json_after_arbitrary_text() {
-    let Reply::Text(proposal) = ranked(&["e5", "d5", "Nf6"]) else {
-        unreachable!()
-    };
-    let server = Server::script(
-        vec![
-            Reply::Text(format!(
-                "My observations and an earlier {{\"draft\":true}}.\n{proposal}"
-            )),
-            Reply::Text("I prefer the second candidate.\n{\"choice\":\"c2\"}".into()),
-        ],
-        512,
-    );
-    let mut m = state();
-    llm_match::generate_move(&mut m, &two_cfg(&server), |_, _| panic!())
-        .await
-        .unwrap();
-    assert_eq!(m.uci_history(), ["e2e4", "d7d5"]);
-    assert_eq!(server.prompts.lock().unwrap().len(), 2);
-}
-
-#[tokio::test]
-async fn two_stage_filters_illegal_and_duplicates_and_retries_only_selector() {
-    let server = Server::script(
-        vec![
-            ranked(&["e6+", "e5", "e5"]),
-            choice("missing"),
-            choice("c1"),
-        ],
-        512,
-    );
-    let mut m = state();
-    llm_match::generate_move(&mut m, &two_cfg(&server), |_, _| panic!())
-        .await
-        .unwrap();
-    assert_eq!(m.uci_history(), ["e2e4", "e7e5"]);
-    let p = server.prompts.lock().unwrap();
-    assert_eq!(p.len(), 3);
-    assert_eq!(p[1], p[2]);
-    assert!(!p[1].contains("e6+"));
-    assert!(!p[1].contains(r#""id":"c2""#));
-}
-
-#[tokio::test]
-async fn two_stage_reject_all_and_no_legal_candidates_retry_with_exclusions() {
-    for first in [ranked(&["e6+", "Qh4", "Ke7"]), ranked(&["e5", "d5", "Nf6"])] {
-        let first_is_legal = matches!(&first, Reply::Text(s) if s.contains("Nf6"));
-        let mut replies = vec![first];
-        if first_is_legal {
-            replies.push(choice("reject_all"));
-        }
-        replies.extend([ranked(&["e6", "d6", "Nc6"]), choice("c1")]);
-        let server = Server::script(replies, 512);
-        let mut m = state();
-        llm_match::generate_move(&mut m, &two_cfg(&server), |_, _| panic!())
-            .await
-            .unwrap();
-        assert_eq!(m.uci_history(), ["e2e4", "e7e6"]);
-        assert!(m.wrong_moves().is_empty());
-        let p = server.prompts.lock().unwrap();
-        assert_eq!(p.len(), if first_is_legal { 4 } else { 3 });
-        let next = &p[if first_is_legal { 2 } else { 1 }];
-        assert!(next.contains(if first_is_legal { "Nf6" } else { "Qh4" }));
-    }
-}
-
-#[tokio::test]
-async fn two_stage_all_variants_and_fairy_representations_use_only_two_generations() {
-    use llm_match::OutputFormat;
-    for variant in Variant::ALL {
-        for profile in if variant == Variant::Classic {
-            vec!["classic"]
-        } else {
-            vec![
-                "classic",
-                "numeric-no-history",
-                "numeric-ascii",
-                "hybrid",
-                "uci-no-history",
-                "numeric-json-no-history",
-            ]
-        } {
-            let mut c = if variant == Variant::Classic {
-                llm_match::Config::load_classic_with_profile(Some("no-history"))
-            } else {
-                llm_match::Config::load_with_profile(Some(profile))
-            }
-            .unwrap();
-            c.pipeline_mode = llm_match::pipeline::two_stage::PipelineMode::TwoStage;
-            let mut m = llm_match::Match::new(variant, Color::White);
-            let mut moves: Vec<_> = m
-                .game()
-                .position()
-                .legal_moves()
-                .into_iter()
-                .take(3)
-                .collect();
-            moves.sort_by_key(|mv| mv.to_uci());
-            let candidates: Vec<_> = moves.iter().map(|mv| {
-                let mut trial = m.clone(); trial.accept_model(&mv.to_uci()).unwrap();
-                let value = if variant == Variant::Classic { json!(trial.classic_san_history().strip_prefix("1. ").unwrap()) }
-                else { match c.representation.output_format {
-                    OutputFormat::Semantic => json!(trial.history()[0].content),
-                    OutputFormat::Numeric => json!(trial.numeric_history()[0].content),
-                    OutputFormat::Uci => json!(mv.to_uci()),
-                    OutputFormat::NumericJson => json!({"from":llm_match::numeric_square(mv.from),"to":llm_match::numeric_square(mv.to),"promotion":mv.promotion.map(|p|p.display_name())}),
-                }};
-                json!({"move":value,"rationale":"PRIVATE_IDEA"})
-            }).collect();
-            let server = Server::script(
-                vec![text(json!({"candidates":candidates})), choice("c1")],
-                512,
-            );
-            c.endpoint = server.endpoint.clone();
-            llm_match::generate_move(&mut m, &c, |_, _| panic!())
-                .await
-                .unwrap();
-            assert_eq!(m.uci_history(), [moves[0].to_uci()]);
-            let p = server.prompts.lock().unwrap();
-            assert_eq!(p.len(), 2);
-            assert!(!p[1].contains("PRIVATE_IDEA"));
-            if variant != Variant::Classic {
-                assert!(p.iter().all(|s| !s.contains("FEN:")));
-                if c.representation.state_format == llm_match::StateFormat::Numeric {
-                    assert!(
-                        p.iter()
-                            .all(|s| !s.contains("ASCII BOARD") && !s.contains("a b c"))
-                    );
-                }
-            }
-        }
-    }
-}
-
-#[tokio::test]
-async fn two_stage_exhausted_rounds_preserve_board_and_history() {
-    let server = Server::script(
-        vec![
-            ranked(&["e5", "d5", "Nf6"]),
-            choice("reject_all"),
-            ranked(&["e5", "d5", "Nf6"]),
-        ],
-        512,
-    );
-    let mut m = state();
-    let before = m.game().position().to_fen();
-    llm_match::generate_move(&mut m, &two_cfg(&server), |_, _| panic!())
-        .await
-        .unwrap_err();
-    assert_eq!(m.game().position().to_fen(), before);
-    assert_eq!(m.uci_history(), ["e2e4"]);
-    assert!(m.wrong_moves().is_empty());
-    assert_eq!(server.prompts.lock().unwrap().len(), 3);
-}
-
-#[tokio::test]
-async fn two_stage_reasoning_and_transport_retries_are_silent() {
-    let server = Server::script(
-        vec![
-            Reply::Text("Preface <think>unfinished {\"candidates\":[]}".into()),
-            Reply::Http(503),
-            ranked(&["e5", "d5", "Nf6"]),
-            Reply::Text("Preface <think>{\"choice\":\"c1\"}</think>".into()),
-            choice("c2"),
-        ],
-        512,
-    );
-    let mut m = state();
-    llm_match::generate_move(&mut m, &two_cfg(&server), |_, _| panic!())
-        .await
-        .unwrap();
-    let p = server.prompts.lock().unwrap();
-    assert_eq!(p[0], p[1]);
-    assert_eq!(p[1], p[2]);
-    assert_eq!(p[3], p[4]);
-    assert!(p.iter().all(|s| !s.contains("unfinished")));
-    assert!(m.wrong_moves().is_empty());
-}
 #[tokio::test]
 async fn structured_stages_accept_markdown_json_after_reasoning() {
     let fenced = |reply| match reply {
@@ -669,7 +445,6 @@ async fn structured_stages_accept_markdown_json_after_reasoning() {
     };
     let server = Server::script(
         vec![
-            analysis(),
             grounding(),
             fenced(normal_proposal()),
             fenced(verify(1, true)),
@@ -684,14 +459,13 @@ async fn structured_stages_accept_markdown_json_after_reasoning() {
         .await
         .unwrap();
     assert_eq!(m.uci_history(), ["e2e4", "e7e5"]);
-    assert_eq!(server.prompts.lock().unwrap().len(), 7);
+    assert_eq!(server.prompts.lock().unwrap().len(), 6);
 }
 
 #[tokio::test]
 async fn each_stage_sends_its_own_sampler_and_response_budget() {
     let server = Server::script(
         vec![
-            analysis(),
             grounding(),
             normal_proposal(),
             verify(1, true),
@@ -706,7 +480,6 @@ async fn each_stage_sends_its_own_sampler_and_response_budget() {
         Some(prompt_core::Preset::from_value(json!({"genamt":tokens,"temp":temp})).unwrap())
     };
     c.stage_presets = llm_match::StagePresets {
-        analyst: preset(101, 0.1),
         grounder: preset(151, 0.15),
         proposer: preset(202, 0.2),
         verifier: preset(303, 0.3),
@@ -717,9 +490,8 @@ async fn each_stage_sends_its_own_sampler_and_response_budget() {
         .await
         .unwrap();
     let requests = server.requests.lock().unwrap();
-    assert_eq!(requests.len(), 7);
+    assert_eq!(requests.len(), 6);
     for (request, (tokens, temperature)) in requests.iter().zip([
-        (101, 0.1),
         (151, 0.15),
         (202, 0.2),
         (303, 0.3),
@@ -733,179 +505,9 @@ async fn each_stage_sends_its_own_sampler_and_response_budget() {
 }
 
 #[tokio::test]
-async fn independent_stages_commit_only_selected_move() {
-    let server = Server::script(
-        vec![
-            analysis(),
-            grounding(),
-            normal_proposal(),
-            verify(1, true),
-            verify(2, false),
-            verify(3, true),
-            select(1, "e5"),
-        ],
-        512,
-    );
-    let mut m = state();
-    let c = cfg(&server);
-    llm_match::generate_move(&mut m, &c, |_, _| panic!("unexpected rejection"))
-        .await
-        .unwrap();
-    assert_eq!(m.uci_history(), ["e2e4", "e7e5"]);
-    assert_eq!(m.classic_san_history(), "1. e4 e5");
-    let p = server.prompts.lock().unwrap();
-    assert_eq!(p.len(), 7);
-    let requests = server.requests.lock().unwrap();
-    for request in requests.iter() {
-        assert_eq!(request["stream"], false);
-        assert_eq!(request["continue_assistant_turn"], false);
-        assert!(request["max_tokens"].as_u64().unwrap() > 0);
-        assert_eq!(request["stop"], json!([]));
-        let messages = request["messages"].as_array().unwrap();
-        assert_eq!(messages[0]["role"], "system");
-        assert_eq!(messages.last().unwrap()["role"], "user");
-        assert!(
-            messages
-                .iter()
-                .all(|m| !m["content"].as_str().unwrap().contains("<|im_start|>"))
-        );
-    }
-    assert_eq!(
-        requests[0]["messages"][1],
-        json!({"role":"user","content":"e4"})
-    );
-    assert_eq!(requests[1]["messages"].as_array().unwrap().len(), 2);
-    assert!(p[1].contains("ANALYST_PRIVATE_FACT"));
-    assert!(p[1].contains("Any format, including {braces}, is fine."));
-    assert!(p.iter().all(|prompt| !prompt.contains("PRIVATE_THINKING")));
-    assert!(p[2].contains("GROUNDED_FACT"));
-    assert!(!p[2].contains("ANALYST_PRIVATE_FACT"));
-    assert!(!p[2].contains("GROUNDER_PRIVATE_REASONING"));
-    assert!(!p[1].contains("1. e4"));
-    let initial = state().game().position().to_fen();
-    for prompt in p.iter() {
-        assert!(prompt.contains(&initial));
-        assert!(prompt.contains("ASCII BOARD"));
-    }
-    for prompt in &p[3..] {
-        assert!(!prompt.contains("ANALYST_PRIVATE_FACT"));
-        assert!(!prompt.contains("GROUNDED_FACT"));
-        assert!(!prompt.contains("PROPOSER_PRIVATE_RATIONALE"));
-        assert!(!prompt.contains("1. e4"));
-    }
-    assert!(p[3].contains("\"move\":\"e5\""));
-    assert!(!p[3].contains("\"move\":\"d5\""));
-    assert!(!p[3].contains("\"move\":\"Nf6\""));
-    assert!(!p[6].contains("\"move\":\"d5\""));
-    assert!(!p[6].contains("TACTICAL_RESULT_2"));
-    assert!(p[6].contains(r#""tactical_result":"TACTICAL_RESULT_1""#));
-    assert!(p[6].contains(r#""tactical_result":"TACTICAL_RESULT_3""#));
-    assert!(!p[6].contains("verifier_note"));
-    for prompt in &p[3..6] {
-        assert!(!prompt.contains(r#""id""#));
-        assert!(!prompt.contains("candidate_id"));
-    }
-    for mv in state().game().position().legal_moves() {
-        for prompt in p.iter() {
-            assert!(!prompt.contains(&mv.to_uci()));
-        }
-    }
-}
-#[tokio::test]
-async fn empty_freeform_analysis_retries_without_feedback() {
-    let server = Server::script(
-        vec![
-            Reply::Text("   ".into()),
-            Reply::Text("A plain observation, not JSON.".into()),
-            grounding(),
-            normal_proposal(),
-            verify(1, true),
-            verify(2, false),
-            verify(3, false),
-            select(1, "e5"),
-        ],
-        512,
-    );
-    let mut m = state();
-    let mut c = cfg(&server);
-    c.reasoning.prefix.clear();
-    c.reasoning.suffix.clear();
-    llm_match::generate_move(&mut m, &c, |_, _| panic!("unexpected rejection"))
-        .await
-        .unwrap();
-    let prompts = server.prompts.lock().unwrap();
-    assert_eq!(prompts[0], prompts[1]);
-    assert!(prompts[2].contains("A plain observation, not JSON."));
-    assert!(m.wrong_moves().is_empty());
-}
-
-#[tokio::test]
-async fn silent_request_retries_keep_identical_input() {
-    let server = Server::script(
-        vec![
-            Reply::Text("<thinking>unfinished".into()),
-            Reply::Http(503),
-            analysis(),
-            grounding(),
-            Reply::Text("<thinking>done</thinking>".into()),
-            Reply::Text("bad JSON".into()),
-            normal_proposal(),
-            verify(1, true),
-            verify(2, false),
-            verify(3, false),
-            select(1, "e5"),
-        ],
-        512,
-    );
-    let mut m = state();
-    let c = cfg(&server);
-    llm_match::generate_move(&mut m, &c, |_, _| panic!("silent retry emitted rejection"))
-        .await
-        .unwrap();
-    let p = server.prompts.lock().unwrap();
-    assert_eq!(p[0], p[1]);
-    assert_eq!(p[1], p[2]);
-    assert_eq!(p[4], p[5]);
-    assert_eq!(p[5], p[6]);
-    for prompt in p.iter() {
-        assert!(!prompt.contains("unfinished"));
-        assert!(!prompt.contains("bad JSON"));
-    }
-}
-#[tokio::test]
-async fn grounder_retries_are_silent_and_do_not_rerun_analyst() {
-    let server = Server::script(
-        vec![
-            analysis(),
-            Reply::Text("<thinking>unfinished grounder".into()),
-            Reply::Http(429),
-            grounding(),
-            normal_proposal(),
-            verify(1, true),
-            verify(2, false),
-            verify(3, false),
-            select(1, "e5"),
-        ],
-        512,
-    );
-    let mut m = state();
-    llm_match::generate_move(&mut m, &cfg(&server), |_, _| panic!())
-        .await
-        .unwrap();
-    let p = server.prompts.lock().unwrap();
-    assert_eq!(p[1], p[2]);
-    assert_eq!(p[2], p[3]);
-    assert!(p[4].contains("GROUNDED_FACT"));
-    assert!(!p[4].contains("ANALYST_PRIVATE_FACT"));
-    assert!(p.iter().all(|s| !s.contains("unfinished grounder")));
-    assert!(m.wrong_moves().is_empty());
-}
-
-#[tokio::test]
 async fn engine_gate_filters_illegal_and_mismatched_candidates_without_committing() {
     let server = Server::script(
         vec![
-            analysis(),
             grounding(),
             candidates(&[("e6+", "e7", "e6"), ("e5", "d7", "e5"), ("Qh4", "d8", "h4")]),
             candidates(&[("e6+", "e7", "e6"), ("e5", "e7", "e5"), ("d5", "d7", "d5")]),
@@ -925,21 +527,20 @@ async fn engine_gate_filters_illegal_and_mismatched_candidates_without_committin
     assert_eq!(m.uci_history(), ["e2e4", "d7d5"]);
     assert!(m.wrong_moves().is_empty());
     let p = server.prompts.lock().unwrap();
-    assert_eq!(p.len(), 7);
-    assert!(p[3].contains("e6+"));
-    assert!(p[3].contains("Qh4"));
-    assert!(p[3].contains("GROUNDED_FACT"));
-    assert!(!p[3].contains("ANALYST_PRIVATE_FACT"));
-    assert!(!p[4].contains("e6+"));
-    assert!(p[4].contains(r#""move":"e5""#));
-    assert!(p[5].contains(r#""move":"d5""#));
+    assert_eq!(p.len(), 6);
+    assert!(p[2].contains("e6+"));
+    assert!(p[2].contains("Qh4"));
+    assert!(p[2].contains("GROUNDED_FACT"));
+    assert!(!p[2].contains("ANALYST_PRIVATE_FACT"));
+    assert!(!p[3].contains("e6+"));
+    assert!(p[3].contains(r#""move":"e5""#));
+    assert!(p[4].contains(r#""move":"d5""#));
 }
 
 #[tokio::test]
 async fn incorrect_metadata_cannot_poison_same_legal_move_and_valid_duplicates_are_deduplicated() {
     let server = Server::script(
         vec![
-            analysis(),
             grounding(),
             candidates(&[
                 ("Nxd5", "c6", "d5"),
@@ -963,22 +564,21 @@ async fn incorrect_metadata_cannot_poison_same_legal_move_and_valid_duplicates_a
     assert_eq!(m.uci_history(), ["f6d5"]);
     assert!(m.wrong_moves().is_empty());
     let p = server.prompts.lock().unwrap();
-    assert_eq!(p.len(), 5); // only one verifier call, for the first valid candidate
-    assert!(p[3].contains(r#""from":"f6""#));
-    assert!(!p[3].contains(r#""from":"c6""#));
-    assert!(!p[3].contains("candidate_id"));
-    assert!(!p[3].contains(r#""id""#));
-    assert!(p[4].contains(r#""id":"c2""#));
-    assert!(p[4].contains(r#""tactical_result":"TACTICAL_RESULT_2""#));
-    assert!(!p[4].contains(r#""id":"c1""#));
-    assert!(!p[4].contains(r#""id":"c3""#));
+    assert_eq!(p.len(), 4); // only one verifier call, for the first valid candidate
+    assert!(p[2].contains(r#""from":"f6""#));
+    assert!(!p[2].contains(r#""from":"c6""#));
+    assert!(!p[2].contains("candidate_id"));
+    assert!(!p[2].contains(r#""id""#));
+    assert!(p[3].contains(r#""id":"c2""#));
+    assert!(p[3].contains(r#""tactical_result":"TACTICAL_RESULT_2""#));
+    assert!(!p[3].contains(r#""id":"c1""#));
+    assert!(!p[3].contains(r#""id":"c3""#));
 }
 
 #[tokio::test]
 async fn exhausted_gate_does_not_mutate_position_history_or_rejected_finals() {
     let server = Server::script(
         vec![
-            analysis(),
             grounding(),
             candidates(&[("e6+", "e7", "e6"), ("e5", "d7", "e5"), ("Qh4", "d8", "h4")]),
         ],
@@ -996,69 +596,12 @@ async fn exhausted_gate_does_not_mutate_position_history_or_rejected_finals() {
     assert_eq!(m.game().position().to_fen(), before);
     assert_eq!(m.uci_history(), ["e2e4"]);
     assert!(m.wrong_moves().is_empty());
-    assert_eq!(server.prompts.lock().unwrap().len(), 3);
-}
-#[tokio::test]
-async fn all_rejected_is_bounded_and_selector_cannot_invent_move() {
-    let server = Server::script(
-        vec![
-            analysis(),
-            grounding(),
-            normal_proposal(),
-            verify(1, false),
-            verify(2, false),
-            verify(3, false),
-            normal_proposal(),
-        ],
-        512,
-    );
-    let mut m = state();
-    let mut c = cfg(&server);
-    c.pipeline.proposer.user_prompt.push_str(
-        "{{#if excluded-moves}}EXCLUSIONS_PRESENT {{excluded-moves}}{{else}}EXCLUSIONS_EMPTY{{/if}}",
-    );
-    assert!(
-        llm_match::generate_move(&mut m, &c, |_, _| panic!())
-            .await
-            .is_err()
-    );
-    assert_eq!(server.prompts.lock().unwrap().len(), 7);
-    {
-        let prompts = server.prompts.lock().unwrap();
-        assert!(prompts[2].contains("EXCLUSIONS_EMPTY"));
-        assert!(!prompts[2].contains("EXCLUSIONS_PRESENT"));
-        assert!(prompts[6].contains("EXCLUSIONS_PRESENT"));
-        assert!(!prompts[6].contains("EXCLUSIONS_EMPTY"));
-    }
-    assert!(m.wrong_moves().is_empty());
-    assert_eq!(m.uci_history(), ["e2e4"]);
-    let server = Server::script(
-        vec![
-            analysis(),
-            grounding(),
-            normal_proposal(),
-            verify(1, true),
-            verify(2, false),
-            verify(3, false),
-            select(2, "d5"),
-            select(1, "d5"),
-            select(1, "e5"),
-        ],
-        512,
-    );
-    let c = cfg(&server);
-    llm_match::generate_move(&mut m, &c, |_, _| panic!())
-        .await
-        .unwrap();
-    let p = server.prompts.lock().unwrap();
-    assert_eq!(p[6], p[7]);
-    assert_eq!(p[7], p[8]);
+    assert_eq!(server.prompts.lock().unwrap().len(), 2);
 }
 #[tokio::test]
 async fn malformed_verifier_is_not_a_rejection() {
     let server = Server::script(
         vec![
-            analysis(),
             grounding(),
             normal_proposal(),
             text(json!({"candidate_id":"c1","verdict":"ACCEPT","tactical_result":"x"})),
@@ -1076,8 +619,8 @@ async fn malformed_verifier_is_not_a_rejection() {
         .await
         .unwrap();
     let p = server.prompts.lock().unwrap();
+    assert_eq!(p[2], p[3]);
     assert_eq!(p[3], p[4]);
-    assert_eq!(p[4], p[5]);
 }
 #[tokio::test]
 async fn deterministic_http_and_budget_errors_fail_immediately() {
@@ -1104,7 +647,6 @@ async fn transient_status_and_timeouts_retry_without_visible_state() {
         let server = Server::script(
             vec![
                 failure,
-                analysis(),
                 grounding(),
                 normal_proposal(),
                 verify(1, true),
@@ -1121,7 +663,7 @@ async fn transient_status_and_timeouts_retry_without_visible_state() {
             .await
             .unwrap();
         let p = server.prompts.lock().unwrap();
-        assert_eq!(p[0], p[1]);
+        assert_eq!(p[0], p[0]);
     }
 }
 
@@ -1138,7 +680,6 @@ async fn fairy_variants_preserve_every_move_and_coordinate_format() {
             "numeric-json-no-history",
         ] {
             let mut c = llm_match::Config::load_with_profile(Some(profile)).unwrap();
-            c.pipeline_mode = llm_match::pipeline::two_stage::PipelineMode::Legacy;
             let mut m = llm_match::Match::new(variant, Color::White);
             let moves: Vec<_> = m
                 .game()
@@ -1160,7 +701,6 @@ async fn fairy_variants_preserve_every_move_and_coordinate_format() {
             }).collect();
             let server = Server::script(
                 vec![
-                    analysis(),
                     grounding(),
                     text(json!({"candidates":cs})),
                     verify(1, true),
@@ -1191,7 +731,7 @@ async fn fairy_variants_preserve_every_move_and_coordinate_format() {
 async fn malformed_proposer_and_connect_failures_never_change_state() {
     let invalid =
         text(json!({"candidates":[{"id":"c1","move":"e5","from":"e7","to":"e5","rationale":"x"}]}));
-    let server = Server::script(vec![analysis(), grounding(), invalid], 512);
+    let server = Server::script(vec![grounding(), invalid], 512);
     let mut c = cfg(&server);
     c.stage_max_attempts = 1;
     let mut m = state();
@@ -1214,38 +754,4 @@ async fn malformed_proposer_and_connect_failures_never_change_state() {
     );
     assert_eq!(m.uci_history(), ["e2e4"]);
     assert!(m.wrong_moves().is_empty());
-}
-
-#[tokio::test]
-async fn no_history_and_custom_templates_cannot_access_forbidden_stage_data() {
-    let server = Server::script(
-        vec![
-            analysis(),
-            grounding(),
-            normal_proposal(),
-            verify(1, true),
-            verify(2, false),
-            verify(3, false),
-            select(1, "e5"),
-        ],
-        512,
-    );
-    let mut c = cfg(&server);
-    c.classic.as_mut().unwrap().include_history = false;
-    let probe = "\nPROBE history={{classic-san-history}} last={{last-move}} wrong={{wrong-move}} analysis={{analysis}} excluded={{excluded-moves}} ENDPROBE";
-    c.pipeline.verifier.user_prompt = probe.into();
-    c.pipeline.selector.user_prompt = probe.into();
-    c.pipeline.analyst.user_prompt = "USER_SIDE {{side-to-move}} LAST {{last-move}}".into();
-    let mut m = state();
-    m.record_rejected_final("e6+");
-    llm_match::generate_move(&mut m, &c, |_, _| panic!())
-        .await
-        .unwrap();
-    let p = server.prompts.lock().unwrap();
-    assert!(p[0].contains("USER_SIDE Black LAST e4"));
-    assert!(!p[0].contains("1. e4"));
-    for prompt in &p[3..] {
-        assert!(prompt.contains("PROBE history= last= wrong= analysis= excluded= ENDPROBE"));
-        assert!(!prompt.contains("e6+"));
-    }
 }

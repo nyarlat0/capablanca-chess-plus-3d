@@ -1,6 +1,0 @@
-{
-    "name": "Artemis_think",
-    "prefix": "<|channel>thought\n<channel|><thinking>",
-    "suffix": "</thinking>",
-    "separator": "\n"
-}

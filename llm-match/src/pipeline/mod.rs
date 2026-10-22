@@ -1,6 +1,14 @@
 //! Independent, bounded LLM stages. No engine candidate generation is used here.
+mod legality;
+mod prompts;
 mod protocol;
-pub mod two_stage;
+use legality::{move_text, resolve_candidate, validate_candidate, validate_metadata};
+use prompts::request_template;
+pub(crate) use prompts::template;
+pub use prompts::{Templates, preview, prompt_data};
+mod transport;
+use transport::{request, request_parsed};
+pub mod debug;
 use crate::{Config, Match, OutputFormat, StateFormat, classic, output};
 use anyhow::{Context, Result, bail, ensure};
 use capablanca_chess_plus::{Move, Square};
@@ -12,87 +20,24 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::{collections::HashSet, path::Path, time::Duration};
 
-#[derive(Clone)]
-pub struct Templates {
-    pub analyst: SystemPromptTemplate,
-    pub grounder: SystemPromptTemplate,
-    pub proposer: SystemPromptTemplate,
-    pub verifier: SystemPromptTemplate,
-    pub selector: SystemPromptTemplate,
-}
-impl Templates {
-    pub(crate) fn load(base: &Path, get: impl Fn(&str) -> Result<String>) -> Result<Self> {
-        let read = |key: &str, name: &str| -> Result<SystemPromptTemplate> {
-            let path =
-                base.join(get(key).unwrap_or_else(|_| format!("templates/pipeline/{name}.json")));
-            serde_json::from_slice(
-                &std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?,
-            )
-            .with_context(|| format!("invalid stage template {}", path.display()))
-        };
-        Ok(Self {
-            analyst: read("LLM_ANALYST_TEMPLATE", "analyst")?,
-            grounder: read("LLM_GROUNDER_TEMPLATE", "grounder")?,
-            proposer: read("LLM_PROPOSER_TEMPLATE", "proposer")?,
-            verifier: read("LLM_VERIFIER_TEMPLATE", "verifier")?,
-            selector: read("LLM_SELECTOR_TEMPLATE", "selector")?,
-        })
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
-    Analyst,
     Grounder,
     Proposer,
     Verifier,
     Selector,
 }
 
-fn move_text(value: &Value, config: &Config) -> Result<String> {
-    if config.classic.is_none() && config.representation.output_format == OutputFormat::NumericJson
-    {
-        ensure!(value.is_object(), "move must be a JSON object");
-        Ok(serde_json::to_string(value)?)
-    } else {
-        let text = value.as_str().context("move must be a string")?;
-        bounded(text, 160)?;
-        ensure!(
-            text == text.trim(),
-            "move must not have surrounding whitespace"
-        );
-        Ok(text.into())
-    }
-}
-fn check_move(value: &Value, state: &Match, config: &Config) -> Result<String> {
-    let text = move_text(value, config)?;
-    if config.classic.is_some() {
-        ensure!(classic::san_shape(&text), "expected canonical SAN syntax");
-    } else {
-        crate::parse_model_move(
-            &text,
-            config.representation.output_format,
-            state.game.position(),
-        )?;
-    }
-    Ok(text)
-}
-fn square(value: &Value, state: &Match, config: &Config) -> Result<Square> {
-    if config.classic.is_none() && config.representation.state_format != StateFormat::PiecesAscii {
-        crate::square_from_numeric(
-            serde_json::from_value(value.clone())?,
-            state.game.position().board().size(),
-        )
-    } else {
-        let text = value.as_str().context("expected square string")?;
-        let square: Square = text.parse()?;
-        ensure!(square.to_string() == text, "noncanonical square");
-        let size = state.game.position().board().size();
-        ensure!(
-            square.file() < size.files() && square.rank() < size.ranks(),
-            "square outside board"
-        );
-        Ok(square)
+impl std::str::FromStr for Stage {
+    type Err = anyhow::Error;
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "grounder" => Ok(Self::Grounder),
+            "proposer" => Ok(Self::Proposer),
+            "verifier" => Ok(Self::Verifier),
+            "selector" => Ok(Self::Selector),
+            _ => bail!("stage must be grounder, proposer, verifier or selector"),
+        }
     }
 }
 
@@ -100,268 +45,18 @@ fn candidate_input(c: &Candidate) -> Value {
     json!({"id":c.id,"move":c.proposed_move,"from":c.from,"to":c.to})
 }
 
-/// Stage-local data allowlist: only explicitly referenced values enter a template.
-pub fn prompt_data(state: &Match, config: &Config, stage: Stage) -> Result<PromptData> {
-    let mut data = state.prompt_data_with(config)?;
-    let original = data.custom.clone();
-    let private = matches!(stage, Stage::Grounder | Stage::Verifier | Stage::Selector);
-    if private {
-        data.messages.clear();
-    }
-    data.custom = json!({});
-    data.custom["four-stage"] = json!(config.pipeline_mode == two_stage::PipelineMode::FourStage);
-    for key in [
-        "fen",
-        "ascii",
-        "board-state",
-        "piece-list",
-        "piece-list-num",
-        "side-to-move",
-        "chess-rules",
-    ] {
-        if let Some(value) = original.get(key) {
-            data.custom[key] = value.clone();
-        }
-    }
-    if !private {
-        data.custom["move-history"] = json!(if config.classic.is_some() {
-            original
-                .get("classic-san-history")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned()
-        } else {
-            data.messages
-                .iter()
-                .map(|message| message.content.as_str())
-                .collect::<Vec<_>>()
-                .join("\n")
-        });
-        for key in ["last-move", "classic-san-history"] {
-            if let Some(value) = original.get(key) {
-                data.custom[key] = value.clone();
-            }
-        }
-        data.custom["wrong-move"] = json!(if state.wrong_moves.is_empty() {
-            String::new()
-        } else {
-            serde_json::to_string(&state.wrong_moves)?
-        });
-    }
-    data.custom["classic"] = json!(config.classic.is_some());
-    data.custom["numeric-coordinates"] = json!(
-        config.classic.is_none() && config.representation.state_format != StateFormat::PiecesAscii
+fn validate_proposal(p: &Proposal, config: &Config) -> Result<()> {
+    ensure!(
+        (3..=5).contains(&p.candidates.len()),
+        "expected 3-5 candidates"
     );
-    data.custom["output-uci"] =
-        json!(config.classic.is_none() && config.representation.output_format == OutputFormat::Uci);
-    data.custom["output-numeric-json"] = json!(
-        config.classic.is_none()
-            && config.representation.output_format == OutputFormat::NumericJson
-    );
-    data.custom["output-semantic"] = json!(
-        config.classic.is_none() && config.representation.output_format == OutputFormat::Semantic
-    );
-    data.custom["output-numeric"] = json!(
-        config.classic.is_none() && config.representation.output_format == OutputFormat::Numeric
-    );
-    data.custom["history-enabled"] = json!(
-        !private
-            && config.classic.as_ref().map_or(
-                config.representation.history_mode == crate::HistoryMode::Full,
-                |c| c.include_history
-            )
-    );
-    Ok(data)
-}
-
-pub(crate) fn template(config: &Config, stage: Stage) -> SystemPromptTemplate {
-    match stage {
-        Stage::Analyst => &config.pipeline.analyst,
-        Stage::Grounder => &config.pipeline.grounder,
-        Stage::Proposer => &config.pipeline.proposer,
-        Stage::Verifier => &config.pipeline.verifier,
-        Stage::Selector => &config.pipeline.selector,
+    let mut ids = HashSet::new();
+    for c in &p.candidates {
+        bounded(&c.id, 32)?;
+        ensure!(ids.insert(&c.id), "duplicate candidate id");
+        move_text(&c.proposed_move, config)?;
     }
-    .clone()
-}
-
-pub fn preview(state: &Match, config: &Config) -> Result<String> {
-    let stage = if config.pipeline_mode.is_ranked() {
-        Stage::Proposer
-    } else if config.pipeline_mode == two_stage::PipelineMode::FourStage {
-        Stage::Grounder
-    } else {
-        Stage::Analyst
-    };
-    Ok(serde_json::to_string_pretty(
-        &PromptBuilder::new().build_chat(
-            &config.context,
-            &request_template(config, stage),
-            &request_data(state, config, stage)?,
-        )?,
-    )?)
-}
-
-fn request_template(config: &Config, stage: Stage) -> SystemPromptTemplate {
-    if config.pipeline_mode.is_ranked() {
-        return config.two_stage.stage(stage).template.clone();
-    }
-    template(config, stage)
-}
-
-fn request_data(state: &Match, config: &Config, stage: Stage) -> Result<PromptData> {
-    prompt_data(state, config, stage)
-}
-
-async fn request<T: DeserializeOwned>(
-    client: &mut Option<KoboldClient>,
-    http: &reqwest::Client,
-    config: &Config,
-    stage: Stage,
-    data: &PromptData,
-    validate: impl Fn(&T) -> Result<()>,
-) -> Result<T> {
-    request_parsed(client, http, config, stage, data, |answer| {
-        let value = if matches!(stage, Stage::Proposer | Stage::Selector) {
-            output::parse_final_json(answer)?
-        } else {
-            output::parse_json(answer)?
-        };
-        validate(&value)?;
-        Ok(value)
-    })
-    .await
-}
-
-async fn request_parsed<T>(
-    client: &mut Option<KoboldClient>,
-    http: &reqwest::Client,
-    config: &Config,
-    stage: Stage,
-    data: &PromptData,
-    parse: impl Fn(&str) -> Result<T>,
-) -> Result<T> {
-    let system = request_template(config, stage);
-    let ranked_pipeline = config.pipeline_mode.is_ranked();
-    let preset = if ranked_pipeline {
-        &config.two_stage.stage(stage).preset
-    } else {
-        config.preset_for_stage(stage)
-    };
-    let reasoning = if ranked_pipeline {
-        &config.two_stage.stage(stage).reasoning
-    } else {
-        &config.reasoning
-    };
-    let mut last_error = None;
-    for attempt in 1..=config.stage_max_attempts {
-        let started = std::time::Instant::now();
-        let mut input_tokens = None;
-        tracing::info!(?stage, attempt, "LLM stage");
-        let response: Result<String> = async {
-            if client.is_none() {
-                *client = Some(
-                    KoboldClient::connect_with_client(config.endpoint.clone(), http.clone())
-                        .await?,
-                );
-            }
-            let client = client.as_ref().unwrap();
-            let options = ChatGenerationRequest::from_preset(Vec::new(), preset)?;
-            let fitted = PromptBuilder::new()
-                .build_chat_with_budget(
-                    &config.context,
-                    &system,
-                    data,
-                    client,
-                    &options,
-                    client.context_budget(preset)?,
-                )
-                .await?;
-            input_tokens = Some(fitted.preview.tokens);
-            Ok(client.generate_chat(&fitted.request).await?.text)
-        }
-        .await;
-        let raw = match response {
-            Ok(raw) => raw,
-            Err(e) if output::transient(&e) => {
-                tracing::info!(
-                    ?stage,
-                    attempt,
-                    retries = attempt - 1,
-                    elapsed_ms = started.elapsed().as_millis() as u64,
-                    ?input_tokens,
-                    reason = "transport_retry",
-                    "llm_stage_metrics"
-                );
-                last_error = Some(e);
-                if attempt < config.stage_max_attempts {
-                    tokio::time::sleep(Duration::from_millis(100 * (1 << (attempt - 1).min(4))))
-                        .await;
-                }
-                continue;
-            }
-            Err(e) => {
-                tracing::info!(
-                    ?stage,
-                    attempt,
-                    elapsed_ms = started.elapsed().as_millis() as u64,
-                    ?input_tokens,
-                    reason = "fatal_request",
-                    "llm_stage_metrics"
-                );
-                return Err(e);
-            }
-        };
-        let output_tokens = match tokio::time::timeout(
-            Duration::from_secs(2),
-            client.as_ref().unwrap().count_tokens(&raw),
-        )
-        .await
-        {
-            Ok(Ok(tokens)) => Some(tokens),
-            _ => None,
-        };
-        let record = |reason: &str| {
-            tracing::info!(
-                ?stage,
-                attempt,
-                retries = attempt - 1,
-                elapsed_ms = started.elapsed().as_millis() as u64,
-                ?input_tokens,
-                ?output_tokens,
-                output_tokens_source = "retokenized_raw_including_reasoning",
-                reason,
-                "llm_stage_metrics"
-            )
-        };
-        let answer = if matches!(stage, Stage::Proposer | Stage::Selector) {
-            output::final_json_answer(reasoning, &raw)?
-        } else {
-            output::final_answer(reasoning, &raw)?
-        };
-        let Some(answer) = answer else {
-            record("incomplete_reasoning");
-            continue;
-        };
-        // Bound payload size, not the analyst's choice of format.
-        if answer.trim().is_empty() || answer.len() > 32_768 {
-            record("empty_or_oversized_answer");
-            continue;
-        }
-        match parse(&answer) {
-            Ok(value) => {
-                record("accepted_response");
-                return Ok(value);
-            }
-            Err(e) => {
-                record("invalid_protocol");
-                last_error = Some(e);
-            }
-        }
-    }
-    Err(last_error
-        .unwrap_or_else(|| anyhow::anyhow!("incomplete reasoning or missing structured result")))
-    .with_context(|| format!("{stage:?} exhausted {} attempts", config.stage_max_attempts))
+    Ok(())
 }
 
 pub async fn generate(
@@ -369,9 +64,6 @@ pub async fn generate(
     config: &Config,
     mut rejected: impl FnMut(usize, &str),
 ) -> Result<Move> {
-    if config.pipeline_mode.is_ranked() {
-        return two_stage::generate(state, config, rejected).await;
-    }
     ensure!(
         state.game.position().side_to_move() == state.model_side,
         "not the model turn"
@@ -388,15 +80,11 @@ pub async fn generate(
         "attempt limits must be positive"
     );
     for stage in [
-        Stage::Analyst,
         Stage::Grounder,
         Stage::Proposer,
         Stage::Verifier,
         Stage::Selector,
     ] {
-        if stage == Stage::Analyst && config.pipeline_mode == two_stage::PipelineMode::FourStage {
-            continue;
-        }
         config.preset_for_stage(stage).generation_length()?;
     }
     output::final_answer(&config.reasoning, "")?;
@@ -404,19 +92,7 @@ pub async fn generate(
         .timeout(Duration::from_secs(config.timeout_seconds))
         .build()?;
     let mut client = None;
-    let mut grounder_data = prompt_data(state, config, Stage::Grounder)?;
-    if config.pipeline_mode == two_stage::PipelineMode::Legacy {
-        let analysis: String = request_parsed(
-            &mut client,
-            &http,
-            config,
-            Stage::Analyst,
-            &prompt_data(state, config, Stage::Analyst)?,
-            |answer| Ok(answer.to_owned()),
-        )
-        .await?;
-        grounder_data.custom["analysis"] = json!(analysis);
-    }
+    let grounder_data = prompt_data(state, config, Stage::Grounder)?;
     let grounded_analysis: String = request_parsed(
         &mut client,
         &http,
@@ -444,19 +120,7 @@ pub async fn generate(
             config,
             Stage::Proposer,
             &data,
-            |p: &Proposal| {
-                ensure!(
-                    (3..=5).contains(&p.candidates.len()),
-                    "expected 3-5 candidates"
-                );
-                let mut ids = HashSet::new();
-                for c in &p.candidates {
-                    bounded(&c.id, 32)?;
-                    ensure!(ids.insert(&c.id), "duplicate candidate id");
-                    move_text(&c.proposed_move, config)?;
-                }
-                Ok(())
-            },
+            |p: &Proposal| validate_proposal(p, config),
         )
         .await?;
         let mut seen = HashSet::new();
@@ -481,9 +145,7 @@ pub async fn generate(
             }
             tracing::info!(candidate_id = %c.id, "LLM independent verification");
             let mut data = prompt_data(state, config, Stage::Verifier)?;
-            if config.pipeline_mode == two_stage::PipelineMode::FourStage {
-                data.custom["analysis"] = json!(grounded_analysis);
-            }
+            data.custom["analysis"] = json!(grounded_analysis);
             data.custom["candidate"] = json!(serde_json::to_string(&json!({
                 "move": c.proposed_move, "from": c.from, "to": c.to
             }))?);
@@ -496,7 +158,7 @@ pub async fn generate(
                 Verification::validate,
             )
             .await?;
-            if verification.verdict == Verdict::ACCEPT {
+            if verification.verdict == Verdict::Accept {
                 accepted.push((c, verification.tactical_result));
             } else {
                 excluded.insert(text);
@@ -554,42 +216,6 @@ pub async fn generate(
 }
 
 /// Validate only the proposed move, on a disposable clone; never expose engine alternatives.
-fn validate_candidate(
-    state: &Match,
-    config: &Config,
-    candidate: &Candidate,
-) -> Result<(Match, Move)> {
-    let (trial, mv) = resolve_candidate(state, config, candidate)?;
-    validate_metadata(state, config, candidate, mv)?;
-    Ok((trial, mv))
-}
-
-fn resolve_candidate(
-    state: &Match,
-    config: &Config,
-    candidate: &Candidate,
-) -> Result<(Match, Move)> {
-    let mut trial = state.clone();
-    check_move(&candidate.proposed_move, state, config)?;
-    let text = move_text(&candidate.proposed_move, config)?;
-    let mv = trial.accept_configured_answer(&text, config)?;
-    Ok((trial, mv))
-}
-
-fn validate_metadata(
-    state: &Match,
-    config: &Config,
-    candidate: &Candidate,
-    mv: Move,
-) -> Result<()> {
-    ensure!(
-        mv.from == square(&candidate.from, state, config)?
-            && mv.to == square(&candidate.to, state, config)?,
-        "candidate coordinates differ from move"
-    );
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -634,8 +260,7 @@ mod tests {
 
     #[test]
     fn chat_preview_preserves_accepted_history_roles() {
-        let mut config = Config::load_classic_with_profile(Some("with-history")).unwrap();
-        config.pipeline_mode = two_stage::PipelineMode::SingleStage;
+        let config = Config::load_classic_with_profile(Some("with-history")).unwrap();
         let mut state = Match::new(
             capablanca_chess_plus::Variant::Classic,
             capablanca_chess_plus::Color::Black,
@@ -643,8 +268,13 @@ mod tests {
         state.accept_human("e2e4").unwrap();
         state.accept_model("e7e5").unwrap();
         state.accept_human("g1f3").unwrap();
-        let messages: Vec<prompt_core::ChatMessage> =
-            serde_json::from_str(&preview(&state, &config).unwrap()).unwrap();
+        let messages: Vec<prompt_core::ChatMessage> = PromptBuilder::new()
+            .build_chat(
+                &config.context,
+                &template(&config, Stage::Proposer),
+                &prompt_data(&state, &config, Stage::Proposer).unwrap(),
+            )
+            .unwrap();
         use prompt_core::ChatRole;
         assert_eq!(messages[0].role, ChatRole::System);
         for (message, (role, content)) in messages[1..4].iter().zip([
@@ -683,7 +313,6 @@ mod tests {
                 capablanca_chess_plus::Color::White,
             );
             for stage in [
-                Stage::Analyst,
                 Stage::Grounder,
                 Stage::Proposer,
                 Stage::Verifier,
@@ -694,7 +323,6 @@ mod tests {
                     "user_prompt":"SIDE {{side-to-move}}", "post_history":"ONLY MY POST"
                 })).unwrap();
                 let slot = match stage {
-                    Stage::Analyst => &mut config.pipeline.analyst,
                     Stage::Grounder => &mut config.pipeline.grounder,
                     Stage::Proposer => &mut config.pipeline.proposer,
                     Stage::Verifier => &mut config.pipeline.verifier,
@@ -717,10 +345,7 @@ mod tests {
                 ] {
                     assert!(data.custom.get(key).is_none(), "hidden instruction {key}");
                 }
-                let rendered = PromptBuilder::new()
-                    .build(&config.context, &config.instruct, &actual, &data)
-                    .unwrap()
-                    .text;
+                let rendered = crate::render_test_chat(&config.context, &actual, &data).text;
                 assert!(rendered.contains(if classic {
                     "CUSTOM SAN"
                 } else {

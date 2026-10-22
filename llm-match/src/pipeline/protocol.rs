@@ -13,16 +13,17 @@ pub struct Candidate {
     #[serde(default)]
     pub rationale: String,
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Proposal {
     pub candidates: Vec<Candidate>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum Verdict {
-    ACCEPT,
-    REJECT,
+    Accept,
+    Reject,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -40,7 +41,7 @@ impl Verification {
         Ok(())
     }
 }
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Selection {
     pub candidate_id: String,

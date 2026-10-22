@@ -2,12 +2,10 @@ mod classic;
 mod config;
 pub mod pipeline;
 pub use classic::ClassicConfig;
-mod move_text;
+mod compat;
+use compat::{move_text, profile, representation, rules};
 mod output;
-mod profile;
 mod prompts;
-mod representation;
-mod rules;
 pub use profile::{
     HistoryFormat, HistoryMode, OutputFormat, ProfileFile, Representation, StateFormat, cli_profile,
 };
@@ -17,19 +15,32 @@ pub use representation::{
 pub use rules::{render_rules, variant_key};
 #[cfg(test)]
 mod classic_tests;
-#[cfg(test)]
-mod representation_tests;
-#[cfg(test)]
-mod tests;
 
 use anyhow::{Context, Result, ensure};
 use capablanca_chess_plus::{Color, Game, GameOutcome, Move, Variant};
 pub use config::{Config, StagePresets, normalize_endpoint};
 #[cfg(test)]
 use prompt_core::PromptBuilder;
+#[cfg(test)]
+fn render_test_chat(
+    context: &prompt_core::ContextTemplate,
+    system: &prompt_core::SystemPromptTemplate,
+    data: &prompt_core::PromptData,
+) -> prompt_core::BuiltPrompt {
+    let messages = PromptBuilder::new()
+        .build_chat(context, system, data)
+        .unwrap();
+    prompt_core::BuiltPrompt {
+        text: messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        stop_sequences: Vec::new(),
+    }
+}
 use prompt_core::{PromptData, PromptMessage, PromptRole};
 pub use prompts::{board_state, chess_rules};
-use serde_json::json;
 
 /// Canonical history for synchronization; semantic accepted moves for prompting.
 #[derive(Clone)]
@@ -111,8 +122,8 @@ impl Match {
             self.game.position().side_to_move() == self.model_side,
             "not the model turn"
         );
-        let answer = output::trailing_move(answer, |s| classic::san_shape(s))
-            .context("expected final SAN move")?;
+        let answer =
+            output::trailing_move(answer, classic::san_shape).context("expected final SAN move")?;
         ensure!(classic::san_shape(answer), "expected one SAN move");
         let result = self
             .game
@@ -149,48 +160,6 @@ impl Match {
                 let text = text.trim().to_owned();
                 if output::is_coordinate_move(&text) && !self.wrong_moves.contains(&text) {
                     self.wrong_moves.push(text);
-                }
-                Err(error)
-            }
-        }
-    }
-    /// Final answer only, with explicit profile decoding. Feedback preserves the
-    /// model's representation, never substitutes internal UCI in numeric mode.
-    pub fn accept_answer(&mut self, answer: &str, format: OutputFormat) -> Result<Move> {
-        ensure!(
-            self.game.position().side_to_move() == self.model_side,
-            "not the model turn"
-        );
-        let answer = output::trailing_move(answer, |s| {
-            parse_model_move(s, format, self.game.position()).is_ok()
-        })
-        .context("expected final move in configured format")?;
-        let (decoded, promotion) =
-            representation::decode_model_move(answer, format, self.game.position())?;
-        tracing::debug!("model answer: {}", answer.trim());
-        tracing::debug!("decoded move: {decoded}");
-        let accepted = (|| {
-            if matches!(format, OutputFormat::Semantic | OutputFormat::Numeric) {
-                let mv = self.game.position().parse_uci_move(&decoded)?;
-                let expected = if format == OutputFormat::Semantic {
-                    prompts::describe_move(self.game.position(), mv)
-                } else {
-                    representation::numeric_move(self.game.position(), mv, PromptRole::Assistant)
-                        .content
-                };
-                ensure!(
-                    answer.trim() == expected,
-                    "answer does not match the exact pre-move description"
-                );
-            }
-            self.accept_exact(&decoded, PromptRole::Assistant, promotion)
-        })();
-        match accepted {
-            Ok(mv) => Ok(mv),
-            Err(error) => {
-                let answer = answer.trim().to_owned();
-                if !self.wrong_moves.contains(&answer) {
-                    self.wrong_moves.push(answer);
                 }
                 Err(error)
             }
@@ -234,7 +203,7 @@ impl Match {
         } else {
             None
         };
-        let numeric = representation::numeric_move(self.game.position(), chess_move, role.clone());
+        let numeric = representation::numeric_move(self.game.position(), chess_move, role);
         self.game.play(chess_move)?;
         if let Some(san) = san {
             self.san_history.push(san);
@@ -242,7 +211,7 @@ impl Match {
         self.uci_history.push(chess_move.to_uci());
         self.numeric_history.push(numeric);
         self.json_history.push(PromptMessage {
-            role: role.clone(),
+            role,
             name: None,
             content: representation::json_move(chess_move),
         });
@@ -292,64 +261,6 @@ impl Match {
             .get(variant_key(self.variant))
             .ok_or_else(|| anyhow::anyhow!("missing rules for {}", variant_key(self.variant)))?;
         self.render_prompt(&config.representation, template)
-    }
-    fn render_prompt(&self, profile: &Representation, template: &str) -> Result<PromptData> {
-        profile.validate()?;
-        let wrong = if self.wrong_moves.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "Rejected moves: {}. Position unchanged. Do not repeat them.",
-                serde_json::to_string(&self.wrong_moves).expect("strings serialize")
-            )
-        };
-        let messages = render_history(
-            &self.history,
-            &self.numeric_history,
-            &self.uci_history,
-            &self.json_history,
-            profile,
-        );
-        let mut full_profile = profile.clone();
-        full_profile.history_mode = HistoryMode::Full;
-        let full_history = render_history(
-            &self.history,
-            &self.numeric_history,
-            &self.uci_history,
-            &self.json_history,
-            &full_profile,
-        );
-        let last_move = full_history
-            .last()
-            .map(|m| m.content.as_str())
-            .unwrap_or("");
-        let history_instruction = representation::history_instruction(profile, messages.len());
-        let mut board = render_state(self.game.position(), profile.state_format);
-        use std::fmt::Write;
-        writeln!(
-            board,
-            "\nCurrent position occurrences: {}",
-            self.game.current_repetition_count()
-        )
-        .unwrap();
-        Ok(PromptData {
-            user: "Human".into(),
-            character: "Chess model".into(),
-            messages,
-            custom: json!({
-                "side-to-move": match self.game.position().side_to_move() { Color::White => "White", Color::Black => "Black" },
-                "chess-rules": render_rules(self.variant, profile, template)?,
-                "last-move": last_move,
-                "board-state": board,
-                "piece-list": prompts::piece_list(self.game.position()),
-                "piece-list-num": prompts::piece_list_num(self.game.position()),
-                "wrong-move": wrong,
-                "representation-instructions": representation::grounding(profile.state_format),
-                "output-instructions": representation::output_instruction(profile.output_format),
-                "history-instructions": history_instruction,
-            }),
-            ..Default::default()
-        })
     }
 }
 

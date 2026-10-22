@@ -1,7 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use prompt_core::{
-    ContextTemplate, InstructTemplate, Preset, ReasoningTemplate, SystemPromptTemplate,
-};
+use prompt_core::{ContextTemplate, Preset, ReasoningTemplate};
 use serde::de::DeserializeOwned;
 use std::{
     collections::HashMap,
@@ -10,29 +8,27 @@ use std::{
 
 #[derive(Clone)]
 pub struct Config {
-    pub pipeline_mode: crate::pipeline::two_stage::PipelineMode,
-    pub two_stage: crate::pipeline::two_stage::Settings,
+    /// Present for Classic (the default). Fairy-only fields below are inert then.
     pub classic: Option<crate::ClassicConfig>,
     pub pipeline: crate::pipeline::Templates,
     pub stage_max_attempts: usize,
     pub profile_name: String,
+    /// Compatibility only: used when `classic` is None.
     pub representation: crate::Representation,
+    /// Compatibility only: Classic never reads fairy rule files.
     pub rules_templates: std::collections::BTreeMap<String, String>,
     pub endpoint: String,
     pub context: ContextTemplate,
-    pub instruct: InstructTemplate,
     pub reasoning: ReasoningTemplate,
-    pub system: SystemPromptTemplate,
     pub preset: Preset,
     pub stage_presets: StagePresets,
     pub timeout_seconds: u64,
     pub max_attempts: usize,
 }
 
-/// Missing stage overrides use the legacy shared preset.
+/// Missing stage overrides use the shared fallback preset.
 #[derive(Clone, Default)]
 pub struct StagePresets {
-    pub analyst: Option<Preset>,
     pub grounder: Option<Preset>,
     pub proposer: Option<Preset>,
     pub verifier: Option<Preset>,
@@ -53,7 +49,6 @@ impl StagePresets {
             Ok(Some(preset))
         };
         Ok(Self {
-            analyst: read("LLM_ANALYST_PRESET")?,
             grounder: read("LLM_GROUNDER_PRESET")?,
             proposer: read("LLM_PROPOSER_PRESET")?,
             verifier: read("LLM_VERIFIER_PRESET")?,
@@ -66,7 +61,6 @@ impl Config {
     pub fn preset_for_stage(&self, stage: crate::pipeline::Stage) -> &Preset {
         use crate::pipeline::Stage;
         match stage {
-            Stage::Analyst => &self.stage_presets.analyst,
             Stage::Grounder => &self.stage_presets.grounder,
             Stage::Proposer => &self.stage_presets.proposer,
             Stage::Verifier => &self.stage_presets.verifier,
@@ -77,7 +71,8 @@ impl Config {
     }
     pub fn load_for_variant(variant: capablanca_chess_plus::Variant) -> Result<Self> {
         if variant != capablanca_chess_plus::Variant::Classic {
-            return Self::load();
+            let profile = crate::profile::cli_profile(std::env::args().skip(1))?;
+            return Self::load_with_profile(profile.as_deref());
         }
         // Only the dedicated classic selector applies to this configuration.
         let mut selected = None;
@@ -108,20 +103,7 @@ impl Config {
         Self::from_env_mode(&path, profile, true)
     }
     pub fn summary(&self) -> String {
-        let pipeline = match self.pipeline_mode {
-            crate::pipeline::two_stage::PipelineMode::SingleStage => {
-                "single-stage proposer + first legal move"
-            }
-            crate::pipeline::two_stage::PipelineMode::TwoStage => {
-                "two-stage pipeline + legality gate"
-            }
-            crate::pipeline::two_stage::PipelineMode::FourStage => {
-                "4-stage grounder/proposer/verifier/selector + legality gate"
-            }
-            crate::pipeline::two_stage::PipelineMode::Legacy => {
-                "legacy 5-stage pipeline + legality gate"
-            }
-        };
+        let pipeline = "grounder/proposer/verifier/selector + legality gate";
         if let Some(c) = &self.classic {
             format!(
                 "{pipeline} | classic chess | history: {} | output: SAN",
@@ -137,8 +119,7 @@ impl Config {
     }
     /// Relative template paths are relative to the env file. Process env wins.
     pub fn load() -> Result<Self> {
-        let profile = crate::profile::cli_profile(std::env::args().skip(1))?;
-        Self::load_with_profile(profile.as_deref())
+        Self::load_for_variant(capablanca_chess_plus::Variant::Classic)
     }
     pub fn load_with_profile(profile: Option<&str>) -> Result<Self> {
         let path = std::env::var_os("LLM_MATCH_ENV")
@@ -148,7 +129,7 @@ impl Config {
     }
 
     pub fn from_env_file(path: &Path) -> Result<Self> {
-        Self::from_env_file_with_profile(path, None)
+        Self::from_env_mode(path, None, true)
     }
     pub fn from_env_file_with_profile(path: &Path, profile_override: Option<&str>) -> Result<Self> {
         Self::from_env_mode(path, profile_override, false)
@@ -168,11 +149,13 @@ impl Config {
                 .with_context(|| format!("missing {key} in {}", path.display()))
         };
         let base = path.parent().unwrap_or(Path::new("."));
-        let pipeline_mode = get("LLM_PIPELINE")
-            .unwrap_or_else(|_| "single-stage".into())
-            .parse()?;
-        let two_stage = crate::pipeline::two_stage::Settings::load(base, &get)?;
-        let pipeline = crate::pipeline::Templates::load(base, &get)?;
+        if let Ok(mode) = get("LLM_PIPELINE") {
+            ensure!(
+                mode == "four-stage",
+                "only four-stage is supported; remove obsolete LLM_PIPELINE={mode}"
+            );
+        }
+        let pipeline = crate::pipeline::Templates::load_for_variant(base, get, classic_mode)?;
         let classic = if classic_mode {
             let env_profile = get("LLM_CLASSIC_PROFILE").ok();
 
@@ -182,53 +165,27 @@ impl Config {
                         .unwrap_or_else(|_| "classic-profiles.toml".into()),
                 ),
                 profile_override.or(env_profile.as_deref()),
-                pipeline.analyst.clone(),
             )?)
         } else {
             None
         };
-        let (profile_name, representation) = if let Some(c) = &classic {
+        let (profile_name, representation, rules_templates) = if let Some(c) = &classic {
             (
                 format!("classic-chess/{}", c.name),
                 crate::Representation::default(),
+                Default::default(),
             )
         } else {
-            let profiles_path = base.join(
-                get("LLM_PROFILES_FILE").unwrap_or_else(|_| "representation-profiles.toml".into()),
-            );
-            let profiles = crate::ProfileFile::parse(
-                &std::fs::read_to_string(&profiles_path)
-                    .with_context(|| format!("cannot read {}", profiles_path.display()))?,
-            )?;
-            let env_profile = get("LLM_PROFILE").ok();
-            let (profile_name, representation) =
-                profiles.select(profile_override.or(env_profile.as_deref()))?;
-            (profile_name, representation)
+            crate::compat::config::load(base, get, profile_override)?
         };
-        let rules_dir = base.join(get("LLM_RULES_DIR").unwrap_or_else(|_| "rules".into()));
-        let mut rules_templates = std::collections::BTreeMap::new();
-        for variant in capablanca_chess_plus::Variant::ALL {
-            if classic_mode || variant == capablanca_chess_plus::Variant::Classic {
-                continue;
-            }
-            let key = crate::rules::variant_key(variant);
-            let path = rules_dir.join(format!("{key}.txt"));
-            rules_templates.insert(
-                key.into(),
-                std::fs::read_to_string(&path)
-                    .with_context(|| format!("cannot read rules {}", path.display()))?,
-            );
-        }
         let context = read_json(&base.join(get("LLM_CONTEXT_TEMPLATE")?))?;
-        let instruct = read_json(&base.join(get("LLM_INSTRUCT_TEMPLATE")?))?;
         let reasoning = read_json(&base.join(get("LLM_REASONING_TEMPLATE")?))?;
-        let system = pipeline.analyst.clone();
         let stage_max_attempts: usize = get("LLM_STAGE_MAX_ATTEMPTS")
             .unwrap_or_else(|_| "3".into())
             .parse()?;
         ensure!(stage_max_attempts > 0, "stage attempts must be positive");
         let preset = Preset::from_value(read_json(&base.join(get("LLM_PRESET")?))?)?;
-        let stage_presets = StagePresets::load(base, &get)?;
+        let stage_presets = StagePresets::load(base, get)?;
         let timeout_seconds = get("LLM_REQUEST_TIMEOUT_SECONDS")?.parse()?;
         let max_attempts = get("LLM_MAX_ATTEMPTS")?.parse()?;
         ensure!(
@@ -236,8 +193,6 @@ impl Config {
             "timeout and attempts must be positive"
         );
         Ok(Self {
-            pipeline_mode,
-            two_stage,
             pipeline,
             stage_max_attempts,
             classic,
@@ -246,9 +201,7 @@ impl Config {
             rules_templates,
             endpoint: normalize_endpoint(&get("LLM_KOBOLD_URL")?)?,
             context,
-            instruct,
             reasoning,
-            system,
             preset,
             stage_presets,
             timeout_seconds,
@@ -291,14 +244,14 @@ mod stage_preset_tests {
     fn optional_overrides_load_relative_to_env_and_missing_ones_fall_back() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let loaded = StagePresets::load(root, |key| {
-            if key == "LLM_ANALYST_PRESET" {
-                Ok("presets/analyst.json".into())
+            if key == "LLM_GROUNDER_PRESET" {
+                Ok("presets/grounder.json".into())
             } else {
                 anyhow::bail!("unset")
             }
         })
         .unwrap();
-        assert!(loaded.analyst.is_some());
+        assert!(loaded.grounder.is_some());
         assert!(loaded.proposer.is_none());
         let mut c = Config::load_classic_with_profile(Some("no-history")).unwrap();
         c.stage_presets = loaded;
@@ -307,7 +260,7 @@ mod stage_preset_tests {
             &c.preset
         ));
         assert!(!std::ptr::eq(
-            c.preset_for_stage(crate::pipeline::Stage::Analyst),
+            c.preset_for_stage(crate::pipeline::Stage::Grounder),
             &c.preset
         ));
         assert!(StagePresets::load(root, |_| Ok("presets/missing-file.json".into())).is_err());

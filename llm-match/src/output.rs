@@ -132,95 +132,6 @@ pub(crate) fn parse_json<T: serde::de::DeserializeOwned>(answer: &str) -> Result
     Ok(serde_json::from_str(payload)?)
 }
 
-#[cfg(test)]
-mod json_fence_tests {
-    use super::*;
-
-    #[test]
-    fn final_json_ignores_prefix_but_keeps_the_final_schema_strict() {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Choice {
-            choice: String,
-        }
-        for raw in [
-            "Рассуждения { arbitrary text\n{\"choice\":\"c2\"}",
-            "{\"choice\":\"c1\"}\nThen:\n```json\n{\"choice\":\"c2\",}\n```",
-            "Reasoning\n```\r\n{\"choice\":\"c2\"}\r\n```  ",
-        ] {
-            assert_eq!(parse_final_json::<Choice>(raw).unwrap().choice, "c2");
-        }
-        for raw in [
-            "{\"choice\":\"c1\"}\n{\"wrong\":{\"choice\":\"c2\"}}",
-            "{\"choice\":\"c1\"}\n{\"choice\":}",
-            "{\"choice\":\"c1\",\"choice\":\"c2\"}",
-            "{\"choice\":\"c1\"} trailing prose",
-            "Earlier\n```python\n{\"choice\":\"c1\"}\n```",
-        ] {
-            assert!(parse_final_json::<Choice>(raw).is_err(), "{raw}");
-        }
-        let value: serde_json::Value = parse_final_json(
-            r#"Prefix " { fake } {"move":{"from":[2,8],"to":[3,6]},"rationale":"brace } and escaped \" and ```"}"#
-        ).unwrap();
-        assert_eq!(value["move"]["from"][0], 2);
-    }
-
-    #[test]
-    fn local_repair_never_changes_strings_or_infers_missing_content() {
-        let value: serde_json::Value =
-            parse_json_repaired(r#"{"s":"literal ,} and escaped \"",}"#).unwrap();
-        assert_eq!(value["s"], "literal ,} and escaped \"");
-        for raw in [
-            r#"{"s":"unfinished"#,
-            r#"{"s":}"#,
-            r#"prose {"s":1}"#,
-            "```json\n{}\n```\n```json\n{}\n```",
-            "{'choice':'c1'}",
-        ] {
-            assert!(parse_json_repaired::<serde_json::Value>(raw).is_err());
-        }
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Only {
-            #[allow(dead_code)]
-            choice: String,
-        }
-        for raw in [
-            r#"{"choice":"c1","choice":"c2",}"#,
-            r#"{"choice":"c1","extra":true,}"#,
-        ] {
-            assert!(parse_json_repaired::<Only>(raw).is_err());
-        }
-    }
-
-    #[test]
-    fn accepts_plain_and_fenced_json() {
-        for text in [
-            r#"{"move":"e4"}"#,
-            "```json\n{\"move\":\"e4\"}\n```",
-            "  ```\r\n{\"move\":\"e4\"}\r\n```\n",
-        ] {
-            let value: serde_json::Value = parse_json(text).unwrap();
-            assert_eq!(value["move"], "e4");
-        }
-    }
-
-    #[test]
-    fn rejects_prose_multiple_blocks_and_invalid_json() {
-        for text in [
-            "Here:\n```json\n{}\n```",
-            "```json\n{}\n```\nThanks",
-            "```json\n{}",
-            "```json\n{}\n```\n```json\n{}\n```",
-            "```python\n{}\n```",
-            "```json\n{bad}\n```",
-            "```json\n{} {}\n```",
-        ] {
-            assert!(parse_json::<serde_json::Value>(text).is_err(), "{text}");
-        }
-    }
-}
-
 /// A complete move must end the answer. Never choose an earlier legal move
 /// instead of the final attempt; the predicate checks representation only.
 pub(crate) fn trailing_move(text: &str, syntax: impl Fn(&str) -> bool) -> Option<&str> {
@@ -342,4 +253,93 @@ pub(crate) fn transient(error: &anyhow::Error) -> bool {
                 || e.status()
                     .is_some_and(|s| s.as_u16() == 408 || s.as_u16() == 429 || s.is_server_error())
         })
+}
+
+#[cfg(test)]
+mod json_fence_tests {
+    use super::*;
+
+    #[test]
+    fn final_json_ignores_prefix_but_keeps_the_final_schema_strict() {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Choice {
+            choice: String,
+        }
+        for raw in [
+            "Рассуждения { arbitrary text\n{\"choice\":\"c2\"}",
+            "{\"choice\":\"c1\"}\nThen:\n```json\n{\"choice\":\"c2\",}\n```",
+            "Reasoning\n```\r\n{\"choice\":\"c2\"}\r\n```  ",
+        ] {
+            assert_eq!(parse_final_json::<Choice>(raw).unwrap().choice, "c2");
+        }
+        for raw in [
+            "{\"choice\":\"c1\"}\n{\"wrong\":{\"choice\":\"c2\"}}",
+            "{\"choice\":\"c1\"}\n{\"choice\":}",
+            "{\"choice\":\"c1\",\"choice\":\"c2\"}",
+            "{\"choice\":\"c1\"} trailing prose",
+            "Earlier\n```python\n{\"choice\":\"c1\"}\n```",
+        ] {
+            assert!(parse_final_json::<Choice>(raw).is_err(), "{raw}");
+        }
+        let value: serde_json::Value = parse_final_json(
+            r#"Prefix " { fake } {"move":{"from":[2,8],"to":[3,6]},"rationale":"brace } and escaped \" and ```"}"#
+        ).unwrap();
+        assert_eq!(value["move"]["from"][0], 2);
+    }
+
+    #[test]
+    fn local_repair_never_changes_strings_or_infers_missing_content() {
+        let value: serde_json::Value =
+            parse_json_repaired(r#"{"s":"literal ,} and escaped \"",}"#).unwrap();
+        assert_eq!(value["s"], "literal ,} and escaped \"");
+        for raw in [
+            r#"{"s":"unfinished"#,
+            r#"{"s":}"#,
+            r#"prose {"s":1}"#,
+            "```json\n{}\n```\n```json\n{}\n```",
+            "{'choice':'c1'}",
+        ] {
+            assert!(parse_json_repaired::<serde_json::Value>(raw).is_err());
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Only {
+            #[allow(dead_code)]
+            choice: String,
+        }
+        for raw in [
+            r#"{"choice":"c1","choice":"c2",}"#,
+            r#"{"choice":"c1","extra":true,}"#,
+        ] {
+            assert!(parse_json_repaired::<Only>(raw).is_err());
+        }
+    }
+
+    #[test]
+    fn accepts_plain_and_fenced_json() {
+        for text in [
+            r#"{"move":"e4"}"#,
+            "```json\n{\"move\":\"e4\"}\n```",
+            "  ```\r\n{\"move\":\"e4\"}\r\n```\n",
+        ] {
+            let value: serde_json::Value = parse_json(text).unwrap();
+            assert_eq!(value["move"], "e4");
+        }
+    }
+
+    #[test]
+    fn rejects_prose_multiple_blocks_and_invalid_json() {
+        for text in [
+            "Here:\n```json\n{}\n```",
+            "```json\n{}\n```\nThanks",
+            "```json\n{}",
+            "```json\n{}\n```\n```json\n{}\n```",
+            "```python\n{}\n```",
+            "```json\n{bad}\n```",
+            "```json\n{} {}\n```",
+        ] {
+            assert!(parse_json::<serde_json::Value>(text).is_err(), "{text}");
+        }
+    }
 }
