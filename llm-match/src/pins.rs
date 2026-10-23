@@ -65,10 +65,13 @@ impl PinReport {
                 "pin colors do not match: {} -> {} -> {}", pin.attacker, pin.pinned, pin.protected);
             ensure!(pin.pinned != pin.protected && pinned.kind != PieceKind::King,
                 "invalid pinned piece {}", pin.pinned);
-            ensure!(graph.get_piece(&pin.attacker)
+            let rays = &graph.get_piece(&pin.attacker)
                 .with_context(|| format!("attacker missing from control graph: {}", pin.attacker))?
-                .controls.contains(pinned_sq),
-                "supplied control map does not show {} controlling {}", pin.attacker, pinned_sq);
+                .xray;
+            ensure!(rays.iter().any(|r| r.first == pin.pinned &&
+                r.second.as_deref() == Some(pin.protected.as_str())),
+                "supplied xray does not contain {} -> {} -> {}",
+                pin.attacker,pin.pinned,pin.protected);
             match pin.kind {
                 PinType::Absolute => ensure!(protected.kind == PieceKind::King,
                     "absolute pin must protect king: {}", pin.protected),

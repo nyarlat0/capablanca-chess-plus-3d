@@ -29,10 +29,16 @@ async fn fill(
         data.custom["selected-piece"] = json!(crate::grounder::selected_piece(
             state.game.position(), &piece.square,
         )?);
-        piece.controls = request_parsed(
+        let result = request_parsed(
             &mut client, &http, config, Stage::OneGrounder, &data, &image,
-            OnePieceControls::parse,
-        ).await.with_context(|| format!("control map update failed for {}", piece.id))?.controls;
+            |text| {
+                let result=OnePieceControls::parse(text)?;
+                crate::grounder::validate_one(state.game.position(),&piece.square,&result)?;
+                Ok(result)
+            },
+        ).await.with_context(|| format!("control map update failed for {}", piece.id))?;
+        piece.controls=result.controls;
+        piece.xray=result.xray;
     }
     Ok(())
 }

@@ -26,6 +26,137 @@ impl Cache {
     }
 }
 
+
+const DIRECTIONS: [(&str, i8, i8); 8] = [
+    ("N",0,1), ("NE",1,1), ("E",1,0), ("SE",1,-1),
+    ("S",0,-1), ("SW",-1,-1), ("W",-1,0), ("NW",-1,1),
+];
+
+/// One occupied blocking piece and optionally the next occupied piece
+/// on the SAME ray. Does not imply a legal attack on `second`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct XRay {
+    pub direction: String,
+    pub first: String,
+    pub second: Option<String>,
+}
+
+fn ray_direction(dir: &str) -> Option<(i8,i8)> {
+    DIRECTIONS.iter().find(|(s,_,_)| *s == dir).map(|(_,x,y)| (*x,*y))
+}
+
+fn allowed_ray(kind: PieceKind, direction: &str) -> bool {
+    let Some((dx,dy)) = ray_direction(direction) else {return false;};
+    match kind {
+        PieceKind::Rook => dx == 0 || dy == 0,
+        PieceKind::Bishop => dx != 0 && dy != 0,
+        PieceKind::Queen => true,
+        _ => false,
+    }
+}
+
+fn ray_cells(start: &str, direction: &str, stop: Option<&str>) -> Result<Vec<String>> {
+    square(start)?;
+    let (dx,dy)=ray_direction(direction).with_context(|| format!("invalid ray direction {direction}"))?;
+    let mut x=i16::from(start.as_bytes()[0]-b'a');
+    let mut y=i16::from(start.as_bytes()[1]-b'1');
+    let mut cells=Vec::new();
+    loop {
+        x += i16::from(dx);
+        y += i16::from(dy);
+        if !(0..8).contains(&x) || !(0..8).contains(&y) {break;}
+        let cell=Square::new(x as u8,y as u8).to_string();
+        cells.push(cell.clone());
+        if stop == Some(cell.as_str()) {break;}
+    }
+    ensure!(stop.is_none_or(|s| cells.last().is_some_and(|c| c == s)),
+        "xray second blocker is not on the ray behind the first");
+    Ok(cells)
+}
+
+/// Uses the board only when deliberately bootstrapping without an LLM.
+/// Both friendly and enemy pieces are recorded as ray blockers.
+fn engine_xrays(position: &Position, origin: Square, kind: PieceKind) -> Vec<XRay> {
+    let mut rays=Vec::new();
+    for &(direction,dx,dy) in &DIRECTIONS {
+        if !allowed_ray(kind,direction) {continue;}
+        let (mut x,mut y)=(i16::from(origin.file()),i16::from(origin.rank()));
+        let mut first=None;
+        let mut second=None;
+        loop {
+            x += i16::from(dx);
+            y += i16::from(dy);
+            if !(0..8).contains(&x) || !(0..8).contains(&y) {break;}
+            let square=Square::new(x as u8,y as u8);
+            if let Some(piece)=position.board().piece_at(square) {
+                let id=piece_id(position,&square.to_string(),piece);
+                if first.is_none() {first=Some(id);}
+                else {second=Some(id);break;}
+            }
+        }
+        if let Some(first)=first {
+            rays.push(XRay{direction:direction.into(), first, second});
+        }
+    }
+    rays
+}
+
+fn validate_xrays(position: &Position, entry: &PieceControls, piece: Piece) -> Result<()> {
+    let inventory: BTreeMap<_,_> = position.board().pieces().map(|(sq,p)| {
+        let label=sq.to_string();
+        (piece_id(position,&label,p), label)
+    }).collect();
+    let mut seen=BTreeSet::new();
+    for ray in &entry.xray {
+        ensure!(allowed_ray(piece.kind,&ray.direction),
+            "invalid xray direction {:?} for {}",ray.direction,entry.id);
+        ensure!(seen.insert(&ray.direction),
+            "duplicate xray direction {:?} for {}",ray.direction,entry.id);
+        let first=inventory.get(&ray.first)
+            .with_context(|| format!("{} refers to nonexistent first blocker {}",entry.id,ray.first))?;
+        ensure!(ray.first != entry.id && entry.controls.contains(first),
+            "{} xray first blocker {} is not in its direct controls",entry.id,ray.first);
+        let path=ray_cells(&entry.square,&ray.direction,Some(first))?;
+        ensure!(path.last()==Some(first),"invalid first ray blocker for {}",entry.id);
+        if let Some(second)=&ray.second {
+            ensure!(second != &ray.first && second != &entry.id,
+                "xray blockers must be distinct and not be the attacker");
+            let second_sq=inventory.get(second)
+                .with_context(|| format!("{} refers to nonexistent second blocker {second}",entry.id))?;
+            ray_cells(first,&ray.direction,Some(second_sq))?;
+        }
+    }
+    Ok(())
+}
+
+/// Validate a single new LLM result in the retry loop, not only after merging.
+pub fn validate_one(position: &Position, cell: &str, result: &OnePieceControls) -> Result<()> {
+    let from: Square=cell.parse()?;
+    let piece=position.board().piece_at(from).context("selected square is empty")?;
+    let entry=PieceControls{
+        id:piece_id(position,cell,piece), square:cell.into(),
+        controls:result.controls.clone(), xray:result.xray.clone(),
+    };
+    validate_xrays(position,&entry,piece)
+}
+
+/// Cells whose changed occupancy/identity would alter the xray portion,
+/// including EMPTY cells behind first blocker and through the second blocker.
+/// The direct control map already handles changes up to and including first.
+fn xray_affected(entry: &PieceControls, changed: &BTreeSet<String>) -> Result<bool> {
+    for ray in &entry.xray {
+        let first=ray.first.split_once('_').map(|(_,sq)|sq)
+            .context("invalid xray first blocker id")?;
+        let second=ray.second.as_deref().map(|id|id.split_once('_')
+            .map(|(_,sq)|sq).context("invalid xray second blocker id")).transpose()?;
+        if ray_cells(first,&ray.direction,second)?.iter().any(|cell|changed.contains(cell)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Explicit engine bootstrap, not part of model-output validation.
 pub fn engine_map(position: &Position) -> Result<ControlMap> {
     let mut pieces = Vec::new();
@@ -43,6 +174,7 @@ pub fn engine_map(position: &Position) -> Result<ControlMap> {
             id: piece_id(position, &from.to_string(), piece),
             square: from.to_string(),
             controls,
+            xray: engine_xrays(position,from,piece.kind),
         });
     }
     Ok(ControlGraph::new(position, ControlMap { version: 1, pieces })?.map().clone())
@@ -75,7 +207,8 @@ pub fn incremental_targets(
         let moved = changed.contains(&cell);
         let slider = matches!(piece.kind, PieceKind::Bishop | PieceKind::Rook | PieceKind::Queen);
         let invalidated = moved || previous.is_none() || (slider && previous.is_some_and(|p| {
-            p.controls.iter().any(|s| changed.contains(s))
+            p.controls.iter().any(|s| changed.contains(s)) ||
+                xray_affected(p, &changed).unwrap_or(true)
         }));
         if invalidated {
             targets.push(pieces.len());
@@ -83,6 +216,7 @@ pub fn incremental_targets(
         pieces.push(PieceControls {
             id, square: cell,
             controls: if invalidated { vec![] } else { previous.unwrap().controls.clone() },
+            xray: if invalidated { vec![] } else { previous.unwrap().xray.clone() },
         });
     }
     Ok((ControlMap { version: 1, pieces }, targets))
@@ -101,6 +235,9 @@ pub struct PieceControls {
     pub id: String,
     pub square: String,
     pub controls: Vec<String>,
+    /// Empty for non-sliding pieces. Legacy version-1 map files omit this field.
+    #[serde(default)]
+    pub xray: Vec<XRay>,
 }
 
 /// Identity comes from the requested position, never from model output.
@@ -108,12 +245,21 @@ pub struct PieceControls {
 #[serde(deny_unknown_fields)]
 pub struct OnePieceControls {
     pub controls: Vec<String>,
+    /// Required for new model generations; empty for kings, pawns and knights.
+    #[serde(default)]
+    pub xray: Vec<XRay>,
 }
 impl OnePieceControls {
     pub fn parse(text: &str) -> Result<Self> {
         let mut result: Self =
             crate::output::parse_final_json(text).context("invalid one-grounder JSON")?;
         validate_controls("selected piece", &mut result.controls)?;
+        let mut seen=BTreeSet::new();
+        for ray in &result.xray {
+            ensure!(ray_direction(&ray.direction).is_some(), "invalid xray direction {}",ray.direction);
+            ensure!(seen.insert(&ray.direction), "duplicate xray direction {}",ray.direction);
+        }
+        result.xray.sort_by(|a,b| a.direction.cmp(&b.direction));
         Ok(result)
     }
 }
@@ -164,6 +310,7 @@ pub struct PieceView {
     pub color: String,
     pub kind: String,
     pub controls: Vec<String>,
+    pub xray: Vec<XRay>,
     pub attacks_enemies: Vec<String>,
     pub defends_allies: Vec<String>,
     pub defended_by: Vec<String>,
@@ -258,6 +405,7 @@ impl ControlGraph {
                 entry.id
             );
             validate_controls(&entry.id, &mut entry.controls)?;
+            validate_xrays(position,entry,inventory.get(&entry.square).unwrap().1)?;
         }
         let missing: Vec<_> = inventory
             .values()
@@ -290,6 +438,7 @@ impl ControlGraph {
                 color: format!("{:?}", piece.color),
                 kind: piece.kind.display_name().into(),
                 controls: entry.controls.clone(),
+                xray: entry.xray.clone(),
                 attacks_enemies: Vec::new(),
                 defends_allies: Vec::new(),
                 defended_by: Vec::new(),

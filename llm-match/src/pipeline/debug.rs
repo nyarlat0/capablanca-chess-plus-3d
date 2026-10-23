@@ -221,7 +221,11 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
                     Stage::OneGrounder,
                     &data,
                     &image,
-                    crate::grounder::OnePieceControls::parse,
+                    |text| {
+                        let result=crate::grounder::OnePieceControls::parse(text)?;
+                        crate::grounder::validate_one(state.game.position(),&piece.square,&result)?;
+                        Ok(result)
+                    },
                 )
                 .await
                 .with_context(|| {
@@ -231,7 +235,9 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
                         index + 1
                     )
                 })?;
+                crate::grounder::validate_one(state.game.position(),&piece.square,&result)?;
                 piece.controls = result.controls;
+                piece.xray = result.xray;
             }
             crate::grounder::ControlGraph::new(
                 state.game.position(),
@@ -241,9 +247,11 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
         }
         Stage::OneGrounder => {
             request_parsed(&mut client, &http, config, stage, &data, &image, |text| {
-                Ok(serde_json::to_string_pretty(
-                    &crate::grounder::OnePieceControls::parse(text)?,
-                )?)
+                let result=crate::grounder::OnePieceControls::parse(text)?;
+                let piece=inputs.selected_piece.as_deref().context("selected piece is missing")?;
+                let sq=piece.split_once('_').map_or(piece,|(_,s)|s);
+                crate::grounder::validate_one(state.game.position(),sq,&result)?;
+                Ok(serde_json::to_string_pretty(&result)?)
             })
             .await
         }
