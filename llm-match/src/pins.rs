@@ -55,7 +55,7 @@ impl PinReport {
                 .with_context(|| format!("unknown attacker {}", pin.attacker))?;
             let (pinned_sq, pinned) = inventory.get(&pin.pinned)
                 .with_context(|| format!("unknown pinned piece {}", pin.pinned))?;
-            let (_, protected) = inventory.get(&pin.protected)
+            let (protected_sq, protected) = inventory.get(&pin.protected)
                 .with_context(|| format!("unknown protected piece {}", pin.protected))?;
             ensure!(seen.insert((pin.attacker.clone(), pin.pinned.clone(), pin.protected.clone())),
                 "duplicate pin {} -> {} -> {}", pin.attacker, pin.pinned, pin.protected);
@@ -68,8 +68,8 @@ impl PinReport {
             let rays = &graph.get_piece(&pin.attacker)
                 .with_context(|| format!("attacker missing from control graph: {}", pin.attacker))?
                 .xray;
-            ensure!(rays.iter().any(|r| r.first == pin.pinned &&
-                r.second.as_deref() == Some(pin.protected.as_str())),
+            ensure!(rays.iter().any(|r| r.first == *pinned_sq &&
+                r.second.as_deref() == Some(protected_sq.as_str())),
                 "supplied xray does not contain {} -> {} -> {}",
                 pin.attacker,pin.pinned,pin.protected);
             match pin.kind {

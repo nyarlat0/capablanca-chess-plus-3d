@@ -54,14 +54,14 @@ fn engine_bootstrap_records_friendly_and_enemy_xray_blockers() {
     let map=engine_map(&p).unwrap();
     let q=map.pieces.iter().find(|p|p.id=="bQ_d8").unwrap();
     let south=q.xray.iter().find(|r|r.direction=="S").unwrap();
-    assert_eq!(south.first,"wN_d5");
-    assert_eq!(south.second.as_deref(),Some("wQ_d1"));
+    assert_eq!(south.first,"d5");
+    assert_eq!(south.second.as_deref(),Some("d1"));
     let west=q.xray.iter().find(|r|r.direction=="W").unwrap();
-    assert_eq!(west.first,"bB_c8");
-    assert_eq!(west.second.as_deref(),Some("bR_a8"));
+    assert_eq!(west.first,"c8");
+    assert_eq!(west.second.as_deref(),Some("a8"));
     let southeast=q.xray.iter().find(|r|r.direction=="SE").unwrap();
-    assert_eq!(southeast.first,"bP_e7");
-    assert_eq!(southeast.second.as_deref(),Some("bN_f6"));
+    assert_eq!(southeast.first,"e7");
+    assert_eq!(southeast.second.as_deref(),Some("f6"));
     assert!(map.pieces.iter().find(|p|p.id=="wN_d5").unwrap().xray.is_empty());
 }
 

@@ -1,6 +1,6 @@
-//! Model-authored control maps. Validation is structural, NEVER geometric.
-//! Only piece inventory and occupancy are read from Position; no move generation,
-//! attack queries, evaluation, or correction of the model's controls occurs here.
+//! Model-authored control maps. Never generate or repair LLM controls from engine attacks.
+//! X-ray validation checks coordinates and the order of occupied ray blockers;
+//! the engine geometry oracle is used only for the explicitly selected bootstrap.
 use anyhow::{Context, Result, ensure};
 use capablanca_chess_plus::{Color, Piece, PieceKind, Position, Square, Variant};
 use serde::{Deserialize, Serialize};
@@ -32,8 +32,8 @@ const DIRECTIONS: [(&str, i8, i8); 8] = [
     ("S",0,-1), ("SW",-1,-1), ("W",-1,0), ("NW",-1,1),
 ];
 
-/// One occupied blocking piece and optionally the next occupied piece
-/// on the SAME ray. Does not imply a legal attack on `second`.
+/// Squares of the first and second occupied blockers on a slider's ray.
+/// Coordinates, not piece IDs; these are not necessarily legally attacked squares.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct XRay {
@@ -71,7 +71,7 @@ fn ray_cells(start: &str, direction: &str, stop: Option<&str>) -> Result<Vec<Str
         if stop == Some(cell.as_str()) {break;}
     }
     ensure!(stop.is_none_or(|s| cells.last().is_some_and(|c| c == s)),
-        "xray second blocker is not on the ray behind the first");
+        "xray blocker is not on the selected ray");
     Ok(cells)
 }
 
@@ -89,10 +89,10 @@ fn engine_xrays(position: &Position, origin: Square, kind: PieceKind) -> Vec<XRa
             y += i16::from(dy);
             if !(0..8).contains(&x) || !(0..8).contains(&y) {break;}
             let square=Square::new(x as u8,y as u8);
-            if let Some(piece)=position.board().piece_at(square) {
-                let id=piece_id(position,&square.to_string(),piece);
-                if first.is_none() {first=Some(id);}
-                else {second=Some(id);break;}
+            if position.board().piece_at(square).is_some() {
+                let cell=square.to_string();
+                if first.is_none() {first=Some(cell);}
+                else {second=Some(cell);break;}
             }
         }
         if let Some(first)=first {
@@ -102,30 +102,43 @@ fn engine_xrays(position: &Position, origin: Square, kind: PieceKind) -> Vec<XRa
     rays
 }
 
+fn occupied(position: &Position, cell: &str) -> Result<bool> {
+    square(cell)?;
+    let at: Square=cell.parse()?;
+    Ok(position.board().piece_at(at).is_some())
+}
+
 fn validate_xrays(position: &Position, entry: &PieceControls, piece: Piece) -> Result<()> {
-    let inventory: BTreeMap<_,_> = position.board().pieces().map(|(sq,p)| {
-        let label=sq.to_string();
-        (piece_id(position,&label,p), label)
-    }).collect();
     let mut seen=BTreeSet::new();
     for ray in &entry.xray {
         ensure!(allowed_ray(piece.kind,&ray.direction),
             "invalid xray direction {:?} for {}",ray.direction,entry.id);
         ensure!(seen.insert(&ray.direction),
             "duplicate xray direction {:?} for {}",ray.direction,entry.id);
-        let first=inventory.get(&ray.first)
-            .with_context(|| format!("{} refers to nonexistent first blocker {}",entry.id,ray.first))?;
-        ensure!(ray.first != entry.id && entry.controls.contains(first),
-            "{} xray first blocker {} is not in its direct controls",entry.id,ray.first);
-        let path=ray_cells(&entry.square,&ray.direction,Some(first))?;
-        ensure!(path.last()==Some(first),"invalid first ray blocker for {}",entry.id);
+        square(&ray.first)?;
+        ensure!(ray.first != entry.square && occupied(position,&ray.first)?,
+            "{} first blocker {} must occupy another square",entry.id,ray.first);
+        ensure!(entry.controls.contains(&ray.first),
+            "{} first blocker {} must be a directly controlled square",
+            entry.id,ray.first);
+
+        // A claimed first blocker cannot skip an earlier occupied square.
+        let path=ray_cells(&entry.square,&ray.direction,Some(&ray.first))?;
+        ensure!(path[..path.len()-1].iter().all(|s| !occupied(position,s).unwrap_or(true)),
+            "{} xray first blocker {} skips a closer piece",entry.id,ray.first);
+
         if let Some(second)=&ray.second {
-            ensure!(second != &ray.first && second != &entry.id,
-                "xray blockers must be distinct and not be the attacker");
-            let second_sq=inventory.get(second)
-                .with_context(|| format!("{} refers to nonexistent second blocker {second}",entry.id))?;
-            ray_cells(first,&ray.direction,Some(second_sq))?;
+            square(second)?;
+            ensure!(second != &ray.first && second != &entry.square,
+                "{} xray blockers must be distinct",entry.id);
         }
+        // Read the ray behind the reported first blocker and CHECK (never fill)
+        // the next occupied square, including when the model reported null.
+        let next=ray_cells(&ray.first,&ray.direction,None)?.into_iter()
+            .find(|s| occupied(position,s).unwrap_or(false));
+        ensure!(ray.second == next,
+            "{} xray {:?} has second {:?}; nearest occupied square after {} is {:?}",
+            entry.id,ray.direction,ray.second,ray.first,next);
     }
     Ok(())
 }
@@ -146,11 +159,8 @@ pub fn validate_one(position: &Position, cell: &str, result: &OnePieceControls) 
 /// The direct control map already handles changes up to and including first.
 fn xray_affected(entry: &PieceControls, changed: &BTreeSet<String>) -> Result<bool> {
     for ray in &entry.xray {
-        let first=ray.first.split_once('_').map(|(_,sq)|sq)
-            .context("invalid xray first blocker id")?;
-        let second=ray.second.as_deref().map(|id|id.split_once('_')
-            .map(|(_,sq)|sq).context("invalid xray second blocker id")).transpose()?;
-        if ray_cells(first,&ray.direction,second)?.iter().any(|cell|changed.contains(cell)) {
+        if ray_cells(&ray.first,&ray.direction,ray.second.as_deref())?
+            .iter().any(|cell|changed.contains(cell)) {
             return Ok(true);
         }
     }
@@ -260,6 +270,8 @@ impl OnePieceControls {
         let mut seen=BTreeSet::new();
         for ray in &result.xray {
             ensure!(ray_direction(&ray.direction).is_some(), "invalid xray direction {}",ray.direction);
+            square(&ray.first)?;
+            if let Some(second)=&ray.second { square(second)?; }
             ensure!(seen.insert(&ray.direction), "duplicate xray direction {}",ray.direction);
         }
         result.xray.sort_by(|a,b| a.direction.cmp(&b.direction));
