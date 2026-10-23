@@ -380,7 +380,10 @@ Classic Grounder maps now store `xray` next to direct `controls`.
 Each bishop/rook/queen reports the first occupied blocker on every ray
 and the next occupied blocker behind it, regardless of either piece's color.
 If nothing is behind the first blocker, the required `second` field is `null`.
-Non-sliders always have an empty `xray` array.
+Non-sliders always have an empty `xray` array. `first` and `second` are
+lowercase square coordinates, **never piece IDs**. Rust resolves occupants from
+the current Position and rejects a reported blocker that is not the nearest
+occupied square on its ray, rather than correcting the model's answer.
 
 ```json
 {
@@ -388,8 +391,8 @@ Non-sliders always have an empty `xray` array.
   "square": "d8",
   "controls": ["a5","b6","c7","c8","d5","d6","d7","e7","e8"],
   "xray": [
-    {"direction":"S","first":"wN_d5","second":"wQ_d1"},
-    {"direction":"W","first":"bB_c8","second":"bR_a8"}
+    {"direction":"S","first":"d5","second":"d1"},
+    {"direction":"W","first":"c8","second":"a8"}
   ]
 }
 ```
@@ -405,5 +408,5 @@ the `xray` relationship.
 Older version-1 map files without `xray` still parse, but their x-ray metadata
 is incomplete; regenerate the map before using it for pin analysis.
 The debug-only `pin-analyzer` accepts a reported pin only if the supplied
-x-ray map contains the corresponding (attacker, first=pinned, second=protected)
-relationship. It doesn't recalculate the model's geometry via the chess engine.
+x-ray map contains the corresponding (attacker, first=pinned square,
+second=protected square) relationship. It doesn't recalculate the model's geometry via the chess engine.

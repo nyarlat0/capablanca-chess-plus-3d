@@ -164,7 +164,7 @@ async fn one_grounder_full_collects_sequentially_retries_current_piece_and_build
             text(json!({"controls":["d1","d1"],"xray":[]})), // retry only the second piece
             text(json!({"controls":["d1","d2","e2","f1","f2"],"xray":[]})),
             text(json!({"controls":["b3"],"xray":[]})),
-            text(json!({"controls":["a2","b1","c1","d1","e1"],"xray":[]})),
+            text(json!({"controls":["a2","b1","c1","d1","e1"],"xray":[{"direction":"E","first":"e1","second":null},{"direction":"N","first":"a2","second":null}]})),
         ],
         512,
     );
