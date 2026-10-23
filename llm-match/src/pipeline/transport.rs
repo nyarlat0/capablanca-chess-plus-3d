@@ -34,9 +34,14 @@ pub(super) async fn request_parsed<T>(
     let reasoning = &config.reasoning;
     // Diagnostics never enter model context, history, or exclusions.
     let report_invalid = |attempt: usize, raw: &str, error: &anyhow::Error| {
-        if stage == Stage::Grounder && config.classic.is_some() {
+        if matches!(stage, Stage::Grounder | Stage::OneGrounder) && config.classic.is_some() {
+            let label = if stage == Stage::OneGrounder {
+                "OneGrounder"
+            } else {
+                "Grounder"
+            };
             eprintln!(
-                "Grounder attempt {attempt} rejected: {error:#}\n--- original model response ---\n{raw}\n--- end model response ---"
+                "{label} attempt {attempt} rejected: {error:#}\n--- original model response ---\n{raw}\n--- end model response ---"
             );
         }
     };

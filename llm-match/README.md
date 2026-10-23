@@ -182,6 +182,41 @@ LLM-tools пока нет. В v1 нет FEN внутри файла: смену 
 не навязывается. При исчерпании попыток процесс завершается с ошибкой и не печатает
 невалидную карту в stdout — проверяй код возврата, прежде чем использовать файл.
 
+## One-grounder: контроль одной фигуры
+
+Изолированная тестовая стадия **не входит в игровой pipeline**. Выбор фигуры —
+по занятой клетке (`f6`) или точному ID (`bN_f6`); цвет и тип берутся из текущей
+позиции, независимо от стороны, чей сейчас ход. Пока только Classic.
+
+```sh
+FEN='r1bqkb1r/pp2pppp/2n2n2/2PN4/5B2/8/PPP1PPPP/R2QKBNR b KQkq - 0 5'
+
+./target/release/llm-match --stage one-grounder --fen "$FEN" \
+  --selected-piece f6 > target/one-grounder.json 2> target/one-grounder.log
+
+# Предпросмотр без LLM; bN_f6 означает ту же фигуру:
+./target/release/llm-match --stage one-grounder --fen "$FEN" \
+  --selected-piece bN_f6 --print-prompt
+```
+
+Шаблон — `templates/pipeline/one-grounder.json`, пресет —
+`presets/one-grounder.json`; в `.env` отдельно настраиваются
+`LLM_ONE_GROUNDER_TEMPLATE` и `LLM_ONE_GROUNDER_PRESET`. Если отдельный пресет
+не задан, используется пресет Grounder. Директива `{{selected-piece}}`
+работает в system/user_prompt этой стадии и подставляет, например,
+`Black Knight: f6` — без вычисленных атак или подсказок.
+
+Единственный формат результата: `{"controls":["d5","d7","e4","e8","g4","g8","h5","h7"]}`.
+Никаких `id`, `version`, `square` и прочих полей в ответе нет. Rust проверяет
+JSON, координаты и дубликаты, сортирует клетки, но не проверяет геометрию.
+Пустой список допустим. Markdown JSON-обёртка принимается. Пустая исходная клетка,
+неверный ID или использование `--selected-piece` с другой стадией отклоняются
+до сетевого запроса. Стадия не применяет ход и не изменяет историю.
+
+Доска PNG, FEN, retry, reasoning и диагностика ошибок используются те же,
+что у Grounder. `--grounder-map-file` предназначен для полной карты и не
+используется с `one-grounder`.
+
 ## Настройки
 
 `.env` читается из крейта; `LLM_MATCH_ENV=/path/to/.env` меняет файл.

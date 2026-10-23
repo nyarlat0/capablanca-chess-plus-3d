@@ -3,6 +3,45 @@ use llm_match::grounder::ControlGraph;
 use serde_json::{Value, json};
 
 const FEN: &str = "7k/8/8/4p3/3P4/P7/8/R1r1K3 w - - 0 1";
+#[test]
+fn one_piece_protocol_and_selection() {
+    use llm_match::grounder::{OnePieceControls, selected_piece};
+    assert_eq!(selected_piece(&position(), "d4").unwrap(), "White Pawn: d4");
+    assert_eq!(
+        selected_piece(&position(), "wP_d4").unwrap(),
+        "White Pawn: d4"
+    );
+    assert_eq!(selected_piece(&position(), "e5").unwrap(), "Black Pawn: e5");
+    for invalid in ["a2", "i1", "D4", "bP_d4", "wN_d4", "P_d4"] {
+        assert!(selected_piece(&position(), invalid).is_err());
+    }
+    assert!(selected_piece(&Variant::Gothic.starting_position(), "a1").is_err());
+    let result = OnePieceControls::parse(r#"{"controls":["h8","a1"]}"#).unwrap();
+    assert_eq!(result.controls, ["a1", "h8"]); // no geometry checking
+    assert_eq!(
+        serde_json::to_value(result).unwrap(),
+        json!({"controls":["a1","h8"]})
+    );
+    assert!(
+        OnePieceControls::parse("```json\n{\"controls\":[]}\n```")
+            .unwrap()
+            .controls
+            .is_empty()
+    );
+    for invalid in [
+        r#"{"controls":[],"id":"wN_b1"}"#,
+        r#"{"controls":[],"version":1}"#,
+        r#"{"controls":["a1","a1"]}"#,
+        r#"{"controls":["A1"]}"#,
+        r#"{"controls":["i8"]}"#,
+        r#"{"controls":[],"controls":[]}"#,
+        "{}",
+        "[]",
+        "comment {\"controls\":[]}",
+    ] {
+        assert!(OnePieceControls::parse(invalid).is_err(), "{invalid}");
+    }
+}
 fn position() -> Position {
     Position::from_fen(Variant::Classic.rules(), FEN).unwrap()
 }

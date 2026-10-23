@@ -31,6 +31,7 @@ pub struct Config {
 /// Missing stage overrides use the shared fallback preset.
 #[derive(Clone, Default)]
 pub struct StagePresets {
+    pub one_grounder: Option<Preset>,
     pub grounder: Option<Preset>,
     pub proposer: Option<Preset>,
     pub verifier: Option<Preset>,
@@ -52,6 +53,7 @@ impl StagePresets {
         };
         Ok(Self {
             grounder: read("LLM_GROUNDER_PRESET")?,
+            one_grounder: read("LLM_ONE_GROUNDER_PRESET")?,
             proposer: read("LLM_PROPOSER_PRESET")?,
             verifier: read("LLM_VERIFIER_PRESET")?,
             selector: read("LLM_SELECTOR_PRESET")?,
@@ -63,6 +65,13 @@ impl Config {
     pub fn preset_for_stage(&self, stage: crate::pipeline::Stage) -> &Preset {
         use crate::pipeline::Stage;
         match stage {
+            Stage::OneGrounder => {
+                return self
+                    .stage_presets
+                    .one_grounder
+                    .as_ref()
+                    .unwrap_or_else(|| self.preset_for_stage(Stage::Grounder));
+            }
             Stage::Grounder => &self.stage_presets.grounder,
             Stage::Proposer => &self.stage_presets.proposer,
             Stage::Verifier => &self.stage_presets.verifier,

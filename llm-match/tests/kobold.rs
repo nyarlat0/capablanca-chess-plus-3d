@@ -151,6 +151,97 @@ fn text(value: Value) -> Reply {
 fn grounding() -> Reply {
     grounding_for(state().game().position())
 }
+
+#[tokio::test]
+async fn one_grounder_is_isolated_and_retries_without_feedback() {
+    use llm_match::pipeline::{
+        Stage,
+        debug::{self, Inputs},
+    };
+    let server = Server::script(
+        vec![
+            Reply::Text("<thinking>unfinished".into()),
+            text(json!({"version":1,"controls":[]})),
+            Reply::Text(
+                "<thinking>private</thinking>```json\n{\"controls\":[\"h6\",\"f6\",\"e7\"]}\n```"
+                    .into(),
+            ),
+        ],
+        512,
+    );
+    let mut config = cfg(&server);
+    config.stage_presets.one_grounder =
+        Some(prompt_core::Preset::from_value(json!({"genamt":321})).unwrap());
+    config.pipeline.one_grounder.content = "ONE_ONLY {{selected-piece}}".into();
+    let m = state();
+    let before = m.game().position().to_fen();
+    let inputs = Inputs {
+        selected_piece: Some("g8".into()),
+        ..Default::default()
+    };
+    let output = debug::run(&m, &config, Stage::OneGrounder, &inputs)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&output).unwrap(),
+        json!({"controls":["e7","f6","h6"]})
+    );
+    assert_eq!(m.game().position().to_fen(), before);
+    assert_eq!(m.uci_history(), ["e2e4"]);
+    assert!(m.wrong_moves().is_empty());
+    let prompts = server.prompts.lock().unwrap();
+    assert_eq!(prompts.len(), 3);
+    assert!(prompts[0].contains("ONE_ONLY Black Knight: g8"));
+    assert!(!prompts[0].contains("ACCEPTED MOVE HISTORY"));
+    assert_eq!(prompts[0], prompts[1]);
+    assert_eq!(prompts[1], prompts[2]);
+    for request in server.requests.lock().unwrap().iter() {
+        assert_eq!(request["max_tokens"], 321);
+    }
+}
+
+#[tokio::test]
+async fn one_grounder_invalid_selection_never_calls_model() {
+    use llm_match::pipeline::{
+        Stage,
+        debug::{self, Inputs},
+    };
+    let server = Server::script(vec![], 512);
+    let config = cfg(&server);
+    let m = state();
+    assert!(
+        debug::run(&m, &config, Stage::OneGrounder, &Inputs::default())
+            .await
+            .is_err()
+    );
+    for selected in ["a3", "bN_b1", "A1"] {
+        let inputs = Inputs {
+            selected_piece: Some(selected.into()),
+            ..Default::default()
+        };
+        assert!(
+            debug::run(&m, &config, Stage::OneGrounder, &inputs)
+                .await
+                .is_err()
+        );
+    }
+    let inputs = Inputs {
+        selected_piece: Some("b1".into()),
+        ..Default::default()
+    };
+    assert!(
+        debug::run(&m, &config, Stage::Grounder, &inputs)
+            .await
+            .is_err()
+    );
+    let fairy = llm_match::Match::new(Variant::Gothic, Color::White);
+    assert!(
+        debug::run(&fairy, &config, Stage::OneGrounder, &inputs)
+            .await
+            .is_err()
+    );
+    assert!(server.prompts.lock().unwrap().is_empty());
+}
 fn grounding_for(position: &capablanca_chess_plus::Position) -> Reply {
     if position.rules().name() != Variant::Classic.rules().name() {
         return Reply::Text("GROUNDED_FACT".into());
@@ -614,6 +705,7 @@ async fn each_stage_sends_its_own_sampler_and_response_budget() {
         Some(prompt_core::Preset::from_value(json!({"genamt":tokens,"temp":temp})).unwrap())
     };
     c.stage_presets = llm_match::StagePresets {
+        one_grounder: None,
         grounder: preset(151, 0.15),
         proposer: preset(202, 0.2),
         verifier: preset(303, 0.3),

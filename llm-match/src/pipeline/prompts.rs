@@ -2,6 +2,7 @@
 use super::*;
 #[derive(Clone)]
 pub struct Templates {
+    pub one_grounder: SystemPromptTemplate,
     pub grounder: SystemPromptTemplate,
     pub proposer: SystemPromptTemplate,
     pub verifier: SystemPromptTemplate,
@@ -25,6 +26,12 @@ impl Templates {
             .with_context(|| format!("invalid stage template {}", path.display()))
         };
         Ok(Self {
+            // Never used for fairy variants; no new fairy template required.
+            one_grounder: if classic {
+                read("LLM_ONE_GROUNDER_TEMPLATE", "one-grounder")?
+            } else {
+                read("LLM_GROUNDER_TEMPLATE", "grounder")?
+            },
             grounder: read("LLM_GROUNDER_TEMPLATE", "grounder")?,
             proposer: read("LLM_PROPOSER_TEMPLATE", "proposer")?,
             verifier: read("LLM_VERIFIER_TEMPLATE", "verifier")?,
@@ -37,7 +44,10 @@ impl Templates {
 pub fn prompt_data(state: &Match, config: &Config, stage: Stage) -> Result<PromptData> {
     let mut data = state.prompt_data_with(config)?;
     let original = data.custom.clone();
-    let private = matches!(stage, Stage::Grounder | Stage::Verifier | Stage::Selector);
+    let private = matches!(
+        stage,
+        Stage::OneGrounder | Stage::Grounder | Stage::Verifier | Stage::Selector
+    );
     if private {
         data.messages.clear();
     }
@@ -108,6 +118,7 @@ pub fn prompt_data(state: &Match, config: &Config, stage: Stage) -> Result<Promp
 
 pub(crate) fn template(config: &Config, stage: Stage) -> SystemPromptTemplate {
     match stage {
+        Stage::OneGrounder => &config.pipeline.one_grounder,
         Stage::Grounder => &config.pipeline.grounder,
         Stage::Proposer => &config.pipeline.proposer,
         Stage::Verifier => &config.pipeline.verifier,

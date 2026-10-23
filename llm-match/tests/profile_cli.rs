@@ -7,6 +7,56 @@ fn run(args: &[&str]) -> Output {
         .output()
         .unwrap()
 }
+
+#[test]
+fn one_grounder_cli_previews_only_selected_piece_task() {
+    let square = success(run(&[
+        "--stage",
+        "one-grounder",
+        "--selected-piece",
+        "b1",
+        "--print-prompt",
+    ]));
+    let id = success(run(&[
+        "--stage",
+        "one-grounder",
+        "--selected-piece",
+        "wN_b1",
+        "--print-prompt",
+    ]));
+    assert_eq!(square, id);
+    assert!(square.contains("White Knight: b1"));
+    assert!(!square.contains("{{selected-piece}}"));
+    for args in [
+        vec!["--stage", "one-grounder", "--print-prompt"],
+        vec![
+            "--stage",
+            "one-grounder",
+            "--selected-piece",
+            "a3",
+            "--print-prompt",
+        ],
+        vec![
+            "--stage",
+            "grounder",
+            "--selected-piece",
+            "b1",
+            "--print-prompt",
+        ],
+        vec!["--selected-piece", "b1", "--print-prompt"],
+        vec![
+            "--variant",
+            "Gothic",
+            "--stage",
+            "one-grounder",
+            "--selected-piece",
+            "b1",
+            "--print-prompt",
+        ],
+    ] {
+        assert!(!run(&args).status.success());
+    }
+}
 fn success(output: Output) -> String {
     assert!(
         output.status.success(),

@@ -32,6 +32,12 @@ async fn main() -> Result<()> {
             s if s.starts_with("--llm-profile=") || s.starts_with("--llm-classic-profile=") => {}
             "--print-prompt" => print_prompt = true,
             "--stage" => stage = Some(args.next().context("missing stage name")?.parse()?),
+            "--selected-piece" => {
+                inputs.selected_piece = Some(
+                    args.next()
+                        .context("missing selected piece: square or id")?,
+                )
+            }
             "--grounder-map-file" => map_file = Some(args.next().context("missing map file")?),
             "--inspect-square" => inspect_square = Some(args.next().context("missing square")?),
             "--inspect-piece" => inspect_piece = Some(args.next().context("missing piece id")?),
@@ -68,6 +74,9 @@ async fn main() -> Result<()> {
             }
             "--help" => {
                 println!(
+                    "Single piece: --stage one-grounder --selected-piece f6 (or bN_f6) [--fen 'FEN'] [--print-prompt]. Classic only; returns {{\"controls\":[...]}} without choosing a move."
+                );
+                println!(
                     "Grounder map (Classic): --stage grounder --grounder-map-file map.json [--inspect-square e4] [--inspect-piece bN_f6]. Offline validation against --fen/--moves; no LLM configuration or network required. Without inspect flags prints normalized map JSON."
                 );
                 println!(
@@ -103,6 +112,7 @@ async fn main() -> Result<()> {
         );
         anyhow::ensure!(
             !print_prompt
+                && inputs.selected_piece.is_none()
                 && inputs.analysis.is_none()
                 && inputs.candidate.is_none()
                 && inputs.accepted_candidates.is_none(),
@@ -178,7 +188,8 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     anyhow::ensure!(
-        inputs.analysis.is_none()
+        inputs.selected_piece.is_none()
+            && inputs.analysis.is_none()
             && inputs.candidate.is_none()
             && inputs.accepted_candidates.is_none(),
         "stage input files require --stage"

@@ -22,6 +22,8 @@ use std::{collections::HashSet, path::Path, time::Duration};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
+    /// Debug only; never scheduled by generate().
+    OneGrounder,
     Grounder,
     Proposer,
     Verifier,
@@ -32,11 +34,12 @@ impl std::str::FromStr for Stage {
     type Err = anyhow::Error;
     fn from_str(value: &str) -> Result<Self> {
         match value {
+            "one-grounder" => Ok(Self::OneGrounder),
             "grounder" => Ok(Self::Grounder),
             "proposer" => Ok(Self::Proposer),
             "verifier" => Ok(Self::Verifier),
             "selector" => Ok(Self::Selector),
-            _ => bail!("stage must be grounder, proposer, verifier or selector"),
+            _ => bail!("stage must be one-grounder, grounder, proposer, verifier or selector"),
         }
     }
 }
@@ -335,6 +338,7 @@ mod tests {
                     "user_prompt":"SIDE {{side-to-move}}", "post_history":"ONLY MY POST"
                 })).unwrap();
                 let slot = match stage {
+                    Stage::OneGrounder => &mut config.pipeline.one_grounder,
                     Stage::Grounder => &mut config.pipeline.grounder,
                     Stage::Proposer => &mut config.pipeline.proposer,
                     Stage::Verifier => &mut config.pipeline.verifier,

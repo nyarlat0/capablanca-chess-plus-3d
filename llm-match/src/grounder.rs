@@ -21,6 +21,60 @@ pub struct PieceControls {
     pub controls: Vec<String>,
 }
 
+/// Identity comes from the requested position, never from model output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OnePieceControls {
+    pub controls: Vec<String>,
+}
+impl OnePieceControls {
+    pub fn parse(text: &str) -> Result<Self> {
+        let mut result: Self =
+            crate::output::parse_json(text).context("invalid one-grounder JSON")?;
+        validate_controls("selected piece", &mut result.controls)?;
+        Ok(result)
+    }
+}
+
+/// Accept an occupied square or exact piece id. Never compute attacks.
+pub fn selected_piece(position: &Position, selection: &str) -> Result<String> {
+    ensure!(
+        position.rules().name() == Variant::Classic.rules().name(),
+        "one-grounder requires Classic chess"
+    );
+    let cell = selection
+        .split_once('_')
+        .map_or(selection, |(_, cell)| cell);
+    square(cell)?;
+    let (_, piece) = position
+        .board()
+        .pieces()
+        .find(|(s, _)| s.to_string() == cell)
+        .with_context(|| format!("selected square {cell} is empty"))?;
+    let id = piece_id(position, cell, piece);
+    ensure!(
+        selection == cell || selection == id,
+        "selected piece {selection:?} does not match {id}"
+    );
+    Ok(format!(
+        "{:?} {}: {cell}",
+        piece.color,
+        piece.kind.display_name()
+    ))
+}
+fn validate_controls(owner: &str, controls: &mut [String]) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for cell in controls.iter() {
+        square(cell).with_context(|| format!("{owner}.controls"))?;
+        ensure!(
+            seen.insert(cell),
+            "duplicate controlled square {cell} for {owner}"
+        );
+    }
+    controls.sort();
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PieceView {
     pub id: String,
@@ -121,16 +175,7 @@ impl ControlGraph {
                 entry.square,
                 entry.id
             );
-            let mut controls = BTreeSet::new();
-            for cell in &entry.controls {
-                square(cell).with_context(|| format!("{}.controls", entry.id))?;
-                ensure!(
-                    controls.insert(cell),
-                    "duplicate controlled square {cell} for {}",
-                    entry.id
-                );
-            }
-            entry.controls.sort();
+            validate_controls(&entry.id, &mut entry.controls)?;
         }
         let missing: Vec<_> = inventory
             .values()

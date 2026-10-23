@@ -4,6 +4,7 @@ use super::*;
 
 #[derive(Default)]
 pub struct Inputs {
+    pub selected_piece: Option<String>,
     pub analysis: Option<String>,
     /// One Proposer candidate: id, move, from, to, optional rationale.
     pub candidate: Option<Value>,
@@ -47,6 +48,21 @@ fn candidates(state: &Match, config: &Config, value: &Value) -> Result<Vec<Candi
 
 fn data(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result<PromptData> {
     ensure!(
+        inputs.selected_piece.is_some() == (stage == Stage::OneGrounder),
+        "--selected-piece is required only for --stage one-grounder"
+    );
+    let selected = inputs
+        .selected_piece
+        .as_deref()
+        .map(|piece| {
+            ensure!(
+                config.classic.is_some(),
+                "one-grounder requires Classic chess"
+            );
+            crate::grounder::selected_piece(state.game.position(), piece)
+        })
+        .transpose()?;
+    ensure!(
         inputs.analysis.is_some() == matches!(stage, Stage::Proposer | Stage::Verifier),
         "analysis-file is required only for proposer and verifier"
     );
@@ -59,6 +75,9 @@ fn data(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result
         "accepted-candidates-file is required only for selector"
     );
     let mut data = prompt_data(state, config, stage)?;
+    if let Some(selected) = selected {
+        data.custom["selected-piece"] = json!(selected);
+    }
     if let Some(analysis) = &inputs.analysis {
         ensure!(
             !analysis.trim().is_empty() && analysis.len() <= 32768,
@@ -117,6 +136,14 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
         .build()?;
     let mut client = None;
     match stage {
+        Stage::OneGrounder => {
+            request_parsed(&mut client, &http, config, stage, &data, &image, |text| {
+                Ok(serde_json::to_string_pretty(
+                    &crate::grounder::OnePieceControls::parse(text)?,
+                )?)
+            })
+            .await
+        }
         Stage::Grounder => {
             request_parsed(&mut client, &http, config, stage, &data, &image, |text| {
                 grounder_response(state, config, text)
