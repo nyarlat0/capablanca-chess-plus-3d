@@ -149,7 +149,98 @@ fn text(value: Value) -> Reply {
     Reply::Text(value.to_string())
 }
 fn grounding() -> Reply {
-    Reply::Text("<thinking>GROUNDER_PRIVATE_REASONING</thinking>GROUNDED_FACT".into())
+    grounding_for(state().game().position())
+}
+fn grounding_for(position: &capablanca_chess_plus::Position) -> Reply {
+    if position.rules().name() != Variant::Classic.rules().name() {
+        return Reply::Text("GROUNDED_FACT".into());
+    }
+    // Inventory-only fixture: intentionally no engine geometry oracle.
+    let pieces: Vec<_> = position.board().pieces().map(|(cell, piece)| json!({
+        "id":format!("{}{}_{}", if piece.color == Color::White {"w"} else {"b"},
+            position.rules().piece_symbol(capablanca_chess_plus::Piece::new(Color::White,piece.kind)), cell),
+        "square":cell.to_string(),"controls":[]
+    })).collect();
+    Reply::Text(format!(
+        "<thinking>GROUNDER_PRIVATE_REASONING</thinking>{}",
+        json!({"version":1,"pieces":pieces})
+    ))
+}
+
+#[test]
+fn grounder_cli_reports_bad_maps_and_retries_without_model_feedback() {
+    let valid = match grounding() {
+        Reply::Text(text) => text.split("</thinking>").nth(1).unwrap().to_owned(),
+        _ => unreachable!(),
+    };
+    let invalid = r#"{"version":1,"pieces":[],"unexpected_marker":"BAD_MAP_DIAGNOSTIC"}"#;
+    let server = Server::script(
+        vec![
+            Reply::Text("<think>SILENT_TRUNCATION".into()),
+            Reply::Text(invalid.into()),
+            Reply::Text(valid.clone()),
+        ],
+        512,
+    );
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_llm-match"))
+        .env(
+            "LLM_MATCH_ENV",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/.env"),
+        )
+        .env("LLM_STAGE_MAX_ATTEMPTS", "3")
+        .args([
+            "--stage",
+            "grounder",
+            "--moves-format",
+            "san",
+            "--moves",
+            "e4",
+            "--url",
+            &server.endpoint,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Grounder attempt 2 rejected"));
+    assert!(stderr.contains("unknown field"));
+    assert!(stderr.contains(invalid));
+    assert!(!stderr.contains("SILENT_TRUNCATION"));
+    let result = String::from_utf8(output.stdout).unwrap();
+    let graph =
+        llm_match::grounder::ControlGraph::parse(state().game().position(), &result).unwrap();
+    assert_eq!(graph.map().pieces.len(), 32);
+    let prompts = server.prompts.lock().unwrap();
+    assert_eq!(prompts.len(), 3);
+    assert_eq!(prompts[0], prompts[1]);
+    assert_eq!(prompts[1], prompts[2]);
+    assert!(!prompts[2].contains("BAD_MAP_DIAGNOSTIC"));
+}
+
+#[tokio::test]
+async fn rejected_grounder_maps_never_change_match_state() {
+    let server = Server::script(vec![text(json!({"version":1,"pieces":[]}))], 512);
+    let mut config = cfg(&server);
+    config.stage_max_attempts = 1;
+    let m = state();
+    let before = m.game().position().to_fen();
+    let error = llm_match::pipeline::debug::run(
+        &m,
+        &config,
+        llm_match::pipeline::Stage::Grounder,
+        &Default::default(),
+    )
+    .await
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("missing pieces"));
+    assert_eq!(m.game().position().to_fen(), before);
+    assert_eq!(m.uci_history(), ["e2e4"]);
+    assert!(m.wrong_moves().is_empty());
+    assert_eq!(server.prompts.lock().unwrap().len(), 1);
 }
 fn candidates(moves: &[(&str, &str, &str)]) -> Reply {
     text(
@@ -288,7 +379,16 @@ async fn debug_retries_only_the_chosen_stage_and_strips_reasoning() {
         debug::run(&m, &c, Stage::Grounder, &Inputs::default())
             .await
             .unwrap(),
-        "GROUNDED_FACT"
+        llm_match::grounder::ControlGraph::parse(
+            m.game().position(),
+            &match grounding() {
+                Reply::Text(t) => t.split("</thinking>").nth(1).unwrap().to_owned(),
+                _ => unreachable!(),
+            }
+        )
+        .unwrap()
+        .normalized_json()
+        .unwrap()
     );
     let p = server.prompts.lock().unwrap();
     assert_eq!(p.len(), 3);
@@ -365,11 +465,11 @@ async fn four_stage_skips_analyst_and_shares_grounded_facts() {
             .all(|prompt| !prompt.contains("ANALYST_MUST_NOT_RUN")
                 && !prompt.contains("UNEXPECTED_ANALYSIS"))
     );
-    assert!(!p[0].contains("GROUNDED_FACT"));
+    assert!(!p[0].contains("\"version\": 1"));
     for prompt in &p[1..5] {
-        assert!(prompt.contains("GROUNDED_FACT"));
+        assert!(prompt.contains("\"version\": 1"));
     }
-    assert!(!p[5].contains("GROUNDED_FACT"));
+    assert!(!p[5].contains("\"version\": 1"));
     assert!(
         p.iter()
             .all(|prompt| !prompt.contains("GROUNDER_PRIVATE_REASONING"))
@@ -407,7 +507,7 @@ async fn four_stage_reuses_grounder_after_illegal_candidates_and_deduplicates() 
     let p = server.prompts.lock().unwrap();
     assert_eq!(p.len(), 6);
     for prompt in &p[1..5] {
-        assert!(prompt.contains("GROUNDED_FACT"));
+        assert!(prompt.contains("\"version\": 1"));
     }
     assert!(p[2].contains("e6+"));
     assert!(p[5].contains("TACTICAL_RESULT_1") && p[5].contains("TACTICAL_RESULT_3"));
@@ -442,7 +542,7 @@ async fn four_stage_handles_every_variant_without_engine_hints() {
             .collect();
         let server = Server::script(
             vec![
-                grounding(),
+                grounding_for(m.game().position()),
                 text(json!({"candidates":cs})),
                 verify(1, true),
                 verify(2, false),
@@ -564,7 +664,7 @@ async fn engine_gate_filters_illegal_and_mismatched_candidates_without_committin
     assert_eq!(p.len(), 6);
     assert!(p[2].contains("e6+"));
     assert!(p[2].contains("Qh4"));
-    assert!(p[2].contains("GROUNDED_FACT"));
+    assert!(p[2].contains("\"version\": 1"));
     assert!(!p[2].contains("ANALYST_PRIVATE_FACT"));
     assert!(!p[3].contains("e6+"));
     assert!(p[3].contains(r#""move":"e5""#));
@@ -573,9 +673,14 @@ async fn engine_gate_filters_illegal_and_mismatched_candidates_without_committin
 
 #[tokio::test]
 async fn incorrect_metadata_cannot_poison_same_legal_move_and_valid_duplicates_are_deduplicated() {
+    let position = capablanca_chess_plus::Position::from_fen(
+        Variant::Classic.rules(),
+        "r1bqkb1r/pp2pppp/2n2n2/2PN4/5B2/8/PPP1PPPP/R2QKBNR b KQkq - 0 5",
+    )
+    .unwrap();
     let server = Server::script(
         vec![
-            grounding(),
+            grounding_for(&position),
             candidates(&[
                 ("Nxd5", "c6", "d5"),
                 ("Nxd5", "f6", "d5"),
@@ -602,7 +707,8 @@ async fn incorrect_metadata_cannot_poison_same_legal_move_and_valid_duplicates_a
     assert!(p[2].contains(r#""from":"f6""#));
     assert!(!p[2].contains(r#""from":"c6""#));
     assert!(!p[2].contains("candidate_id"));
-    assert!(!p[2].contains(r#""id""#));
+    // Grounder now includes piece ids; candidate identity is still excluded.
+    assert!(!p[2].contains(r#""id":"c2""#));
     assert!(p[3].contains(r#""id":"c2""#));
     assert!(p[3].contains(r#""tactical_result":"TACTICAL_RESULT_2""#));
     assert!(!p[3].contains(r#""id":"c1""#));
@@ -735,7 +841,7 @@ async fn fairy_variants_preserve_every_move_and_coordinate_format() {
             }).collect();
             let server = Server::script(
                 vec![
-                    grounding(),
+                    grounding_for(m.game().position()),
                     text(json!({"candidates":cs})),
                     verify(1, true),
                     verify(2, false),

@@ -37,16 +37,16 @@ Stdout содержит только результат стадии, логи �
 Пример для начальной позиции (во всех командах должна быть одна и та же позиция):
 
 ```sh
-./target/release/llm-match --stage grounder > target/facts.txt
+./target/release/llm-match --stage grounder > target/facts.json
 
 ./target/release/llm-match --stage proposer \
-  --analysis-file target/facts.txt > target/proposal.json
+  --analysis-file target/facts.json > target/proposal.json
 
 # Сохраняем один конкретный кандидат из ответа Proposer:
 jq '.candidates[0]' target/proposal.json > target/candidate.json
 
 ./target/release/llm-match --stage verifier \
-  --analysis-file target/facts.txt \
+  --analysis-file target/facts.json \
   --candidate-file target/candidate.json > target/verification.json
 
 # Формируем список только ACCEPT-результатов; повтори Verifier для других кандидатов.
@@ -65,7 +65,7 @@ jq -n --slurpfile c target/candidate.json --slurpfile v target/verification.json
 
 Контракты файлов:
 
-- `--analysis-file`: непустой компактный текст Grounder (до 32768 байт),
+- `--analysis-file`: результат Grounder как текст (для Classic — нормализованный JSON, до 32768 байт),
   без скрытого reasoning; обязателен для Proposer и Verifier.
 - `--candidate-file`: один объект Proposer, например
   `{"id":"c1","move":"e4","from":"e2","to":"e4","rationale":"Control the centre"}`.
@@ -92,6 +92,7 @@ jq -n --slurpfile c target/candidate.json --slurpfile v target/verification.json
 | Изолированный запуск стадии | `src/pipeline/debug.rs` |
 | HTTP, контекст, retries, reasoning | `src/pipeline/transport.rs`, `src/output.rs` |
 | JSON-контракты | `src/pipeline/protocol.rs` |
+| Карта контроля Classic и read-only индексы | `src/grounder.rs` |
 | Fairy-совместимость | `src/compat/`, `compat/fairy/` |
 
 В `templates/pipeline/` только четыре рабочих Classic-промпта:
@@ -100,13 +101,86 @@ jq -n --slurpfile c target/candidate.json --slurpfile v target/verification.json
 Промпты не дополняются шахматными инструкциями из Rust.
 Для правки шаблонов/пресетов пересборка не нужна.
 
-Grounder устанавливает статические факты без расчёта будущих вариантов.
+Grounder Classic строит полную геометрическую карту контроля без расчёта будущих вариантов.
+Rust проверяет её структуру и состав фигур, но не истинность геометрии.
+В игровом режиме нормализованный JSON передаётся дальше как обычный текст `analysis`;
+новые индексы и tools к остальным стадиям не подключены. Fairy Grounder остаётся текстовым.
 Proposer доверяет фактам и предлагает 3–5 ходов с краткой идеей.
 Verifier доверяет Grounder и рассчитывает только последствия конкретного хода.
 Selector доверяет готовым результатам и только выбирает.
 Grounder выполняется один раз на запрос хода, его результат переиспользуется
 при повторном подборе кандидатов. При трёх легальных кандидатах успешный ход —
 шесть LLM-генераций.
+
+## Изолированная карта контроля Grounder (Classic)
+
+```sh
+FEN='r1bqkb1r/pp2pppp/2n2n2/2PN4/5B2/8/PPP1PPPP/R2QKBNR b KQkq - 0 5'
+
+# Только Grounder, stdout — проверенный JSON, stderr — логи и ошибки:
+./target/release/llm-match --stage grounder --fen "$FEN" \
+  > target/grounder-map.json 2> target/grounder.log
+
+# Предпросмотр запроса без обращения к LLM (включая текущий PNG):
+./target/release/llm-match --stage grounder --fen "$FEN" --print-prompt
+
+# Загрузка и нормализация без LLM-конфига и сети:
+./target/release/llm-match --stage grounder --fen "$FEN" \
+  --grounder-map-file target/grounder-map.json
+
+# Контролирующие d5 фигуры и связи конкретного коня:
+./target/release/llm-match --stage grounder --fen "$FEN" \
+  --grounder-map-file target/grounder-map.json \
+  --inspect-square d5 --inspect-piece bN_f6
+```
+
+Используй тот же FEN/историю `--moves`, для которых получена карта. Ни один
+изолированный запуск не выбирает и не применяет ход. `--inspect-*` требуют
+загрузки через `--grounder-map-file`; загрузка несовместима с `--print-prompt`,
+другими стадиями, их входными файлами и fairy-вариантами.
+
+Формат сохранённой карты строго `{"version":1,"pieces":[...]}`. Каждая запись
+имеет только `id`, `square`, `controls`; например:
+
+```json
+{"id":"bN_f6","square":"f6","controls":["d5","d7","e4","e8","g4","g8","h5","h7"]}
+```
+
+Настоящий ответ обязан содержать **все фигуры обеих сторон**, включая фигуры
+с пустым `controls`. Принимаются целый JSON либо одна закрытая JSON Markdown-обёртка,
+но не проза с вкраплением JSON. Неизвестные/повторные поля, неправильная версия,
+координаты вне `a1`–`h8`, иной регистр, повторные записи/контроли, недостающие
+фигуры и несовпадения ID с цветом/типом/клеткой отклоняются. Порядок нормализуется:
+записи по ID, клетки и связи лексикографически. Дубликаты не удаляются молча.
+
+Геометрический контроль включает свои фигуры и игнорирует связки/безопасность
+короля. Луч заканчивается на первом занятом поле включительно; пешки контролируют
+диагонали, не поля движения. **Эти правила исполняет только модель**: Rust не
+вычисляет, не проверяет и не исправляет её атаки. Успешная структурная проверка
+не доказывает правильность геометрии. Даже заведомо неверный контроль `a1 → h8`
+у ладьи будет сохранён, если JSON и состав фигур корректны.
+
+`grounder::ControlGraph::parse(&position, text)` строит неизменяемые индексы:
+
+- `get_piece("bN_f6")`: фигура, её `controls`, ID целей `attacks_enemies`,
+  союзников `defends_allies` и защитников `defended_by`.
+- `get_attackers("d5")`: все заявленные геометрические контролирующие фигуры
+  обоих цветов, а не список разрешённых взятий.
+- `get_square("d5")`: `square`, `occupant` (ID или null), `controlled_by`.
+- `normalized_json()`: исходный контракт карты; вычисленные связи в файл не
+  записываются, а восстанавливаются при загрузке по занятости текущей позиции.
+
+У клеток, включая пустые, всегда есть индекс. API только для чтения; регистрации
+LLM-tools пока нет. В v1 нет FEN внутри файла: смену позиции выявляет проверка
+состава/расположения фигур, но очередь хода, рокировка и en passant не сравниваются —
+они не меняют геометрический контроль.
+
+При невалидном завершённом ответе stderr содержит номер попытки, конкретную
+причину и исходный ответ модели. Он не попадает в историю, exclusions или новый
+запрос. Обрезанное reasoning повторяется без вывода его содержимого. Пресет,
+таймауты и `LLM_STAGE_MAX_ATTEMPTS` сохранены; `{REASON:xlogic}` в шаблоне больше
+не навязывается. При исчерпании попыток процесс завершается с ошибкой и не печатает
+невалидную карту в stdout — проверяй код возврата, прежде чем использовать файл.
 
 ## Настройки
 

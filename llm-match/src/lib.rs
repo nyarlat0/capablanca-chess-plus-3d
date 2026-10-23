@@ -1,6 +1,7 @@
 pub mod board_image;
 mod classic;
 mod config;
+pub mod grounder;
 pub mod pipeline;
 pub use classic::ClassicConfig;
 mod compat;

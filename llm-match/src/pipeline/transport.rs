@@ -32,6 +32,14 @@ pub(super) async fn request_parsed<T>(
 ) -> Result<T> {
     let request = super::prompts::build_request(config, stage, data, image)?;
     let reasoning = &config.reasoning;
+    // Diagnostics never enter model context, history, or exclusions.
+    let report_invalid = |attempt: usize, raw: &str, error: &anyhow::Error| {
+        if stage == Stage::Grounder && config.classic.is_some() {
+            eprintln!(
+                "Grounder attempt {attempt} rejected: {error:#}\n--- original model response ---\n{raw}\n--- end model response ---"
+            );
+        }
+    };
     let mut last_error = None;
     for attempt in 1..=config.stage_max_attempts {
         let started = std::time::Instant::now();
@@ -115,6 +123,12 @@ pub(super) async fn request_parsed<T>(
         // Bound payload size, not the analyst's choice of format.
         if answer.trim().is_empty() || answer.len() > 32_768 {
             record("empty_or_oversized_answer");
+            let error = anyhow::anyhow!(
+                "empty or oversized final answer ({} bytes; maximum 32768)",
+                answer.len()
+            );
+            report_invalid(attempt, &raw, &error);
+            last_error = Some(error);
             continue;
         }
         match parse(&answer) {
@@ -124,6 +138,7 @@ pub(super) async fn request_parsed<T>(
             }
             Err(e) => {
                 record("invalid_protocol");
+                report_invalid(attempt, &raw, &e);
                 last_error = Some(e);
             }
         }

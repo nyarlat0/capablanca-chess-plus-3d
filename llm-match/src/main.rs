@@ -19,6 +19,9 @@ async fn main() -> Result<()> {
     let mut moves_format = String::from("uci");
     let mut initial_fen = None;
     let mut stage: Option<llm_match::pipeline::Stage> = None;
+    let mut map_file = None;
+    let mut inspect_square = None;
+    let mut inspect_piece = None;
     let mut inputs = llm_match::pipeline::debug::Inputs::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -29,6 +32,9 @@ async fn main() -> Result<()> {
             s if s.starts_with("--llm-profile=") || s.starts_with("--llm-classic-profile=") => {}
             "--print-prompt" => print_prompt = true,
             "--stage" => stage = Some(args.next().context("missing stage name")?.parse()?),
+            "--grounder-map-file" => map_file = Some(args.next().context("missing map file")?),
+            "--inspect-square" => inspect_square = Some(args.next().context("missing square")?),
+            "--inspect-piece" => inspect_piece = Some(args.next().context("missing piece id")?),
             "--analysis-file" => {
                 inputs.analysis = Some(std::fs::read_to_string(
                     args.next().context("missing analysis file")?,
@@ -62,6 +68,9 @@ async fn main() -> Result<()> {
             }
             "--help" => {
                 println!(
+                    "Grounder map (Classic): --stage grounder --grounder-map-file map.json [--inspect-square e4] [--inspect-piece bN_f6]. Offline validation against --fen/--moves; no LLM configuration or network required. Without inspect flags prints normalized map JSON."
+                );
+                println!(
                     "Stage debug: --stage grounder|proposer|verifier|selector [--analysis-file facts.txt] [--candidate-file candidate.json] [--accepted-candidates-file accepted.json]. Runs only the chosen stage, without committing a move. --print-prompt previews it offline. Default variant: Classic."
                 );
                 println!(
@@ -83,20 +92,28 @@ async fn main() -> Result<()> {
         moves_format != "san" || variant == Variant::Classic,
         "SAN replay requires --variant Classic"
     );
-    let mut config = llm_match::Config::load_for_variant(variant)?;
-    if let Some(endpoint) = endpoint {
-        config.endpoint = endpoint;
+    anyhow::ensure!(
+        map_file.is_some() || (inspect_square.is_none() && inspect_piece.is_none()),
+        "inspection requires --grounder-map-file"
+    );
+    if map_file.is_some() {
+        anyhow::ensure!(
+            stage == Some(llm_match::pipeline::Stage::Grounder) && variant == Variant::Classic,
+            "--grounder-map-file requires --stage grounder and Classic"
+        );
+        anyhow::ensure!(
+            !print_prompt
+                && inputs.analysis.is_none()
+                && inputs.candidate.is_none()
+                && inputs.accepted_candidates.is_none(),
+            "map loading cannot be combined with --print-prompt or other stage input files"
+        );
     }
     let mut game = match initial_fen {
         Some(fen) => llm_match::Match::from_fen(variant, human.opposite(), &fen)
             .context("invalid initial FEN for selected variant")?,
         None => llm_match::Match::new(variant, human.opposite()),
     };
-    eprintln!(
-        "LLM representation profile: {}\n{}",
-        config.profile_name,
-        config.summary()
-    );
     for (index, text) in replay.split_whitespace().enumerate() {
         let decoded = if moves_format == "san" {
             game.game()
@@ -114,6 +131,43 @@ async fn main() -> Result<()> {
             game.accept_model(mv)?;
         }
     }
+    if let Some(path) = map_file {
+        let raw = std::fs::read_to_string(&path).with_context(|| format!("cannot read {path}"))?;
+        let graph = llm_match::grounder::ControlGraph::parse(game.game().position(), &raw)
+            .with_context(|| format!("invalid Grounder map {path}\n--- original map ---\n{raw}"))?;
+        if inspect_square.is_none() && inspect_piece.is_none() {
+            println!("{}", graph.normalized_json()?);
+        } else {
+            let mut result = serde_json::Map::new();
+            if let Some(cell) = inspect_square {
+                result.insert(
+                    "square".into(),
+                    serde_json::to_value(graph.get_square(&cell)?)?,
+                );
+            }
+            if let Some(id) = inspect_piece {
+                result.insert(
+                    "piece".into(),
+                    serde_json::to_value(
+                        graph
+                            .get_piece(&id)
+                            .with_context(|| format!("unknown piece id {id}"))?,
+                    )?,
+                );
+            }
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        return Ok(());
+    }
+    let mut config = llm_match::Config::load_for_variant(variant)?;
+    if let Some(endpoint) = endpoint {
+        config.endpoint = endpoint;
+    }
+    eprintln!(
+        "LLM representation profile: {}\n{}",
+        config.profile_name,
+        config.summary()
+    );
     if let Some(stage) = stage {
         let result = if print_prompt {
             llm_match::pipeline::debug::preview(&game, &config, stage, &inputs)?

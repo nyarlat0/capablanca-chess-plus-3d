@@ -1,0 +1,12 @@
+{
+  "genamt": 4096,
+  "chat_template_kwargs": {
+    "enable_thinking": false
+  },
+  "temp": 0.7,
+  "top_p": 0.8,
+  "top_k": 20,
+  "min_p": 0.0,
+  "presence_pen": 1.5,
+  "rep_pen": 1.0
+}

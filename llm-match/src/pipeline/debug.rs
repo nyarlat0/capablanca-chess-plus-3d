@@ -119,7 +119,7 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
     match stage {
         Stage::Grounder => {
             request_parsed(&mut client, &http, config, stage, &data, &image, |text| {
-                Ok(text.to_owned())
+                grounder_response(state, config, text)
             })
             .await
         }

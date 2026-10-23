@@ -101,7 +101,7 @@ pub async fn generate(
         Stage::Grounder,
         &grounder_data,
         &image,
-        |answer| Ok(answer.to_owned()),
+        |answer| grounder_response(state, config, answer),
     )
     .await?;
     let mut excluded: HashSet<String> = state.wrong_moves.iter().cloned().collect();
@@ -220,7 +220,14 @@ pub async fn generate(
     )
 }
 
-/// Validate only the proposed move, on a disposable clone; never expose engine alternatives.
+fn grounder_response(state: &Match, config: &Config, answer: &str) -> Result<String> {
+    if config.classic.is_some() {
+        crate::grounder::ControlGraph::parse(state.game.position(), answer)?.normalized_json()
+    } else {
+        Ok(answer.to_owned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
