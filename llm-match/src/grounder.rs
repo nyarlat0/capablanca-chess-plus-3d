@@ -206,10 +206,14 @@ pub fn incremental_targets(
         let previous = old.pieces.iter().find(|entry| entry.id == id);
         let moved = changed.contains(&cell);
         let slider = matches!(piece.kind, PieceKind::Bishop | PieceKind::Rook | PieceKind::Queen);
-        let invalidated = moved || previous.is_none() || (slider && previous.is_some_and(|p| {
-            p.controls.iter().any(|s| changed.contains(s)) ||
-                xray_affected(p, &changed).unwrap_or(true)
-        }));
+        let ray_invalidated = if slider {
+            match previous {
+                Some(p) => p.controls.iter().any(|s| changed.contains(s))
+                    || xray_affected(p, &changed)?,
+                None => true,
+            }
+        } else { false };
+        let invalidated = moved || previous.is_none() || ray_invalidated;
         if invalidated {
             targets.push(pieces.len());
         }
@@ -245,8 +249,7 @@ pub struct PieceControls {
 #[serde(deny_unknown_fields)]
 pub struct OnePieceControls {
     pub controls: Vec<String>,
-    /// Required for new model generations; empty for kings, pawns and knights.
-    #[serde(default)]
+    /// Required in model output; empty for kings, pawns and knights.
     pub xray: Vec<XRay>,
 }
 impl OnePieceControls {
@@ -405,6 +408,7 @@ impl ControlGraph {
                 entry.id
             );
             validate_controls(&entry.id, &mut entry.controls)?;
+            entry.xray.sort_by(|a,b| a.direction.cmp(&b.direction));
             validate_xrays(position,entry,inventory.get(&entry.square).unwrap().1)?;
         }
         let missing: Vec<_> = inventory

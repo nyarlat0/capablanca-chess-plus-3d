@@ -39,3 +39,14 @@ fn rejects_invented_pieces_wrong_types_and_duplicate_pins() {
     for value in cases {assert!(PinReport::parse(&p,&g,&value.to_string()).is_err(),"{value}");}
     assert!(PinReport::parse(&p,&g,&(valid.to_string()+" trailing")).is_err());
 }
+
+#[test]
+fn relative_pin_requires_its_xray_triple() {
+    let (pos,graph)=setup("r1bqkb1r/pp2pppp/2n2n2/2PN4/5B2/8/PPP1PPPP/R2QKBNR b KQkq - 0 5");
+    let answer=r#"{"version":1,"pins":[{"attacker":"bQ_d8","pinned":"wN_d5","protected":"wQ_d1","type":"relative"}]}"#;
+    assert!(PinReport::parse(&pos,&graph,answer).is_ok());
+    let mut map=graph.map().clone();
+    map.pieces.iter_mut().find(|p|p.id=="bQ_d8").unwrap().xray.clear();
+    let missing=ControlGraph::new(&pos,map).unwrap();
+    assert!(PinReport::parse(&pos,&missing,answer).is_err());
+}

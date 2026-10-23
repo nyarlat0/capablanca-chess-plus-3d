@@ -373,3 +373,37 @@ Optional live board-image test (short, one request, no match):
 ```sh
 KOBOLD_URL=http://aistation:5001 cargo test -p llm-match live_kobold_board_image -- --ignored
 ```
+
+## Grounder x-ray metadata and incremental updates
+
+Classic Grounder maps now store `xray` next to direct `controls`.
+Each bishop/rook/queen reports the first occupied blocker on every ray
+and the next occupied blocker behind it, regardless of either piece's color.
+If nothing is behind the first blocker, the required `second` field is `null`.
+Non-sliders always have an empty `xray` array.
+
+```json
+{
+  "id": "bQ_d8",
+  "square": "d8",
+  "controls": ["a5","b6","c7","c8","d5","d6","d7","e7","e8"],
+  "xray": [
+    {"direction":"S","first":"wN_d5","second":"wQ_d1"},
+    {"direction":"W","first":"bB_c8","second":"bR_a8"}
+  ]
+}
+```
+
+The excerpt shows only two of the queen's ray records.
+OneGrounder must now emit `{"controls":[...],"xray":[...]}`.
+The default engine bootstrap produces BOTH fields once; later incremental
+calls obtain updates from OneGrounder. Invalidation checks old direct controls
+AND cells behind the first blocker through the second blocker (or the board edge
+if `second:null`). Empty squares in that range can become occupied and change
+the `xray` relationship.
+
+Older version-1 map files without `xray` still parse, but their x-ray metadata
+is incomplete; regenerate the map before using it for pin analysis.
+The debug-only `pin-analyzer` accepts a reported pin only if the supplied
+x-ray map contains the corresponding (attacker, first=pinned, second=protected)
+relationship. It doesn't recalculate the model's geometry via the chess engine.

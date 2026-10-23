@@ -16,14 +16,14 @@ fn one_piece_protocol_and_selection() {
         assert!(selected_piece(&position(), invalid).is_err());
     }
     assert!(selected_piece(&Variant::Gothic.starting_position(), "a1").is_err());
-    let result = OnePieceControls::parse(r#"{"controls":["h8","a1"]}"#).unwrap();
+    let result = OnePieceControls::parse(r#"{"controls":["h8","a1"],"xray":[]}"#).unwrap();
     assert_eq!(result.controls, ["a1", "h8"]); // no geometry checking
     assert_eq!(
         serde_json::to_value(result).unwrap(),
-        json!({"controls":["a1","h8"]})
+        json!({"controls":["a1","h8"],"xray":[]})
     );
     assert!(
-        OnePieceControls::parse("```json\n{\"controls\":[]}\n```")
+        OnePieceControls::parse("```json\n{\"controls\":[],\"xray\":[]}\n```")
             .unwrap()
             .controls
             .is_empty()
@@ -58,7 +58,7 @@ The Black Queen on d8 controls the following geometric squares (orthogonal + dia
 - **Up-left / up-right diagonals:** off-board
 
 ```json
-{"controls":["a5","b6","c7","c8","d5","d6","d7","e7","e8"]}
+{"controls":["a5","b6","c7","c8","d5","d6","d7","e7","e8"],"xray":[]}
 ```
 "#;
     assert_eq!(
@@ -66,13 +66,13 @@ The Black Queen on d8 controls the following geometric squares (orthogonal + dia
         ["a5", "b6", "c7", "c8", "d5", "d6", "d7", "e7", "e8"]
     );
     assert_eq!(
-        OnePieceControls::parse("Explanation.\n{\"controls\":[\"b3\",\"a2\"]}")
+        OnePieceControls::parse("Explanation.\n{\"controls\":[\"b3\",\"a2\"],\"xray\":[]}")
             .unwrap()
             .controls,
         ["a2", "b3"]
     );
     assert!(
-        OnePieceControls::parse("Earlier {\"controls\":[\"a1\"]}\nFinal {\"controls\":[]}")
+        OnePieceControls::parse("Earlier {\"controls\":[\"a1\"]}\nFinal {\"controls\":[],\"xray\":[]}")
             .unwrap()
             .controls
             .is_empty()

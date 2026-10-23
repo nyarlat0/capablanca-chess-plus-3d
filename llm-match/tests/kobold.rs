@@ -160,11 +160,11 @@ async fn one_grounder_full_collects_sequentially_retries_current_piece_and_build
     };
     let server = Server::script(
         vec![
-            Reply::Text("The king controls its three adjacent in-board squares.\n```json\n{\"controls\":[\"h7\",\"g8\",\"g7\"]}\n```".into()),
-            text(json!({"controls":["d1","d1"]})), // retry only the second piece
-            text(json!({"controls":["d1","d2","e2","f1","f2"]})),
-            text(json!({"controls":["b3"]})),
-            text(json!({"controls":["a2","b1","c1","d1","e1"]})),
+            Reply::Text("The king controls its three adjacent in-board squares.\n```json\n{\"controls\":[\"h7\",\"g8\",\"g7\"],\"xray\":[]}\n```".into()),
+            text(json!({"controls":["d1","d1"],"xray":[]})), // retry only the second piece
+            text(json!({"controls":["d1","d2","e2","f1","f2"],"xray":[]})),
+            text(json!({"controls":["b3"],"xray":[]})),
+            text(json!({"controls":["a2","b1","c1","d1","e1"],"xray":[]})),
         ],
         512,
     );
@@ -235,8 +235,8 @@ async fn one_grounder_full_stops_on_failure_and_rejects_extra_inputs() {
     };
     let server = Server::script(
         vec![
-            text(json!({"controls":[]})),
-            text(json!({"controls":["z9"]})),
+            text(json!({"controls":[],"xray":[]})),
+            text(json!({"controls":["z9"],"xray":[]})),
         ],
         512,
     );
@@ -281,7 +281,7 @@ async fn one_grounder_is_isolated_and_retries_without_feedback() {
             Reply::Text("<thinking>unfinished".into()),
             text(json!({"version":1,"controls":[]})),
             Reply::Text(
-                "<thinking>private</thinking>The knight controls these squares, including its own pawn on e7.\n```json\n{\"controls\":[\"h6\",\"f6\",\"e7\"]}\n```"
+                "<thinking>private</thinking>The knight controls these squares, including its own pawn on e7.\n```json\n{\"controls\":[\"h6\",\"f6\",\"e7\"],\"xray\":[]}\n```"
                     .into(),
             ),
         ],
@@ -302,7 +302,7 @@ async fn one_grounder_is_isolated_and_retries_without_feedback() {
         .unwrap();
     assert_eq!(
         serde_json::from_str::<Value>(&output).unwrap(),
-        json!({"controls":["e7","f6","h6"]})
+        json!({"controls":["e7","f6","h6"],"xray":[]})
     );
     assert_eq!(m.game().position().to_fen(), before);
     assert_eq!(m.uci_history(), ["e2e4"]);

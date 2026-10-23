@@ -143,6 +143,7 @@ fn full_targets(state: &Match) -> Vec<crate::grounder::PieceControls> {
                 id: crate::grounder::piece_id(position, &square, piece),
                 square,
                 controls: vec![],
+                xray: vec![],
             }
         })
         .collect();
