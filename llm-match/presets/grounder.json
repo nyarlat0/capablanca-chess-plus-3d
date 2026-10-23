@@ -1,5 +1,5 @@
 {
-  "genamt": 1024,
+  "genamt": 2024,
   "reasoning_effort": "medium",
   "chat_template_kwargs": {
     "enable_thinking": true,
