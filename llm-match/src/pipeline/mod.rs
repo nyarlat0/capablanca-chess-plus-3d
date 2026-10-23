@@ -29,6 +29,8 @@ pub enum Stage {
     /// Debug-only sequential collection of every piece's controls.
     OneGrounderFull,
     Grounder,
+    /// Debug-only, consumes a verified existing control map.
+    PinAnalyzer,
     Proposer,
     Verifier,
     Selector,
@@ -41,11 +43,12 @@ impl std::str::FromStr for Stage {
             "one-grounder" => Ok(Self::OneGrounder),
             "one-grounder-full" => Ok(Self::OneGrounderFull),
             "grounder" => Ok(Self::Grounder),
+            "pin-analyzer" => Ok(Self::PinAnalyzer),
             "proposer" => Ok(Self::Proposer),
             "verifier" => Ok(Self::Verifier),
             "selector" => Ok(Self::Selector),
             _ => bail!(
-                "stage must be one-grounder, one-grounder-full, grounder, proposer, verifier or selector"
+                "stage must be one-grounder, one-grounder-full, grounder, pin-analyzer, proposer, verifier or selector"
             ),
         }
     }
@@ -351,6 +354,7 @@ mod tests {
                         &mut config.pipeline.one_grounder
                     }
                     Stage::Grounder => &mut config.pipeline.grounder,
+                    Stage::PinAnalyzer => &mut config.pipeline.pin_analyzer,
                     Stage::Proposer => &mut config.pipeline.proposer,
                     Stage::Verifier => &mut config.pipeline.verifier,
                     Stage::Selector => &mut config.pipeline.selector,

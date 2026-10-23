@@ -10,7 +10,7 @@ pub(super) async fn request<T: DeserializeOwned>(
     validate: impl Fn(&T) -> Result<()>,
 ) -> Result<T> {
     request_parsed(client, http, config, stage, data, image, |answer| {
-        let value = if matches!(stage, Stage::Proposer | Stage::Selector) {
+        let value = if matches!(stage, Stage::Proposer | Stage::Selector | Stage::PinAnalyzer) {
             output::parse_final_json(answer)?
         } else {
             output::parse_json(answer)?
@@ -34,11 +34,11 @@ pub(super) async fn request_parsed<T>(
     let reasoning = &config.reasoning;
     // Diagnostics never enter model context, history, or exclusions.
     let report_invalid = |attempt: usize, raw: &str, error: &anyhow::Error| {
-        if matches!(stage, Stage::Grounder | Stage::OneGrounder) && config.classic.is_some() {
-            let label = if stage == Stage::OneGrounder {
-                "OneGrounder"
-            } else {
-                "Grounder"
+        if matches!(stage, Stage::Grounder | Stage::OneGrounder | Stage::PinAnalyzer) && config.classic.is_some() {
+            let label = match stage {
+                Stage::OneGrounder => "OneGrounder",
+                Stage::PinAnalyzer => "PinAnalyzer",
+                _ => "Grounder",
             };
             eprintln!(
                 "{label} attempt {attempt} rejected: {error:#}\n--- original model response ---\n{raw}\n--- end model response ---"
@@ -116,7 +116,7 @@ pub(super) async fn request_parsed<T>(
                 "llm_stage_metrics"
             )
         };
-        let answer = if matches!(stage, Stage::Proposer | Stage::Selector) {
+        let answer = if matches!(stage, Stage::Proposer | Stage::Selector | Stage::PinAnalyzer) {
             output::final_json_answer(reasoning, &raw)?
         } else {
             output::final_answer(reasoning, &raw)?

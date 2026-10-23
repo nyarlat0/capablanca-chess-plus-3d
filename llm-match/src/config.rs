@@ -32,6 +32,7 @@ pub struct Config {
 #[derive(Clone, Default)]
 pub struct StagePresets {
     pub one_grounder: Option<Preset>,
+    pub pin_analyzer: Option<Preset>,
     pub grounder: Option<Preset>,
     pub proposer: Option<Preset>,
     pub verifier: Option<Preset>,
@@ -54,6 +55,7 @@ impl StagePresets {
         Ok(Self {
             grounder: read("LLM_GROUNDER_PRESET")?,
             one_grounder: read("LLM_ONE_GROUNDER_PRESET")?,
+            pin_analyzer: read("LLM_PIN_ANALYZER_PRESET")?,
             proposer: read("LLM_PROPOSER_PRESET")?,
             verifier: read("LLM_VERIFIER_PRESET")?,
             selector: read("LLM_SELECTOR_PRESET")?,
@@ -73,6 +75,7 @@ impl Config {
                     .unwrap_or_else(|| self.preset_for_stage(Stage::Grounder));
             }
             Stage::Grounder => &self.stage_presets.grounder,
+            Stage::PinAnalyzer => &self.stage_presets.pin_analyzer,
             Stage::Proposer => &self.stage_presets.proposer,
             Stage::Verifier => &self.stage_presets.verifier,
             Stage::Selector => &self.stage_presets.selector,

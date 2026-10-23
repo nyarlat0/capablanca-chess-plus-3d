@@ -5,6 +5,7 @@ use super::*;
 #[derive(Default)]
 pub struct Inputs {
     pub selected_piece: Option<String>,
+    pub control_map: Option<String>,
     pub analysis: Option<String>,
     /// One Proposer candidate: id, move, from, to, optional rationale.
     pub candidate: Option<Value>,
@@ -57,6 +58,8 @@ fn data(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result
         inputs.selected_piece.is_some() == (stage == Stage::OneGrounder),
         "--selected-piece is required only for --stage one-grounder"
     );
+    ensure!(inputs.control_map.is_some() == (stage == Stage::PinAnalyzer),
+        "--grounder-map-file required only for --stage pin-analyzer");
     let selected = inputs
         .selected_piece
         .as_deref()
@@ -83,6 +86,12 @@ fn data(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result
     let mut data = prompt_data(state, config, stage)?;
     if let Some(selected) = selected {
         data.custom["selected-piece"] = json!(selected);
+    }
+    if let Some(map) = &inputs.control_map {
+        ensure!(state.variant == capablanca_chess_plus::Variant::Classic && config.classic.is_some(),
+            "pin-analyzer requires Classic chess");
+        let graph = crate::grounder::ControlGraph::parse(state.game.position(), map)?;
+        data.custom["control-map"] = json!(graph.normalized_json()?);
     }
     if let Some(analysis) = &inputs.analysis {
         ensure!(
@@ -184,6 +193,15 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
         .build()?;
     let mut client = None;
     match stage {
+        Stage::PinAnalyzer => {
+            let graph = crate::grounder::ControlGraph::parse(
+                state.game.position(), inputs.control_map.as_deref().context("missing control map")?
+            )?;
+            request_parsed(&mut client, &http, config, stage, &data, &image, |answer| {
+                let report = crate::pins::PinReport::parse(state.game.position(), &graph, answer)?;
+                Ok(serde_json::to_string_pretty(&report)?)
+            }).await
+        }
         Stage::OneGrounderFull => {
             let mut pieces = full_targets(state);
             let total = pieces.len();

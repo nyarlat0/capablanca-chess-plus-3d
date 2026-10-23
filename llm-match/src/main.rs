@@ -81,6 +81,9 @@ async fn main() -> Result<()> {
                     "All pieces sequentially: --stage one-grounder-full [--fen 'FEN'] [--print-prompt]. Reuses one-grounder templates/preset; outputs a complete Grounder map. No --selected-piece."
                 );
                 println!(
+                    "Pin analysis: --stage pin-analyzer --fen 'FEN' --grounder-map-file map.json [--print-prompt]. Classic debug only."
+                );
+                println!(
                     "Single piece: --stage one-grounder --selected-piece f6 (or bN_f6) [--fen 'FEN'] [--print-prompt]. Classic only; returns {{\"controls\":[...]}} without choosing a move."
                 );
                 println!(
@@ -119,12 +122,15 @@ async fn main() -> Result<()> {
                 Some(
                     llm_match::pipeline::Stage::Grounder
                         | llm_match::pipeline::Stage::OneGrounderFull
+                        | llm_match::pipeline::Stage::PinAnalyzer
                 )
             ) && variant == Variant::Classic,
-            "--grounder-map-file requires --stage grounder or one-grounder-full and Classic"
+            "--grounder-map-file requires --stage grounder, one-grounder-full or pin-analyzer and Classic"
         );
         anyhow::ensure!(
-            !print_prompt
+            (!print_prompt || stage == Some(llm_match::pipeline::Stage::PinAnalyzer))
+                && (stage != Some(llm_match::pipeline::Stage::PinAnalyzer) ||
+                    (inspect_square.is_none() && inspect_piece.is_none()))
                 && inputs.selected_piece.is_none()
                 && inputs.analysis.is_none()
                 && inputs.candidate.is_none()
@@ -162,8 +168,11 @@ async fn main() -> Result<()> {
         let raw = std::fs::read_to_string(&path).with_context(|| format!("cannot read {path}"))?;
         let graph = llm_match::grounder::ControlGraph::parse(game.game().position(), &raw)
             .with_context(|| format!("invalid Grounder map {path}\n--- original map ---\n{raw}"))?;
-        if inspect_square.is_none() && inspect_piece.is_none() {
+        if stage == Some(llm_match::pipeline::Stage::PinAnalyzer) {
+            inputs.control_map = Some(graph.normalized_json()?);
+        } else if inspect_square.is_none() && inspect_piece.is_none() {
             println!("{}", graph.normalized_json()?);
+            return Ok(());
         } else {
             let mut result = serde_json::Map::new();
             if let Some(cell) = inspect_square {
@@ -183,8 +192,8 @@ async fn main() -> Result<()> {
                 );
             }
             println!("{}", serde_json::to_string_pretty(&result)?);
+            return Ok(());
         }
-        return Ok(());
     }
     let mut config = llm_match::Config::load_for_variant(variant)?;
     if let Some(endpoint) = endpoint {
