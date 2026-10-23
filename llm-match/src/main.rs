@@ -15,6 +15,8 @@ async fn main() -> Result<()> {
     let mut variant = Variant::Classic;
     let mut human = Color::White;
     let mut print_prompt = false;
+    let mut auto_grounder = false;
+    let mut auto_initial_grounder = true;
     let mut replay = String::new();
     let mut moves_format = String::from("uci");
     let mut initial_fen = None;
@@ -31,6 +33,8 @@ async fn main() -> Result<()> {
             }
             s if s.starts_with("--llm-profile=") || s.starts_with("--llm-classic-profile=") => {}
             "--print-prompt" => print_prompt = true,
+            "--auto-grounder" => auto_grounder = true,
+            "--no-auto-initial-grounder" => auto_initial_grounder = false,
             "--stage" => stage = Some(args.next().context("missing stage name")?.parse()?),
             "--selected-piece" => {
                 inputs.selected_piece = Some(
@@ -74,6 +78,9 @@ async fn main() -> Result<()> {
             }
             "--help" => {
                 println!(
+                    "All pieces sequentially: --stage one-grounder-full [--fen 'FEN'] [--print-prompt]. Reuses one-grounder templates/preset; outputs a complete Grounder map. No --selected-piece."
+                );
+                println!(
                     "Single piece: --stage one-grounder --selected-piece f6 (or bN_f6) [--fen 'FEN'] [--print-prompt]. Classic only; returns {{\"controls\":[...]}} without choosing a move."
                 );
                 println!(
@@ -107,8 +114,14 @@ async fn main() -> Result<()> {
     );
     if map_file.is_some() {
         anyhow::ensure!(
-            stage == Some(llm_match::pipeline::Stage::Grounder) && variant == Variant::Classic,
-            "--grounder-map-file requires --stage grounder and Classic"
+            matches!(
+                stage,
+                Some(
+                    llm_match::pipeline::Stage::Grounder
+                        | llm_match::pipeline::Stage::OneGrounderFull
+                )
+            ) && variant == Variant::Classic,
+            "--grounder-map-file requires --stage grounder or one-grounder-full and Classic"
         );
         anyhow::ensure!(
             !print_prompt
@@ -124,6 +137,7 @@ async fn main() -> Result<()> {
             .context("invalid initial FEN for selected variant")?,
         None => llm_match::Match::new(variant, human.opposite()),
     };
+    game.set_auto_initial_grounder(auto_initial_grounder);
     for (index, text) in replay.split_whitespace().enumerate() {
         let decoded = if moves_format == "san" {
             game.game()
@@ -140,6 +154,9 @@ async fn main() -> Result<()> {
         } else {
             game.accept_model(mv)?;
         }
+    }
+    if stage.is_some() || !replay.is_empty() || auto_grounder {
+        game.prepare_grounder_test(auto_grounder);
     }
     if let Some(path) = map_file {
         let raw = std::fs::read_to_string(&path).with_context(|| format!("cannot read {path}"))?;
@@ -181,6 +198,8 @@ async fn main() -> Result<()> {
     if let Some(stage) = stage {
         let result = if print_prompt {
             llm_match::pipeline::debug::preview(&game, &config, stage, &inputs)?
+        } else if stage == llm_match::pipeline::Stage::Grounder && variant == Variant::Classic {
+            llm_match::pipeline::prepare_controls(&mut game, &config).await?
         } else {
             llm_match::pipeline::debug::run(&game, &config, stage, &inputs).await?
         };

@@ -9,6 +9,52 @@ fn run(args: &[&str]) -> Output {
 }
 
 #[test]
+fn one_grounder_full_preview_lists_each_piece_in_order() {
+    let text = success(run(&[
+        "--stage",
+        "one-grounder-full",
+        "--fen",
+        "7k/8/8/8/8/8/P7/R3K3 w - - 0 1",
+        "--print-prompt",
+    ]));
+    let requests: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let ids: Vec<_> = requests
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["bK_h8", "wK_e1", "wP_a2", "wR_a1"]);
+    assert!(!text.contains("{{selected-piece}}"));
+    for request in requests.as_array().unwrap() {
+        let single = success(run(&[
+            "--stage",
+            "one-grounder",
+            "--selected-piece",
+            request["square"].as_str().unwrap(),
+            "--fen",
+            "7k/8/8/8/8/8/P7/R3K3 w - - 0 1",
+            "--print-prompt",
+        ]));
+        assert_eq!(
+            request["messages"],
+            serde_json::from_str::<serde_json::Value>(&single).unwrap()
+        );
+    }
+    assert!(
+        !run(&[
+            "--stage",
+            "one-grounder-full",
+            "--selected-piece",
+            "b1",
+            "--print-prompt"
+        ])
+        .status
+        .success()
+    );
+}
+
+#[test]
 fn one_grounder_cli_previews_only_selected_piece_task() {
     let square = success(run(&[
         "--stage",

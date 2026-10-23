@@ -9,6 +9,8 @@ pub use prompts::{Templates, preview, prompt_data};
 mod transport;
 use transport::{request, request_parsed};
 pub mod debug;
+mod incremental;
+pub use incremental::prepare_controls;
 use crate::{Config, Match, OutputFormat, StateFormat, classic, output};
 use anyhow::{Context, Result, bail, ensure};
 use capablanca_chess_plus::{Move, Square};
@@ -24,6 +26,8 @@ use std::{collections::HashSet, path::Path, time::Duration};
 pub enum Stage {
     /// Debug only; never scheduled by generate().
     OneGrounder,
+    /// Debug-only sequential collection of every piece's controls.
+    OneGrounderFull,
     Grounder,
     Proposer,
     Verifier,
@@ -35,11 +39,14 @@ impl std::str::FromStr for Stage {
     fn from_str(value: &str) -> Result<Self> {
         match value {
             "one-grounder" => Ok(Self::OneGrounder),
+            "one-grounder-full" => Ok(Self::OneGrounderFull),
             "grounder" => Ok(Self::Grounder),
             "proposer" => Ok(Self::Proposer),
             "verifier" => Ok(Self::Verifier),
             "selector" => Ok(Self::Selector),
-            _ => bail!("stage must be one-grounder, grounder, proposer, verifier or selector"),
+            _ => bail!(
+                "stage must be one-grounder, one-grounder-full, grounder, proposer, verifier or selector"
+            ),
         }
     }
 }
@@ -97,7 +104,9 @@ pub async fn generate(
     let mut client = None;
     let image = crate::board_image::BoardImage::new(state.game.position())?;
     let grounder_data = prompt_data(state, config, Stage::Grounder)?;
-    let grounded_analysis: String = request_parsed(
+    let grounded_analysis: String = if state.variant == capablanca_chess_plus::Variant::Classic {
+        incremental::prepare(state, config).await?
+    } else { request_parsed(
         &mut client,
         &http,
         config,
@@ -106,7 +115,7 @@ pub async fn generate(
         &image,
         |answer| grounder_response(state, config, answer),
     )
-    .await?;
+    .await? };
     let mut excluded: HashSet<String> = state.wrong_moves.iter().cloned().collect();
     for round in 1..=config.max_attempts {
         tracing::info!(round, "LLM candidate round");
@@ -338,7 +347,9 @@ mod tests {
                     "user_prompt":"SIDE {{side-to-move}}", "post_history":"ONLY MY POST"
                 })).unwrap();
                 let slot = match stage {
-                    Stage::OneGrounder => &mut config.pipeline.one_grounder,
+                    Stage::OneGrounder | Stage::OneGrounderFull => {
+                        &mut config.pipeline.one_grounder
+                    }
                     Stage::Grounder => &mut config.pipeline.grounder,
                     Stage::Proposer => &mut config.pipeline.proposer,
                     Stage::Verifier => &mut config.pipeline.verifier,

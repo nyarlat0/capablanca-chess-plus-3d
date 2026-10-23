@@ -65,7 +65,7 @@ impl Config {
     pub fn preset_for_stage(&self, stage: crate::pipeline::Stage) -> &Preset {
         use crate::pipeline::Stage;
         match stage {
-            Stage::OneGrounder => {
+            Stage::OneGrounder | Stage::OneGrounderFull => {
                 return self
                     .stage_presets
                     .one_grounder

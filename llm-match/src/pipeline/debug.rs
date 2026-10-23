@@ -47,6 +47,12 @@ fn candidates(state: &Match, config: &Config, value: &Value) -> Result<Vec<Candi
 }
 
 fn data(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result<PromptData> {
+    if stage == Stage::OneGrounderFull {
+        ensure!(
+            config.classic.is_some() && state.variant == capablanca_chess_plus::Variant::Classic,
+            "one-grounder-full requires Classic chess"
+        );
+    }
     ensure!(
         inputs.selected_piece.is_some() == (stage == Stage::OneGrounder),
         "--selected-piece is required only for --stage one-grounder"
@@ -117,12 +123,54 @@ fn data(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result
     Ok(data)
 }
 
+fn full_targets(state: &Match) -> Vec<crate::grounder::PieceControls> {
+    let position = state.game.position();
+    let mut targets: Vec<_> = position
+        .board()
+        .pieces()
+        .map(|(square, piece)| {
+            let square = square.to_string();
+            crate::grounder::PieceControls {
+                id: crate::grounder::piece_id(position, &square, piece),
+                square,
+                controls: vec![],
+            }
+        })
+        .collect();
+    targets.sort_by(|a, b| a.id.cmp(&b.id));
+    targets
+}
+
+fn one_inputs(square: &str) -> Inputs {
+    Inputs {
+        selected_piece: Some(square.into()),
+        ..Default::default()
+    }
+}
+
 pub fn preview(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result<String> {
     let mut debug_state = state.clone();
     debug_state.model_side = debug_state.game.position().side_to_move();
     let state = &debug_state;
     let data = data(state, config, stage, inputs)?;
     let image = crate::board_image::BoardImage::new(state.game.position())?;
+    if stage == Stage::OneGrounderFull {
+        let requests = full_targets(state)
+            .into_iter()
+            .map(|piece| {
+                let data = self::data(
+                    state,
+                    config,
+                    Stage::OneGrounder,
+                    &one_inputs(&piece.square),
+                )?;
+                let request =
+                    super::prompts::build_request(config, Stage::OneGrounder, &data, &image)?;
+                Ok(json!({"id":piece.id,"square":piece.square,"messages":request.messages}))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        return Ok(serde_json::to_string_pretty(&requests)?);
+    }
     Ok(serde_json::to_string_pretty(
         &super::prompts::build_request(config, stage, &data, &image)?.messages,
     )?)
@@ -136,6 +184,43 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
         .build()?;
     let mut client = None;
     match stage {
+        Stage::OneGrounderFull => {
+            let mut pieces = full_targets(state);
+            let total = pieces.len();
+            for (index, piece) in pieces.iter_mut().enumerate() {
+                tracing::info!(piece_id = %piece.id, index = index + 1, total, "one-grounder-full piece");
+                // Fresh model context for each piece; previous results stay host-side.
+                let data = self::data(
+                    state,
+                    config,
+                    Stage::OneGrounder,
+                    &one_inputs(&piece.square),
+                )?;
+                let result = request_parsed(
+                    &mut client,
+                    &http,
+                    config,
+                    Stage::OneGrounder,
+                    &data,
+                    &image,
+                    crate::grounder::OnePieceControls::parse,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "one-grounder-full failed for {} ({}/{total}); no complete map produced",
+                        piece.id,
+                        index + 1
+                    )
+                })?;
+                piece.controls = result.controls;
+            }
+            crate::grounder::ControlGraph::new(
+                state.game.position(),
+                crate::grounder::ControlMap { version: 1, pieces },
+            )?
+            .normalized_json()
+        }
         Stage::OneGrounder => {
             request_parsed(&mut client, &http, config, stage, &data, &image, |text| {
                 Ok(serde_json::to_string_pretty(

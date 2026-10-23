@@ -56,6 +56,7 @@ pub struct Match {
     san_history: Vec<classic::SanPly>,
     uci_history: Vec<String>,
     wrong_moves: Vec<String>,
+    controls: grounder::Cache,
 }
 
 impl Match {
@@ -64,6 +65,7 @@ impl Match {
         let position = capablanca_chess_plus::Position::from_fen(variant.rules(), fen)?;
         let mut state = Self::new(variant, model_side);
         state.game = Game::new(position);
+        state.controls = grounder::Cache::new(state.game.position());
         Ok(state)
     }
 
@@ -78,10 +80,28 @@ impl Match {
             san_history: Vec::new(),
             uci_history: Vec::new(),
             wrong_moves: Vec::new(),
+            controls: grounder::Cache::new(&variant.starting_position()),
         }
     }
     pub fn game(&self) -> &Game {
         &self.game
+    }
+
+    /// Initial Classic map: engine by default, or sequential one-grounder requests.
+    /// Set before accepting the first move.
+    pub fn set_auto_initial_grounder(&mut self, enabled: bool) {
+        self.controls.auto_initial = enabled;
+    }
+
+    /// Position experiments seed before the last two accepted halfmoves.
+    /// With auto=true the entire current map is computed without LLM calls.
+    pub fn prepare_grounder_test(&mut self, auto: bool) {
+        self.controls.test_start = Some(if auto {
+            self.uci_history.len()
+        } else {
+            self.uci_history.len().saturating_sub(2)
+        });
+        self.controls.complete = None;
     }
     pub fn history(&self) -> &[PromptMessage] {
         &self.history
@@ -207,6 +227,9 @@ impl Match {
         };
         let numeric = representation::numeric_move(self.game.position(), chess_move, role);
         self.game.play(chess_move)?;
+        if self.variant == Variant::Classic {
+            self.controls.positions.push(std::sync::Arc::new(self.game.position().clone()));
+        }
         if let Some(san) = san {
             self.san_history.push(san);
         }

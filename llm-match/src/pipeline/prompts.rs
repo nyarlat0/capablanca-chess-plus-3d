@@ -46,7 +46,11 @@ pub fn prompt_data(state: &Match, config: &Config, stage: Stage) -> Result<Promp
     let original = data.custom.clone();
     let private = matches!(
         stage,
-        Stage::OneGrounder | Stage::Grounder | Stage::Verifier | Stage::Selector
+        Stage::OneGrounder
+            | Stage::OneGrounderFull
+            | Stage::Grounder
+            | Stage::Verifier
+            | Stage::Selector
     );
     if private {
         data.messages.clear();
@@ -118,7 +122,7 @@ pub fn prompt_data(state: &Match, config: &Config, stage: Stage) -> Result<Promp
 
 pub(crate) fn template(config: &Config, stage: Stage) -> SystemPromptTemplate {
     match stage {
-        Stage::OneGrounder => &config.pipeline.one_grounder,
+        Stage::OneGrounder | Stage::OneGrounderFull => &config.pipeline.one_grounder,
         Stage::Grounder => &config.pipeline.grounder,
         Stage::Proposer => &config.pipeline.proposer,
         Stage::Verifier => &config.pipeline.verifier,

@@ -37,7 +37,52 @@ fn one_piece_protocol_and_selection() {
         r#"{"controls":[],"controls":[]}"#,
         "{}",
         "[]",
-        "comment {\"controls\":[]}",
+        "{\"controls\":[]} trailing commentary",
+    ] {
+        assert!(OnePieceControls::parse(invalid).is_err(), "{invalid}");
+    }
+}
+
+#[test]
+fn one_piece_accepts_explanation_before_final_json_only() {
+    use llm_match::grounder::OnePieceControls;
+    let answer = r#"
+The Black Queen on d8 controls the following geometric squares (orthogonal + diagonal rays, stopping at and including the first occupied square):
+
+- **Down (d-file):** d7, d6, d5 (White Knight)
+- **Right (8th rank):** e8 (Black King)
+- **Left (8th rank):** c8 (Black Bishop)
+- **Down-right diagonal:** e7 (Black Pawn)
+- **Down-left diagonal:** c7, b6, a5
+- **Up:** off-board
+- **Up-left / up-right diagonals:** off-board
+
+```json
+{"controls":["a5","b6","c7","c8","d5","d6","d7","e7","e8"]}
+```
+"#;
+    assert_eq!(
+        OnePieceControls::parse(answer).unwrap().controls,
+        ["a5", "b6", "c7", "c8", "d5", "d6", "d7", "e7", "e8"]
+    );
+    assert_eq!(
+        OnePieceControls::parse("Explanation.\n{\"controls\":[\"b3\",\"a2\"]}")
+            .unwrap()
+            .controls,
+        ["a2", "b3"]
+    );
+    assert!(
+        OnePieceControls::parse("Earlier {\"controls\":[\"a1\"]}\nFinal {\"controls\":[]}")
+            .unwrap()
+            .controls
+            .is_empty()
+    );
+    for invalid in [
+        "{\"controls\":[]}\n{\"controls\":[],\"extra\":true}",
+        "{\"controls\":[]}\n{\"controls\":[\"z9\"]}",
+        "{\"controls\":[]}\n{\"controls\":[\"a1\",\"a1\"]}",
+        "{\"controls\":[]}\n{\"controls\":[",
+        "prose only: d5, e7",
     ] {
         assert!(OnePieceControls::parse(invalid).is_err(), "{invalid}");
     }

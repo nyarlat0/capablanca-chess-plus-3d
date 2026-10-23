@@ -39,6 +39,7 @@ struct Pending {
 #[derive(Resource)]
 pub(crate) struct LlmSession {
     endpoint: String,
+    auto_initial_grounder: bool,
     config: Option<llm_match::Config>,
     state: Option<llm_match::Match>,
     pending: Option<Pending>,
@@ -52,6 +53,7 @@ impl Default for LlmSession {
             .unwrap_or_default();
         Self {
             endpoint,
+            auto_initial_grounder: true,
             config: None,
             state: None,
             pending: None,
@@ -76,6 +78,10 @@ struct Controls;
 struct Endpoint;
 #[derive(Component)]
 struct ProfileLabel;
+#[derive(Component)]
+struct AutoInitialGrounder;
+#[derive(Component)]
+struct AutoInitialGrounderLabel;
 #[derive(Component)]
 struct StatusButton;
 #[derive(Component)]
@@ -106,6 +112,17 @@ pub(crate) fn spawn_controls(parent: &mut ChildSpawnerCommands, font: &Handle<Fo
             },
         ))
         .with_children(|p| {
+            p.spawn((
+                AutoInitialGrounder, Button, TabIndex(0),
+                Node { padding: UiRect::all(px(6)), ..default() },
+                BackgroundColor(Color::srgba(0.15, 0.10, 0.18, 0.9)),
+            )).with_children(|p| {
+                p.spawn((AutoInitialGrounderLabel,
+                    Text::new("[x] Auto initial grounder"),
+                    TextFont { font: font.clone().into(), font_size: FontSize::Px(14.), ..default() },
+                    Pickable::IGNORE,
+                ));
+            });
             let profile = llm_match::Config::load()
                 .map(|c| format!("PROFILE: {}", c.profile_name))
                 .unwrap_or_else(|e| format!("Profile configuration: {e}"));
@@ -158,7 +175,15 @@ fn sync_controls(
     mut session: ResMut<LlmSession>,
     mut controls: Query<&mut Node, With<Controls>>,
     inputs: Query<&EditableText, (Changed<EditableText>, With<Endpoint>)>,
+    toggles: Query<&Interaction, (Changed<Interaction>, With<AutoInitialGrounder>)>,
+    mut toggle_labels: Query<&mut Text, With<AutoInitialGrounderLabel>>,
 ) {
+    if menu.open && toggles.iter().any(|i| *i == Interaction::Pressed) {
+        session.auto_initial_grounder = !session.auto_initial_grounder;
+    }
+    for mut text in &mut toggle_labels {
+        text.0 = format!("[{}] Auto initial grounder", if session.auto_initial_grounder { "x" } else { " " });
+    }
     for mut node in &mut controls {
         node.display = if menu.selected_mode == GameMode::Llm {
             Display::Flex
@@ -381,9 +406,14 @@ fn update_match(
             }
         }
     }
+    let auto_initial_grounder = session.auto_initial_grounder;
     let state = session
         .state
-        .get_or_insert_with(|| llm_match::Match::new(chess.variant, menu.active_side.opposite()));
+        .get_or_insert_with(|| {
+            let mut state = llm_match::Match::new(chess.variant, menu.active_side.opposite());
+            state.set_auto_initial_grounder(auto_initial_grounder);
+            state
+        });
     if state.uci_history().len() > chess.move_history.len()
         || state
             .uci_history()

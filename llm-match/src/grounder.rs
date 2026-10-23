@@ -2,9 +2,91 @@
 //! Only piece inventory and occupancy are read from Position; no move generation,
 //! attack queries, evaluation, or correction of the model's controls occurs here.
 use anyhow::{Context, Result, ensure};
-use capablanca_chess_plus::{Color, Piece, Position, Variant};
+use capablanca_chess_plus::{Color, Piece, PieceKind, Position, Square, Variant};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// Accepted position snapshots are shared by legality-trial clones. Only complete
+/// maps are published; a failed request never leaves a partially updated graph.
+#[derive(Clone)]
+pub(crate) struct Cache {
+    pub positions: Vec<std::sync::Arc<Position>>,
+    pub complete: Option<(usize, ControlMap)>,
+    pub auto_initial: bool,
+    pub test_start: Option<usize>,
+}
+impl Cache {
+    pub fn new(position: &Position) -> Self {
+        Self {
+            positions: vec![std::sync::Arc::new(position.clone())],
+            complete: None,
+            auto_initial: true,
+            test_start: None,
+        }
+    }
+}
+
+/// Explicit engine bootstrap, not part of model-output validation.
+pub fn engine_map(position: &Position) -> Result<ControlMap> {
+    let mut pieces = Vec::new();
+    for (from, piece) in position.board().pieces() {
+        let mut controls = Vec::new();
+        for file in 0..8 {
+            for rank in 0..8 {
+                let target = Square::new(file, rank);
+                if position.piece_controls(from, target) {
+                    controls.push(target.to_string());
+                }
+            }
+        }
+        pieces.push(PieceControls {
+            id: piece_id(position, &from.to_string(), piece),
+            square: from.to_string(),
+            controls,
+        });
+    }
+    Ok(ControlGraph::new(position, ControlMap { version: 1, pieces })?.map().clone())
+}
+
+/// Build a post-move inventory and select invalidated entries using ONLY the
+/// old map and occupancy differences. Captures, EP, castling and promotions all
+/// change occupancy; castling therefore selects both relocated pieces.
+pub fn incremental_targets(
+    before: &Position,
+    after: &Position,
+    old: &ControlMap,
+) -> Result<(ControlMap, Vec<usize>)> {
+    ControlGraph::new(before, old.clone())?;
+    let mut changed = BTreeSet::new();
+    for file in 0..8 {
+        for rank in 0..8 {
+            let square = Square::new(file, rank);
+            if before.board().piece_at(square) != after.board().piece_at(square) {
+                changed.insert(square.to_string());
+            }
+        }
+    }
+    let mut pieces = Vec::new();
+    let mut targets = Vec::new();
+    for (square, piece) in after.board().pieces() {
+        let cell = square.to_string();
+        let id = piece_id(after, &cell, piece);
+        let previous = old.pieces.iter().find(|entry| entry.id == id);
+        let moved = changed.contains(&cell);
+        let slider = matches!(piece.kind, PieceKind::Bishop | PieceKind::Rook | PieceKind::Queen);
+        let invalidated = moved || previous.is_none() || (slider && previous.is_some_and(|p| {
+            p.controls.iter().any(|s| changed.contains(s))
+        }));
+        if invalidated {
+            targets.push(pieces.len());
+        }
+        pieces.push(PieceControls {
+            id, square: cell,
+            controls: if invalidated { vec![] } else { previous.unwrap().controls.clone() },
+        });
+    }
+    Ok((ControlMap { version: 1, pieces }, targets))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,7 +112,7 @@ pub struct OnePieceControls {
 impl OnePieceControls {
     pub fn parse(text: &str) -> Result<Self> {
         let mut result: Self =
-            crate::output::parse_json(text).context("invalid one-grounder JSON")?;
+            crate::output::parse_final_json(text).context("invalid one-grounder JSON")?;
         validate_controls("selected piece", &mut result.controls)?;
         Ok(result)
     }
@@ -111,7 +193,7 @@ fn square(text: &str) -> Result<()> {
     Ok(())
 }
 
-fn piece_id(position: &Position, cell: &str, piece: Piece) -> String {
+pub(crate) fn piece_id(position: &Position, cell: &str, piece: Piece) -> String {
     format!(
         "{}{}_{}",
         if piece.color == Color::White {

@@ -341,6 +341,16 @@ impl Position {
         is_square_attacked_on(&self.board, square, by)
     }
 
+    /// Geometric control by one piece, including friendly occupied targets.
+    /// Pins and king safety do not constrain this map; this is not move generation.
+    #[must_use]
+    pub fn piece_controls(&self, from: Square, target: Square) -> bool {
+        self.board.size().contains(target)
+            && self.board.piece_at(from).is_some_and(|piece| {
+                piece_attacks_square(&self.board, from, piece, target)
+            })
+    }
+
     /// Generates every legal move for the side to move.
     #[must_use]
     pub fn legal_moves(&self) -> Vec<Move> {
