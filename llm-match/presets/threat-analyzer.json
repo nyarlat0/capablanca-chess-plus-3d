@@ -1,0 +1,8 @@
+{
+  "genamt": 4096,
+  "reasoning_effort": "medium",
+  "chat_template_kwargs": {
+    "enable_thinking": true,
+    "reasoning_effort": "medium"
+  }
+}
