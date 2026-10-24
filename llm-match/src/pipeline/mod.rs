@@ -7,7 +7,7 @@ use legality::{move_text, resolve_candidate, validate_candidate, validate_metada
 pub(crate) use prompts::template;
 pub use prompts::{Templates, preview, prompt_data};
 mod transport;
-use transport::{request, request_parsed};
+use transport::{request, request_parsed, request_parsed_grounder};
 pub mod debug;
 mod incremental;
 pub use incremental::prepare_controls;

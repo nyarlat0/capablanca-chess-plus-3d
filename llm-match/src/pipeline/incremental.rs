@@ -29,9 +29,9 @@ async fn fill(
         data.custom["selected-piece"] = json!(crate::grounder::selected_piece(
             state.game.position(), &piece.square,
         )?);
-        let result = request_parsed(
+        let result = request_parsed_grounder(
             &mut client, &http, config, Stage::OneGrounder, &data, &image,
-            |text| {
+            state.game.position(), |text| {
                 let result=OnePieceControls::parse(text)?;
                 crate::grounder::validate_one(state.game.position(),&piece.square,&result)?;
                 Ok(result)

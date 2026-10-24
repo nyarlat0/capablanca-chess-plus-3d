@@ -20,12 +20,34 @@ struct Server {
 }
 
 fn message_text(message: &Value) -> String {
-    let message: prompt_core::ChatCompletionMessage =
+    let parsed: prompt_core::ChatCompletionMessage =
         serde_json::from_value(message.clone()).unwrap();
-    message.text_parts().concat()
+    let mut text=parsed.text_parts().concat();
+    for call in parsed.tool_calls() {
+        text.push_str(&call.function.name);
+        text.push_str(&call.arguments::<Value>().unwrap().to_string());
+    }
+    text
+}
+fn rendered_prompt(request: &Value) -> String {
+    let mut text=String::new();
+    if let Some(tools)=request["tools"].as_array() {
+        for tool in tools {
+            text.push_str(&tool["function"].to_string());
+            text.push('\n');
+        }
+    }
+    let messages=request["messages"].as_array().unwrap();
+    for message in messages {
+        text.push_str(&message_text(message));
+        text.push('\n');
+    }
+    text
 }
 enum Reply {
     Text(String),
+    /// Complete response assistant message, including structured tool calls.
+    Message(Value),
     Http(u16),
     Slow(&'static str),
 }
@@ -83,30 +105,21 @@ impl Server {
                             let _ = write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response);
                             continue;
                         }
-                        let prompt = request["messages"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .map(message_text)
-                            .collect::<Vec<_>>()
-                            .join("\n");
+                        let prompt = rendered_prompt(&request);
                         json!({"value":token_count, "prompt":prompt})
                     }
                     "/v1/chat/completions" => {
                         let request: Value = serde_json::from_slice(&body).unwrap();
                         assert!(request.get("prompt").is_none());
-                        let prompt = request["messages"]
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .map(message_text)
-                            .collect::<Vec<_>>()
-                            .join("\n");
+                        let prompt = rendered_prompt(&request);
                         recorded.lock().unwrap().push(prompt);
                         recorded_requests.lock().unwrap().push(request);
                         match answers.next().expect("unexpected extra generation") {
                             Reply::Text(text) => {
                                 json!({"choices":[{"message":{"role":"assistant","content":text}}]})
+                            }
+                            Reply::Message(message) => {
+                                json!({"choices":[{"message":message,"finish_reason":"tool_calls"}]})
                             }
                             Reply::Http(code) => {
                                 status = code;
@@ -1161,4 +1174,105 @@ async fn one_grounder_retries_when_xray_omits_a_blocked_ray() {
     let prompts=server.prompts.lock().unwrap();
     assert_eq!(prompts.len(),2);
     assert_eq!(prompts[0],prompts[1]);
+}
+
+#[tokio::test]
+async fn one_grounder_can_inspect_occupants_and_continue_in_same_attempt() {
+    use llm_match::pipeline::{Stage,debug::{self,Inputs}};
+
+    // The model chooses these squares, not the Rust geometry checker.
+    let call = |id: &str, square: &str| json!({
+        "id":id,"type":"function",
+        "function":{"name":"piece_at","arguments":json!({"square":square}).to_string()}
+    });
+    let server=Server::script(vec![
+        Reply::Message(json!({
+            "role":"assistant","content":null,
+            "tool_calls":[call("call-c3","c3"),call("call-c4","c4")]
+        })),
+        text(json!({
+            "controls":["c3","d3","e4","d2","d1","c1","b1","b2","b3","a4"],
+            "xray":[
+                {"direction":"N","first":"c3","second":"c5"},
+                {"direction":"NE","first":"e4","second":"g6"},
+                {"direction":"E","first":"d2","second":"e2"},
+                {"direction":"W","first":"b2","second":"a2"}
+            ]
+        })),
+    ],512);
+    let config=cfg(&server);
+    let fen="r3k2r/p1ppqpb1/bn2pnp1/2pP4/1p2P3/2N2N2/PPQBBPPP/R3K2R w KQkq - 0 1";
+    let m=llm_match::Match::from_fen(Variant::Classic,Color::White,fen).unwrap();
+    let before=m.game().position().to_fen();
+    let output=debug::run(&m,&config,Stage::OneGrounder,&Inputs{
+        selected_piece:Some("c2".into()),..Default::default()
+    }).await.unwrap();
+    let piece: llm_match::grounder::OnePieceControls=serde_json::from_str(&output).unwrap();
+    assert_eq!(piece.controls.len(),10);
+    assert_eq!(m.game().position().to_fen(),before);
+
+    let requests=server.requests.lock().unwrap();
+    assert_eq!(requests.len(),2);
+    for request in requests.iter() {
+        assert_eq!(request["tools"][0]["function"]["name"],"piece_at");
+        assert_eq!(request["tool_choice"],"auto");
+    }
+    let continuation=&requests[1]["messages"];
+    assert!(continuation.as_array().unwrap().len()>requests[0]["messages"].as_array().unwrap().len());
+    let tool_messages:Vec<_>=continuation.as_array().unwrap().iter()
+        .filter(|msg|msg["role"]=="tool").collect();
+    assert_eq!(tool_messages.len(),2);
+    assert_eq!(tool_messages[0]["tool_call_id"],"call-c3");
+    assert_eq!(tool_messages[1]["tool_call_id"],"call-c4");
+    let first:Value=serde_json::from_str(tool_messages[0]["content"].as_str().unwrap()).unwrap();
+    let second:Value=serde_json::from_str(tool_messages[1]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(first,json!({"square":"c3","piece":"wN_c3"}));
+    assert_eq!(second,json!({"square":"c4","piece":null}));
+    assert_eq!(server.prompts.lock().unwrap().len(),2); // one attempt, two generations
+}
+
+#[tokio::test]
+async fn tool_rounds_have_no_application_call_limit() {
+    use llm_match::pipeline::{Stage,debug::{self,Inputs}};
+    let calls:Vec<_>=(0..40).map(|i| json!({
+        "id":format!("lookup-{i}"),"type":"function",
+        "function":{"name":"piece_at","arguments":json!({"square":"a1"}).to_string()}
+    })).collect();
+    let server=Server::script(vec![
+        Reply::Message(json!({"role":"assistant","content":null,"tool_calls":calls})),
+        text(json!({"controls":["d1","d2","e2","f1","f2"],"xray":[]})),
+    ],512);
+    let config=cfg(&server);
+    let m=llm_match::Match::from_fen(Variant::Classic,Color::White,
+        "7k/8/8/8/8/8/P7/R3K3 w - - 0 1").unwrap();
+    debug::run(&m,&config,Stage::OneGrounder,&Inputs{
+        selected_piece:Some("e1".into()),..Default::default()
+    }).await.unwrap();
+    let requests=server.requests.lock().unwrap();
+    assert_eq!(requests.len(),2);
+    let tool_count=requests[1]["messages"].as_array().unwrap().iter()
+        .filter(|m|m["role"]=="tool").count();
+    assert_eq!(tool_count,40);
+}
+
+#[tokio::test]
+async fn piece_at_returns_an_error_for_invalid_square_without_stopping_reasoning() {
+    use llm_match::pipeline::{Stage,debug::{self,Inputs}};
+    let server=Server::script(vec![
+        Reply::Message(json!({"role":"assistant","content":null,
+            "tool_calls":[{"id":"bad-square","type":"function","function":{
+                "name":"piece_at","arguments":json!({"square":"c9"}).to_string()
+            }}]})),
+        text(json!({"controls":["g7","g8","h7"],"xray":[]})),
+    ],512);
+    let config=cfg(&server);
+    let m=llm_match::Match::from_fen(Variant::Classic,Color::White,
+        "7k/8/8/8/8/8/P7/R3K3 w - - 0 1").unwrap();
+    debug::run(&m,&config,Stage::OneGrounder,&Inputs{
+        selected_piece:Some("h8".into()),..Default::default()
+    }).await.unwrap();
+    let requests=server.requests.lock().unwrap();
+    let call_result=&requests[1]["messages"].as_array().unwrap().last().unwrap()["content"];
+    let payload:Value=serde_json::from_str(call_result.as_str().unwrap()).unwrap();
+    assert!(payload["error"].as_str().unwrap().contains("square must be"));
 }

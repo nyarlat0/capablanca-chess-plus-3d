@@ -424,3 +424,28 @@ returns an error without publishing an incomplete control map.
 The comparison does not depend on array order. Debug-only offline map
 inspection still uses structural parsing without automatically modifying
 supplied data.
+
+## Optional model-initiated square inspection
+
+Classic `grounder`, `one-grounder` and each call in `one-grounder-full`
+advertise an optional `piece_at` tool. The selected model chooses when and
+where to call it. For example, `{"square":"c3"}` returns
+`{"square":"c3","piece":"wN_c3"}`; an empty square returns `"piece":null`.
+Invalid squares return an error as a tool result, allowing the model to
+correct its lookup. These observations contain **no attacks, rays or legal
+moves**. The tool uses the immutable Position of the current Grounder
+request, never the search/evaluation API.
+
+The host loops over `tool_calls`, sends all results with their matching IDs,
+and continues the same model conversation until a final text answer.
+There is **no app-imposed cap** on the number of calls or rounds; the
+backend's context length and ordinary HTTP timeout still apply. Each
+failed final-answer attempt begins a fresh conversation. Accepted JSON
+format, model prompt templates, engine verification and retry counts are
+unchanged. Other stages do not receive tools.
+
+**KoboldCpp must run with `--jinjatools` (alias `--jinja_tools`)**
+and a compatible model tool-use template. The prompt-core tokenization
+preview rejects servers that omit the JSON tool definition or drop tool
+messages, instead of silently treating the model's tool request as prose.
+If the model chooses not to call `piece_at`, it can still answer normally.

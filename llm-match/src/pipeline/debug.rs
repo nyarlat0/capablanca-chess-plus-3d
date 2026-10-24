@@ -215,13 +215,14 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
                     Stage::OneGrounder,
                     &one_inputs(&piece.square),
                 )?;
-                let result = request_parsed(
+                let result = request_parsed_grounder(
                     &mut client,
                     &http,
                     config,
                     Stage::OneGrounder,
                     &data,
                     &image,
+                    state.game.position(),
                     |text| {
                         let result=crate::grounder::OnePieceControls::parse(text)?;
                         crate::grounder::validate_one(state.game.position(),&piece.square,&result)?;
@@ -247,7 +248,8 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
             .normalized_json()
         }
         Stage::OneGrounder => {
-            request_parsed(&mut client, &http, config, stage, &data, &image, |text| {
+            request_parsed_grounder(&mut client, &http, config, stage, &data, &image,
+                state.game.position(), |text| {
                 let result=crate::grounder::OnePieceControls::parse(text)?;
                 let piece=inputs.selected_piece.as_deref().context("selected piece is missing")?;
                 let sq=piece.split_once('_').map_or(piece,|(_,s)|s);
@@ -257,7 +259,8 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
             .await
         }
         Stage::Grounder => {
-            request_parsed(&mut client, &http, config, stage, &data, &image, |text| {
+            request_parsed_grounder(&mut client, &http, config, stage, &data, &image,
+                state.game.position(), |text| {
                 grounder_response(state, config, text)
             })
             .await
