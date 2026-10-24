@@ -23,6 +23,13 @@ fn message_text(message: &Value) -> String {
     let parsed: prompt_core::ChatCompletionMessage =
         serde_json::from_value(message.clone()).unwrap();
     let mut text=parsed.text_parts().concat();
+    if let prompt_core::ChatCompletionMessage::Assistant {
+        reasoning_content: Some(reasoning), ..
+    } = &parsed {
+        text.push_str("<think>");
+        text.push_str(reasoning);
+        text.push_str("</think>");
+    }
     for call in parsed.tool_calls() {
         // Emulate Qwen's Jinja template: function arguments are NOT JSON.
         text.push_str(&format!("<tool_call><function={}>",call.function.name));
@@ -1194,6 +1201,7 @@ async fn one_grounder_can_inspect_occupants_and_continue_in_same_attempt() {
     let server=Server::script(vec![
         Reply::Message(json!({
             "role":"assistant","content":null,
+            "reasoning_content":"I should call piece_at for c3 before trusting the board. Perhaps piece_at is useful here.",
             "tool_calls":[call("call-c3","c3"),call("call-c4","c4")]
         })),
         text(json!({
