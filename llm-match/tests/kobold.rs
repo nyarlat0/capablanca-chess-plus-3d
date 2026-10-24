@@ -521,14 +521,6 @@ async fn debug_runs_only_requested_stage_and_never_commits() {
     for (stage, reply, inputs) in [
         (Stage::Grounder, grounding(), Inputs::default()),
         (
-            Stage::Proposer,
-            normal_proposal(),
-            Inputs {
-                analysis: Some("SUPPLIED_FACTS".into()),
-                ..Default::default()
-            },
-        ),
-        (
             Stage::Verifier,
             verify(1, true),
             Inputs {
@@ -562,7 +554,7 @@ async fn debug_runs_only_requested_stage_and_never_commits() {
         assert!(!p[0].contains("SECRET_IDEA"));
         assert_eq!(
             p[0].contains("SUPPLIED_FACTS"),
-            matches!(stage, Stage::Proposer | Stage::Verifier)
+            stage == Stage::Verifier
         );
         assert_eq!(p[0].contains("SUPPLIED_RESULT"), stage == Stage::Selector);
     }
@@ -634,399 +626,120 @@ async fn debug_retries_only_the_chosen_stage_and_strips_reasoning() {
     assert!(m.wrong_moves().is_empty());
 }
 
-#[tokio::test]
-async fn four_stage_skips_analyst_and_shares_grounded_facts() {
-    let server = Server::script(
-        vec![
-            normal_proposal(),
-            verify(1, true),
-            verify(2, false),
-            verify(3, false),
-            select(1, "e5"),
-        ],
-        512,
-    );
-    let mut c = cfg(&server);
-    c.pipeline.grounder.content = "GROUNDER_ONLY {{#if analysis}}UNEXPECTED_ANALYSIS{{/if}}".into();
-    c.pipeline.proposer.content = "PROPOSER_ONLY".into();
-    c.pipeline.verifier.content = "VERIFIER_ONLY".into();
-    c.pipeline.selector.content = "SELECTOR_ONLY".into();
-    let mut m = state();
-    let before_fen = m.game().position().to_fen();
-    llm_match::generate_move(&mut m, &c, |_, _| panic!())
-        .await
-        .unwrap();
-    assert_eq!(m.uci_history(), ["e2e4", "e7e5"]);
-    let requests = server.requests.lock().unwrap();
-    let mut previous_image = None;
-    for request in requests.iter() {
-        let messages = request["messages"].as_array().unwrap();
-        let last_user = messages.iter().rposition(|m| m["role"] == "user").unwrap();
-        for (i, message) in messages.iter().enumerate() {
-            let message: prompt_core::ChatCompletionMessage =
-                serde_json::from_value(message.clone()).unwrap();
-            assert_eq!(message.image_count(), usize::from(i == last_user));
-        }
-        let content = messages[last_user]["content"].as_array().unwrap();
-        assert!(message_text(&messages[last_user]).contains(&before_fen));
-        let image = content.last().unwrap()["image_url"]["url"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        assert!(image.starts_with("data:image/png;base64,"));
-        if let Some(previous) = &previous_image {
-            assert_eq!(&image, previous);
-        }
-        previous_image = Some(image);
-    }
-    assert!(
-        m.history()
-            .iter()
-            .all(|m| !m.content.contains("data:image"))
-    );
-    let p = server.prompts.lock().unwrap();
-    assert_eq!(p.len(), 5);
-    for (index, marker) in [
-        (0, "PROPOSER_ONLY"),
-        (1, "VERIFIER_ONLY"),
-        (2, "VERIFIER_ONLY"),
-        (3, "VERIFIER_ONLY"),
-        (4, "SELECTOR_ONLY"),
-    ] {
-        assert!(p[index].contains(marker));
-    }
-    assert!(
-        p.iter()
-            .all(|prompt| !prompt.contains("ANALYST_MUST_NOT_RUN")
-                && !prompt.contains("UNEXPECTED_ANALYSIS"))
-    );
-    for prompt in &p[0..4] {
-        assert!(prompt.contains("VERIFIED GROUNDER GEOMETRY OF THE CURRENT POSITION"));
-        assert!(prompt.contains("White Pawn on e4"));
-        assert!(!prompt.contains("wP_e4"));
-    }
-    assert!(!p[4].contains("VERIFIED GROUNDER GEOMETRY OF THE CURRENT POSITION"));
-    assert!(
-        p.iter()
-            .all(|prompt| !prompt.contains("GROUNDER_PRIVATE_REASONING"))
-    );
-    assert!(p[4].contains("TACTICAL_RESULT_1"));
-    assert!(!p[4].contains("TACTICAL_RESULT_2"));
-    assert!(!p[4].contains("TACTICAL_RESULT_3"));
-    assert!(p[4].contains("tactical_result"));
-    assert!(!p[1].contains("rationale"));
-    assert!(!p[4].contains("rationale"));
+
+fn tool_line(id: &str, moves: &[&str]) -> Reply {
+    Reply::Message(json!({
+        "role":"assistant","content":null,
+        "tool_calls":[{
+            "id":id,"type":"function",
+            "function":{"name":"inspect_line","arguments":json!({"moves":moves}).to_string()}
+        }]
+    }))
 }
 
 #[tokio::test]
-async fn four_stage_reuses_grounder_after_illegal_candidates_and_deduplicates() {
-    let server = Server::script(
-        vec![
-            candidates(&[
-                ("e6+", "e7", "e6"),
-                ("Qh4", "d8", "h4"),
-                ("Ke7", "e8", "e7"),
-            ]),
-            candidates(&[("e5", "e7", "e5"), ("e5", "e7", "e5"), ("Nf6", "g8", "f6")]),
-            verify(1, true),
-            verify(3, true),
-            select(1, "e5"),
-        ],
-        512,
-    );
-    let c = cfg(&server);
-    let mut m = state();
-    llm_match::generate_move(&mut m, &c, |_, _| panic!())
-        .await
-        .unwrap();
-    let p = server.prompts.lock().unwrap();
-    assert_eq!(p.len(), 5);
-    for prompt in &p[0..4] {
-        assert!(prompt.contains("VERIFIED GROUNDER GEOMETRY OF THE CURRENT POSITION"));
-        assert!(!prompt.contains("wP_e4"));
-    }
-    assert!(p[1].contains("e6+"));
-    assert!(p[4].contains("TACTICAL_RESULT_1") && p[4].contains("TACTICAL_RESULT_3"));
-    assert!(!p[4].contains("TACTICAL_RESULT_2"));
-    assert_eq!(m.uci_history(), ["e2e4", "e7e5"]);
+async fn classic_proposer_inspects_variation_and_commits_its_own_final_choice() {
+    let server=Server::script(vec![
+        tool_line("line-1",&["e5","Nf3","Nc6"]),
+        text(json!({"move":"e5"}))
+    ],512);
+    let mut m=state();
+    let c=cfg(&server);
+    let before=m.game().position().to_fen();
+    let mv=llm_match::generate_move(&mut m,&c,|_,_|panic!("unexpected rejection"))
+        .await.unwrap();
+    assert_eq!(mv.to_uci(),"e7e5");
+    assert_ne!(m.game().position().to_fen(),before);
+    assert_eq!(m.uci_history(),["e2e4","e7e5"]);
+    let requests=server.requests.lock().unwrap();
+    assert_eq!(requests.len(),2);
+    assert_eq!(requests[0]["tools"][0]["function"]["name"],"inspect_line");
+    assert_eq!(requests[1]["tools"][0]["function"]["name"],"inspect_line");
+    let messages=requests[1]["messages"].as_array().unwrap();
+    let tool=messages.iter().find(|m|m["role"]=="tool").unwrap();
+    assert_eq!(tool["tool_call_id"],"line-1");
+    let reply:Value=serde_json::from_str(tool["content"].as_str().unwrap()).unwrap();
+    assert_eq!(reply["status"],"ok");
+    assert_eq!(reply["steps"].as_array().unwrap().len(),3);
+    let occupancy=&reply["steps"][0]["delta"]["occupancy"];
+    assert!(occupancy.to_string().contains("e7") && occupancy.to_string().contains("e5"));
+    assert!(reply["steps"][0]["delta"]["square_control_deltas"].as_array().unwrap().len()>0);
+    assert!(!tool["content"].as_str().unwrap().contains("bP_e5"));
+    assert!(server.prompts.lock().unwrap()[0].contains("VERIFIED GROUNDER GEOMETRY"));
 }
 
 #[tokio::test]
-async fn four_stage_handles_every_variant_without_engine_hints() {
-    for variant in Variant::ALL {
-        let mut m = llm_match::Match::new(variant, Color::White);
-        // Test fixtures only: the runtime never sends this engine move list.
-        let moves: Vec<_> = m
-            .game()
-            .position()
-            .legal_moves()
-            .into_iter()
-            .take(3)
-            .collect();
-        let cs: Vec<_> = moves
-            .iter()
-            .enumerate()
-            .map(|(i, mv)| {
-                let text = if variant == Variant::Classic {
-                    m.game().position().san(*mv).unwrap()
-                } else {
-                    mv.to_uci()
-                };
-                json!({"id":format!("c{}",i+1),"move":text,"from":mv.from.to_string(),
-                "to":mv.to.to_string(),"rationale":"FIXTURE_PRIVATE_IDEA"})
-            })
-            .collect();
-        let mut replies = vec![
-                text(json!({"candidates":cs})),
-                verify(1, true),
-                verify(2, false),
-                verify(3, false),
-                text(json!({"candidate_id":"c1","final_move":cs[0]["move"]})),
-            ];
-        if variant != Variant::Classic { replies.insert(0, grounding_for(m.game().position())); }
-        let server = Server::script(replies, 512);
-        let mut c = if variant == Variant::Classic {
-            cfg(&server)
-        } else {
-            llm_match::Config::load_with_profile(Some("uci-no-history")).unwrap()
-        };
-        c.endpoint = server.endpoint.clone();
-        c.reasoning = cfg(&server).reasoning;
-        let mv = llm_match::generate_move(&mut m, &c, |_, _| panic!())
-            .await
-            .unwrap();
-        assert_eq!(mv, moves[0]);
-        let p = server.prompts.lock().unwrap();
-        assert_eq!(p.len(), if variant == Variant::Classic {5} else {6});
-        assert!(!p[0].contains("FIXTURE_PRIVATE_IDEA"));
-        assert!(p[1..].iter().all(|s| !s.contains("FIXTURE_PRIVATE_IDEA")));
-    }
+async fn illegal_variation_reports_prefix_then_proposer_tests_another_branch() {
+    let server=Server::script(vec![
+        tool_line("bad-line",&["e5","Nf3","Bh6"]),
+        tool_line("good-line",&["d5","exd5"]),
+        text(json!({"move":"d5"}))
+    ],512);
+    let mut m=state();
+    let root=m.game().position().to_fen();
+    llm_match::generate_move(&mut m,&cfg(&server),|_,_|panic!())
+        .await.unwrap();
+    assert_eq!(m.uci_history(),["e2e4","d7d5"]);
+    assert_ne!(m.game().position().to_fen(),root);
+    let requests=server.requests.lock().unwrap();
+    assert_eq!(requests.len(),3);
+    let responses:Vec<Value>=requests[2]["messages"].as_array().unwrap().iter()
+        .filter(|m|m["role"]=="tool")
+        .map(|m|serde_json::from_str(m["content"].as_str().unwrap()).unwrap())
+        .collect();
+    assert_eq!(responses[0]["status"],"illegal");
+    assert_eq!(responses[0]["at_ply"],3);
+    assert_eq!(responses[0]["valid_prefix"].as_array().unwrap().len(),2);
+    assert!(responses[0]["reason"].as_str().unwrap().contains("SAN"));
+    assert_eq!(responses[1]["status"],"ok");
 }
 
 #[tokio::test]
-async fn structured_stages_accept_markdown_json_after_reasoning() {
-    let fenced = |reply| match reply {
-        Reply::Text(body) => Reply::Text(format!(
-            "<thinking>private</thinking>\n```json\n{body}\n```"
-        )),
-        _ => unreachable!(),
-    };
-    let server = Server::script(
-        vec![
-            fenced(normal_proposal()),
-            fenced(verify(1, true)),
-            fenced(verify(2, false)),
-            fenced(verify(3, false)),
-            fenced(select(1, "e5")),
-        ],
-        512,
-    );
-    let mut m = state();
-    llm_match::generate_move(&mut m, &cfg(&server), |_, _| panic!("unexpected rejection"))
-        .await
-        .unwrap();
-    assert_eq!(m.uci_history(), ["e2e4", "e7e5"]);
-    assert_eq!(server.prompts.lock().unwrap().len(), 5);
-}
-
-#[tokio::test]
-async fn each_stage_sends_its_own_sampler_and_response_budget() {
-    let server = Server::script(
-        vec![
-            normal_proposal(),
-            verify(1, true),
-            verify(2, false),
-            verify(3, false),
-            select(1, "e5"),
-        ],
-        512,
-    );
-    let mut c = cfg(&server);
-    let preset = |tokens, temp| {
-        Some(prompt_core::Preset::from_value(json!({"genamt":tokens,"temp":temp})).unwrap())
-    };
-    c.stage_presets = llm_match::StagePresets {
-        one_grounder: None,
-        grounder: preset(151, 0.15),
-        proposer: preset(202, 0.2),
-        verifier: preset(303, 0.3),
-        selector: preset(404, 0.4),
-    };
-    let mut m = state();
-    llm_match::generate_move(&mut m, &c, |_, _| panic!("unexpected rejection"))
-        .await
-        .unwrap();
-    let requests = server.requests.lock().unwrap();
-    assert_eq!(requests.len(), 5);
-    for (request, (tokens, temperature)) in requests.iter().zip([
-        (202, 0.2),
-        (303, 0.3),
-        (303, 0.3),
-        (303, 0.3),
-        (404, 0.4),
-    ]) {
-        assert_eq!(request["max_tokens"], tokens);
-        assert_eq!(request["temperature"], temperature);
-    }
-}
-
-#[tokio::test]
-async fn engine_gate_filters_illegal_and_mismatched_candidates_without_committing() {
-    let server = Server::script(
-        vec![
-            candidates(&[("e6+", "e7", "e6"), ("e5", "d7", "e5"), ("Qh4", "d8", "h4")]),
-            candidates(&[("e6+", "e7", "e6"), ("e5", "e7", "e5"), ("d5", "d7", "d5")]),
-            verify(2, false),
-            verify(3, true),
-            select(3, "d5"),
-        ],
-        512,
-    );
-    let mut m = state();
-    let c = cfg(&server);
-    llm_match::generate_move(&mut m, &c, |_, _| {
-        panic!("gate must not emit final rejection")
-    })
-    .await
-    .unwrap();
-    assert_eq!(m.uci_history(), ["e2e4", "d7d5"]);
+async fn a_final_move_without_a_successful_inspection_is_rejected() {
+    let server=Server::script(vec![text(json!({"move":"e5"}))],512);
+    let mut c=cfg(&server);
+    c.stage_max_attempts=1;
+    let mut m=state();
+    let original=m.game().position().to_fen();
+    assert!(llm_match::generate_move(&mut m,&c,|_,_|panic!()).await.is_err());
+    assert_eq!(m.game().position().to_fen(),original);
+    assert_eq!(m.uci_history(),["e2e4"]);
     assert!(m.wrong_moves().is_empty());
-    let p = server.prompts.lock().unwrap();
-    assert_eq!(p.len(), 5);
-    assert!(p[1].contains("e6+"));
-    assert!(p[1].contains("Qh4"));
-    assert!(p[1].contains("VERIFIED GROUNDER GEOMETRY OF THE CURRENT POSITION"));
-    assert!(!p[1].contains("ANALYST_PRIVATE_FACT"));
-    assert!(!p[2].contains("e6+"));
-    assert!(p[2].contains(r#""move":"e5""#));
-    assert!(p[3].contains(r#""move":"d5""#));
 }
 
 #[tokio::test]
-async fn incorrect_metadata_cannot_poison_same_legal_move_and_valid_duplicates_are_deduplicated() {
-    let server = Server::script(
-        vec![
-            candidates(&[
-                ("Nxd5", "c6", "d5"),
-                ("Nxd5", "f6", "d5"),
-                ("Nxd5", "f6", "d5"),
-            ]),
-            verify(2, true),
-            select(2, "Nxd5"),
-        ],
-        512,
-    );
-    let mut m = llm_match::Match::from_fen(
-        Variant::Classic,
-        Color::Black,
-        "r1bqkb1r/pp2pppp/2n2n2/2PN4/5B2/8/PPP1PPPP/R2QKBNR b KQkq - 0 5",
-    )
-    .unwrap();
-    llm_match::generate_move(&mut m, &cfg(&server), |_, _| panic!("unexpected rejection"))
-        .await
-        .unwrap();
-    assert_eq!(m.uci_history(), ["f6d5"]);
-    assert!(m.wrong_moves().is_empty());
-    let p = server.prompts.lock().unwrap();
-    assert_eq!(p.len(), 3); // only one verifier call, for the first valid candidate
-    assert!(p[1].contains(r#""from":"f6""#));
-    assert!(!p[1].contains(r#""from":"c6""#));
-    assert!(!p[1].contains("candidate_id"));
-    // Human-readable Grounder facts contain no internal piece IDs; candidate identity is still excluded.
-    assert!(!p[1].contains(r#""id":"c2""#));
-    assert!(p[2].contains(r#""id":"c2""#));
-    assert!(p[2].contains(r#""tactical_result":"TACTICAL_RESULT_2""#));
-    assert!(!p[2].contains(r#""id":"c1""#));
-    assert!(!p[2].contains(r#""id":"c3""#));
+async fn an_illegal_inspection_does_not_authorize_a_final_choice() {
+    let server=Server::script(vec![
+        tool_line("invalid-root",&["e6+"]),
+        text(json!({"move":"e6+"}))
+    ],512);
+    let mut c=cfg(&server);
+    c.stage_max_attempts=1;
+    let mut m=state();
+    assert!(llm_match::generate_move(&mut m,&c,|_,_|panic!()).await.is_err());
+    assert_eq!(m.uci_history(),["e2e4"]);
+    let requests=server.requests.lock().unwrap();
+    let tools:Vec<_>=requests[1]["messages"].as_array().unwrap().iter()
+        .filter(|m|m["role"]=="tool").collect();
+    let reply:Value=serde_json::from_str(tools[0]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(reply["status"],"illegal");
+    assert_eq!(reply["at_ply"],1);
+    assert!(reply["valid_prefix"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn exhausted_gate_does_not_mutate_position_history_or_rejected_finals() {
-    let server = Server::script(
-        vec![
-            candidates(&[("e6+", "e7", "e6"), ("e5", "d7", "e5"), ("Qh4", "d8", "h4")]),
-        ],
-        512,
-    );
-    let mut c = cfg(&server);
-    c.max_attempts = 1;
-    let mut m = state();
-    let before = m.game().position().to_fen();
-    assert!(
-        llm_match::generate_move(&mut m, &c, |_, _| panic!())
-            .await
-            .is_err()
-    );
-    assert_eq!(m.game().position().to_fen(), before);
-    assert_eq!(m.uci_history(), ["e2e4"]);
-    assert!(m.wrong_moves().is_empty());
-    assert_eq!(server.prompts.lock().unwrap().len(), 1);
-}
-#[tokio::test]
-async fn malformed_verifier_is_not_a_rejection() {
-    let server = Server::script(
-        vec![
-            normal_proposal(),
-            text(json!({"candidate_id":"c1","verdict":"ACCEPT","tactical_result":"x"})),
-            text(json!({"verdict":"ACCEPT","tactical_result":"  "})),
-            verify(1, true),
-            verify(2, false),
-            verify(3, false),
-            select(1, "e5"),
-        ],
-        512,
-    );
-    let mut m = state();
-    let c = cfg(&server);
-    llm_match::generate_move(&mut m, &c, |_, _| panic!())
-        .await
-        .unwrap();
-    let p = server.prompts.lock().unwrap();
-    assert_eq!(p[1], p[2]);
-    assert_eq!(p[2], p[3]);
-}
-#[tokio::test]
-async fn deterministic_http_and_budget_errors_fail_immediately() {
-    for (responses, tokens) in [(vec![Reply::Http(400)], 512), (vec![], 100000)] {
-        let server = Server::script(responses, tokens);
-        let c = cfg(&server);
-        let mut m = state();
-        assert!(
-            llm_match::generate_move(&mut m, &c, |_, _| panic!())
-                .await
-                .is_err()
-        );
-        assert_eq!(m.uci_history(), ["e2e4"]);
-        assert!(m.wrong_moves().is_empty());
-        assert_eq!(
-            server.prompts.lock().unwrap().len(),
-            if tokens == 512 { 1 } else { 0 }
-        );
-    }
-}
-#[tokio::test]
-async fn transient_status_and_timeouts_retry_without_visible_state() {
-    for failure in [Reply::Http(408), Reply::Http(429), Reply::Slow("ignored")] {
-        let server = Server::script(
-            vec![
-                failure,
-                normal_proposal(),
-                verify(1, true),
-                verify(2, false),
-                verify(3, false),
-                select(1, "e5"),
-            ],
-            512,
-        );
-        let mut c = cfg(&server);
-        c.timeout_seconds = 1;
-        let mut m = state();
-        llm_match::generate_move(&mut m, &c, |_, _| panic!())
-            .await
-            .unwrap();
-        let p = server.prompts.lock().unwrap();
-        assert_eq!(p[0], p[0]);
-    }
+async fn isolated_classic_proposer_can_analyze_white_to_move_without_black_flag() {
+    use llm_match::pipeline::{Stage, debug::{self,Inputs}};
+    let server=Server::script(vec![
+        tool_line("white-e4",&["e4"]),
+        text(json!({"move":"e4"}))
+    ],512);
+    let m=llm_match::Match::new(Variant::Classic,Color::Black);
+    let original=m.game().position().to_fen();
+    let result=debug::run(&m,&cfg(&server),Stage::Proposer,&Inputs::default()).await.unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&result).unwrap(),json!({"move":"e4"}));
+    assert_eq!(m.game().position().to_fen(),original);
+    assert!(m.uci_history().is_empty());
 }
 
 #[tokio::test]
@@ -1088,35 +801,6 @@ async fn fairy_variants_preserve_every_move_and_coordinate_format() {
             }
         }
     }
-}
-
-#[tokio::test]
-async fn malformed_proposer_and_connect_failures_never_change_state() {
-    let invalid =
-        text(json!({"candidates":[{"id":"c1","move":"e5","from":"e7","to":"e5","rationale":"x"}]}));
-    let server = Server::script(vec![invalid], 512);
-    let mut c = cfg(&server);
-    c.stage_max_attempts = 1;
-    let mut m = state();
-    assert!(
-        llm_match::generate_move(&mut m, &c, |_, _| panic!())
-            .await
-            .is_err()
-    );
-    assert_eq!(m.uci_history(), ["e2e4"]);
-    assert!(m.wrong_moves().is_empty());
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    drop(listener);
-    c.endpoint = format!("http://{address}");
-    c.stage_max_attempts = 2;
-    assert!(
-        llm_match::generate_move(&mut m, &c, |_, _| panic!())
-            .await
-            .is_err()
-    );
-    assert_eq!(m.uci_history(), ["e2e4"]);
-    assert!(m.wrong_moves().is_empty());
 }
 
 #[tokio::test]

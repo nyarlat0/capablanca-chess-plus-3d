@@ -1,5 +1,6 @@
 //! Independent, bounded LLM stages. No engine candidate generation is used here.
 mod legality;
+mod delta;
 mod prompts;
 mod protocol;
 use legality::{move_text, resolve_candidate, validate_candidate, validate_metadata};
@@ -7,7 +8,7 @@ use legality::{move_text, resolve_candidate, validate_candidate, validate_metada
 pub(crate) use prompts::template;
 pub use prompts::{Templates, preview, prompt_data};
 mod transport;
-use transport::{request, request_parsed, request_parsed_grounder};
+use transport::{request, request_parsed, request_parsed_grounder, request_proposer};
 pub mod debug;
 mod incremental;
 pub use incremental::prepare_controls;
@@ -75,7 +76,78 @@ fn validate_proposal(p: &Proposal, config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Classic uses an interactive Proposer which makes the final move decision.
+ /// Fairy variants retain their existing stage pipeline and data formats.
 pub async fn generate(
+    state: &mut Match,
+    config: &Config,
+    mut rejected: impl FnMut(usize, &str),
+) -> Result<Move> {
+    if state.variant == capablanca_chess_plus::Variant::Classic {
+        return generate_classic(state, config, &mut rejected).await;
+    }
+    generate_legacy(state, config, rejected).await
+}
+
+async fn generate_classic(
+    state: &mut Match,
+    config: &Config,
+    mut rejected: impl FnMut(usize, &str),
+) -> Result<Move> {
+    ensure!(config.classic.is_some(),"Classic chess requires Classic configuration");
+    ensure!(state.game.position().side_to_move() == state.model_side,
+        "not the model turn");
+    ensure!(matches!(state.game.outcome(),
+        capablanca_chess_plus::GameOutcome::Ongoing | capablanca_chess_plus::GameOutcome::Check),
+        "game is over");
+    ensure!(config.max_attempts > 0 && config.stage_max_attempts > 0,
+        "attempt limits must be positive");
+    config.preset_for_stage(Stage::Proposer).generation_length()?;
+    output::final_answer(&config.reasoning, "")?;
+
+    // Once per move: preserve the original verified, incrementally updated
+    // Grounder map. Tool experiments use disposable Game clones and engine
+    // geometry, never modify this cache, or become move candidates themselves.
+    incremental::prepare(state,config).await?;
+    let (_,map) = state.controls.complete.as_ref()
+        .context("Grounder did not publish a complete current-position map")?;
+    crate::grounder::validate_engine_map(state.game.position(),map)?;
+    let analysis = crate::grounder::ControlGraph::new(
+        state.game.position(),map.clone())?.readable_analysis();
+    let image = crate::board_image::BoardImage::new(state.game.position())?;
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(config.timeout_seconds)).build()?;
+    let mut client=None;
+    let mut excluded: HashSet<String> = state.wrong_moves.iter().cloned().collect();
+    for round in 1..=config.max_attempts {
+        let mut data=prompt_data(state,config,Stage::Proposer)?;
+        data.custom["analysis"]=json!(analysis);
+        let mut known:Vec<_>=excluded.iter().cloned().collect();
+        known.sort();
+        data.custom["excluded-moves"]=json!(if known.is_empty() {
+            String::new()
+        } else { serde_json::to_string(&known)? });
+        let chosen=request_proposer(&mut client,&http,config,&data,&image,state).await?;
+        let mut trial=state.clone();
+        match trial.accept_configured_answer(&chosen.proposed_move,config) {
+            Ok(mv) => {
+                *state=trial;
+                return Ok(mv);
+            }
+            Err(e) => {
+                // Final legality is checked again on the actual unchanged root.
+                tracing::warn!(move_san=%chosen.proposed_move,error=%e,
+                    "Proposer final move rejected by engine");
+                excluded.insert(chosen.proposed_move.clone());
+                rejected(round,&chosen.proposed_move);
+            }
+        }
+    }
+    bail!("Classic Proposer exhausted {} attempts without a legal move",
+        config.max_attempts)
+}
+
+async fn generate_legacy(
     state: &mut Match,
     config: &Config,
     mut rejected: impl FnMut(usize, &str),
@@ -97,7 +169,6 @@ pub async fn generate(
     );
     for stage in [
         Stage::Grounder,
-        Stage::ThreatAnalyzer,
         Stage::Proposer,
         Stage::Verifier,
         Stage::Selector,

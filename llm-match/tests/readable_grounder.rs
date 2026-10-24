@@ -142,7 +142,7 @@ fn threat_facts_are_compact_and_keep_attackers_defenders_and_xrays() {
 }
 
 #[test]
-fn isolated_threat_analyzer_uses_compact_geometry_and_proposer_accepts_report() {
+fn isolated_threat_analyzer_is_archived_and_not_used_by_interactive_proposer() {
     use capablanca_chess_plus::Color;
     use llm_match::{Config, Match};
     use llm_match::pipeline::{Stage, debug::{self, Inputs}};
@@ -158,7 +158,9 @@ fn isolated_threat_analyzer_uses_compact_geometry_and_proposer_accepts_report() 
         ..Default::default()
     };
     let proposal = debug::preview(&state, &config, Stage::Proposer, &inputs).unwrap();
-    assert!(proposal.contains("GEOMETRIC: Black Rook e8 attacks e2"));
+    assert!(!proposal.contains("GEOMETRIC: Black Rook e8 attacks e2"));
+    assert!(proposal.contains("inspect_line"));
+    assert!(proposal.contains("VERIFIED GROUNDER GEOMETRY"));
     let verifier = debug::preview(&state, &config, Stage::Verifier, &Inputs {
         candidate: Some(serde_json::json!({"id":"c1","move":"Kf1","from":"e1","to":"f1"})),
         ..Default::default()

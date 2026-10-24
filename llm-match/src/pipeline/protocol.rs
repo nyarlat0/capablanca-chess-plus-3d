@@ -13,6 +13,13 @@ pub struct Candidate {
     #[serde(default)]
     pub rationale: String,
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FinalMove {
+    #[serde(rename = "move")]
+    pub proposed_move: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Proposal {
@@ -77,6 +84,13 @@ pub fn bounded(text: &str, max: usize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn final_proposer_output_is_one_strict_san_field() {
+        let selected: FinalMove = serde_json::from_str(r#"{"move":"Rxe8+"}"#).unwrap();
+        assert_eq!(selected.proposed_move,"Rxe8+");
+        assert!(serde_json::from_str::<FinalMove>(r#"{"candidates":[]}"#).is_err());
+        assert!(serde_json::from_str::<FinalMove>(r#"{"move":"e4","reason":"foo"}"#).is_err());
+    }
     #[test]
     fn threat_report_has_bounded_fields_and_no_extras() {
         let valid: ThreatAnalysis = serde_json::from_str(

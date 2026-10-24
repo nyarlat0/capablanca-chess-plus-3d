@@ -95,7 +95,8 @@ async fn main() -> Result<()> {
                     "Grounder map (Classic): --stage grounder --grounder-map-file map.json [--inspect-square e4] [--inspect-piece bN_f6]. Offline validation against --fen/--moves; no LLM configuration or network required. Without inspect flags prints normalized map JSON."
                 );
                 println!(
-                    "Stage debug: --stage grounder|threat-analyzer|proposer|verifier|selector [--threats-file threats.json] [--analysis-file facts.txt] [--candidate-file candidate.json] [--accepted-candidates-file accepted.json]. Classic proposer/verifier automatically get an engine-generated, human-readable Grounder report when --analysis-file is omitted. Other variants require --analysis-file. --print-prompt previews offline."
+                    "{}",
+                    r#"Stage debug: --stage grounder|proposer|verifier|selector|threat-analyzer [--analysis-file facts.txt]. Classic proposer has the inspect_line SAN-variation tool and returns final JSON {"move":"e4"}; verifier/selector/threat-analyzer are debug-only in Classic. Isolated Classic proposer/verifier automatically receive engine Grounder facts unless --analysis-file is supplied. --print-prompt previews messages offline."#
                 );
                 println!(
                     "llm-match [--variant Classic|Gothic|Embassy|Grand|Shako|Pemba|TerachessII] [--black] [--url http://aistation:5001] [--llm-profile NAME] [--llm-classic-profile with-history|no-history] [--fen 'FEN'] [--print-prompt] [--moves 'e2e4 e7e5']\nEnter a UCI move, or quit. Defaults come from llm-match/.env. Classic chess uses its separate SAN configuration."

@@ -124,7 +124,7 @@ impl Config {
     }
     pub fn summary(&self) -> String {
         let pipeline = if self.classic.is_some() {
-            "grounder/threat-analyzer/proposer/verifier/selector + legality gate"
+            "grounder/proposer(inspect_line + final SAN) + engine legality gate"
         } else {
             "grounder/proposer/verifier/selector + legality gate"
         };

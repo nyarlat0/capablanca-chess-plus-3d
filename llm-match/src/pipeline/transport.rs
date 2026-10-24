@@ -3,6 +3,7 @@ use super::*;
 use capablanca_chess_plus::{Position, Square};
 use prompt_core::{ChatCompletionMessage, ToolCall, ToolChoice, ToolDefinition};
 use serde::Deserialize;
+use std::{collections::BTreeSet, sync::{Arc,Mutex}};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,6 +65,39 @@ pub(super) async fn request<T: DeserializeOwned>(
     .await
 }
 
+/// Classic Proposer receives read-only move simulation. Its final choice must
+/// have been tried as the FIRST ply of a successful tool branch; the final SAN
+/// is independently checked by the engine before reaching the caller.
+pub(super) async fn request_proposer(
+    client: &mut Option<KoboldClient>,
+    http: &reqwest::Client,
+    config: &Config,
+    data: &PromptData,
+    image: &crate::board_image::BoardImage,
+    state: &Match,
+) -> Result<FinalMove> {
+    ensure!(config.classic.is_some(), "Classic Proposer tools require Classic chess");
+    let inspected = Arc::new(Mutex::new(BTreeSet::<String>::new()));
+    let validated = inspected.clone();
+    request_parsed_inner(
+        client,http,config,Stage::Proposer,data,image,None,
+        Some((state, inspected)),
+        move |answer| {
+            let selected: FinalMove = output::parse_final_json(answer)?;
+            ensure!(!selected.proposed_move.is_empty()
+                    && selected.proposed_move.trim() == selected.proposed_move
+                    && classic::san_shape(&selected.proposed_move),
+                "final move must be canonical SAN");
+            ensure!(validated.lock().unwrap().contains(&selected.proposed_move),
+                "final move was not verified through inspect_line as the first ply");
+            let mut trial = state.clone();
+            trial.accept_configured_answer(&selected.proposed_move,config)
+                .context("final move is illegal in the actual position")?;
+            Ok(selected)
+        }
+    ).await
+}
+
 pub(super) async fn request_parsed<T>(
     client: &mut Option<KoboldClient>,
     http: &reqwest::Client,
@@ -73,7 +107,7 @@ pub(super) async fn request_parsed<T>(
     image: &crate::board_image::BoardImage,
     parse: impl Fn(&str) -> Result<T>,
 ) -> Result<T> {
-    request_parsed_inner(client,http,config,stage,data,image,None,parse).await
+    request_parsed_inner(client,http,config,stage,data,image,None,None,parse).await
 }
 
 /// Grounder-specific variant that can answer model-initiated piece_at calls.
@@ -92,7 +126,7 @@ pub(super) async fn request_parsed_grounder<T>(
     if config.classic.is_none() {
         return request_parsed(client,http,config,stage,data,image,parse).await;
     }
-    request_parsed_inner(client,http,config,stage,data,image,Some(position),parse).await
+    request_parsed_inner(client,http,config,stage,data,image,Some(position),None,parse).await
 }
 
 async fn request_parsed_inner<T>(
@@ -103,11 +137,16 @@ async fn request_parsed_inner<T>(
     data: &PromptData,
     image: &crate::board_image::BoardImage,
     position: Option<&Position>,
+    proposer: Option<(&Match, Arc<Mutex<BTreeSet<String>>>)>,
     parse: impl Fn(&str) -> Result<T>,
 ) -> Result<T> {
     let mut request = super::prompts::build_request(config, stage, data, image)?;
+    ensure!(position.is_none() || proposer.is_none(), "conflicting tool modes");
     if position.is_some() {
         request.tools=vec![occupancy_tool()];
+        request.tool_choice=Some(ToolChoice::Auto);
+    } else if proposer.is_some() {
+        request.tools=vec![super::delta::tool()];
         request.tool_choice=Some(ToolChoice::Auto);
     }
     let reasoning = &config.reasoning;
@@ -137,7 +176,7 @@ async fn request_parsed_inner<T>(
                 );
             }
             let client = client.as_ref().unwrap();
-            if let Some(position) = position {
+            if position.is_some() || proposer.is_some() {
                 // No application-imposed limit on tool calls or rounds.
                 // Context capacity and the backend's request timeout still apply.
                 let mut conversation = request.clone();
@@ -146,20 +185,34 @@ async fn request_parsed_inner<T>(
                     // Never lose the authoritative board image while fitting a
                     // long series of exchanges into the finite model context.
                     ensure!(fitted.request.messages.iter().any(|m|m.image_count()>0),
-                        "Grounder context cannot retain the board image and tool transcript");
+                        "Tool context cannot retain the board image and transcript");
                     input_tokens=Some(fitted.preview.tokens);
                     let response=client.generate_chat_full(&fitted.request).await?;
                     if response.tool_calls.is_empty() {
-                        break Ok(response.content.context("Grounder returned no final text")?);
+                        break Ok(response.content.context("Tool-enabled stage returned no final text")?);
                     }
                     tracing::debug!(?stage, count=response.tool_calls.len(),
-                        "Grounder tool calls");
+                        "LLM tool calls");
                     conversation=fitted.request;
                     conversation.messages.push(response.message);
                     for call in response.tool_calls {
-                        let result=piece_at(position,&call);
+                        let result = if let Some(position) = position {
+                            piece_at(position,&call)
+                        } else {
+                            let (state, checked) = proposer.as_ref().expect("tool mode");
+                            let observation = super::delta::inspect_line(state,&call);
+                            let first = if observation["status"] == "ok" {
+                                observation["steps"][0]["san"].as_str()
+                            } else {
+                                observation["valid_prefix"][0]["san"].as_str()
+                            };
+                            if let Some(san) = first {
+                                checked.lock().unwrap().insert(san.to_owned());
+                            }
+                            observation
+                        };
                         tracing::debug!(?stage, tool=%call.function.name, observation=%result,
-                            "Grounder occupancy lookup");
+                            "LLM tool result");
                         conversation.messages.push(ChatCompletionMessage::tool(call.id,&result));
                     }
                 }

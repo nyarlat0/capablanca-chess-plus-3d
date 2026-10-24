@@ -191,6 +191,12 @@ fn one_inputs(square: &str) -> Inputs {
 }
 
 pub fn preview(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result<String> {
+    // CLI stage experiments can inspect either side regardless of --black.
+    let mut isolated = state.clone();
+    if stage == Stage::Proposer && config.classic.is_some() {
+        isolated.model_side = isolated.game.position().side_to_move();
+    }
+    let state = &isolated;
     let mut debug_state = state.clone();
     debug_state.model_side = debug_state.game.position().side_to_move();
     let state = &debug_state;
@@ -219,6 +225,13 @@ pub fn preview(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) ->
 }
 
 pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result<String> {
+    // A single-stage experiment plays the side specified by the FEN,
+    // without requiring the CLI's human/model color convention.
+    let mut isolated = state.clone();
+    if stage == Stage::Proposer && config.classic.is_some() {
+        isolated.model_side = isolated.game.position().side_to_move();
+    }
+    let state = &isolated;
     let data = data(state, config, stage, inputs)?;
     let image = crate::board_image::BoardImage::new(state.game.position())?;
     let http = reqwest::Client::builder()
