@@ -674,7 +674,6 @@ async fn illegal_reply_returns_actionable_feedback_to_proposer_before_selector()
             {"id":"c1","move":"e5","counterplay":["Bh6"]},
             {"id":"c2","move":"d5","counterplay":["exd5"]}
         ]})),
-        classic_lines(),
         text(json!({"candidate_id":"c2"}))
     ],512);
     let mut m=state();
@@ -683,33 +682,67 @@ async fn illegal_reply_returns_actionable_feedback_to_proposer_before_selector()
     let mv=llm_match::generate_move(&mut m,&config,|_,_|{}).await.unwrap();
     assert_eq!(mv.to_uci(),"d7d5");
     let requests=server.requests.lock().unwrap();
-    assert_eq!(requests.len(),3);
-    let retry=rendered_prompt(&requests[1]);
-    assert!(retry.contains("counterplay"));
-    assert!(retry.contains("Bh6"));
-    assert!(retry.contains("illegal"));
+    assert_eq!(requests.len(),2,"bad reply must not force Proposer retry");
+    let selector=rendered_prompt(&requests[1]);
+    assert!(selector.contains("counterplay"));
+    assert!(selector.contains("d5"));
+    assert!(!selector.contains("Bh6"),"illegal reply must be filtered");
     assert_eq!(m.uci_history(),["e2e4","d7d5"]);
 }
 
 #[tokio::test]
-async fn default_pipeline_uses_model_one_grounder_for_future_positions() {
+async fn engine_grounder_geometry_is_available_without_flag_or_llm_calls() {
     let server=Server::script(vec![
         classic_lines(),
-        text(json!({"controls":[],"xray":[]}))
+        text(json!({"candidate_id":"c2"}))
     ],512);
     let mut m=state();
-    let mut config=cfg(&server);
-    config.stage_max_attempts=1;
-    // Auto-grounder remains disabled, so root is engine-grounded but
-    // candidate's changed-pieces require new LLM OneGrounder calls.
-    let original=m.game().position().to_fen();
-    assert!(llm_match::generate_move(&mut m,&config,|_,_|{}).await.is_err());
-    assert_eq!(m.game().position().to_fen(),original);
-    assert_eq!(m.uci_history(),["e2e4"]);
+    let config=cfg(&server);
+    assert!(!m.uci_history().is_empty());
+    let mv=llm_match::generate_move(&mut m,&config,|_,_|{}).await.unwrap();
+    assert_eq!(mv.to_uci(),"d7d5");
     let requests=server.requests.lock().unwrap();
-    assert_eq!(requests.len(),2);
-    assert_eq!(requests[1]["tools"][0]["function"]["name"],"piece_at");
-    assert!(rendered_prompt(&requests[1]).contains("selected"));
+    assert_eq!(requests.len(),2,"only Proposer and Selector are LLM stages");
+    assert!(rendered_prompt(&requests[1]).contains("square_control_deltas"));
+}
+
+#[tokio::test]
+async fn illegal_candidate_does_not_veto_legal_candidate_or_require_retry() {
+    let server=Server::script(vec![
+        text(json!({"candidates":[
+            {"id":"bad","move":"Nxe4","counterplay":["Bh6"]},
+            {"id":"good","move":"e5","counterplay":["Bb5"]}
+        ]}))
+    ],512);
+    let mut m=state();
+    let mv=llm_match::generate_move(&mut m,&cfg(&server),|_,_|panic!("unexpected retry")).await.unwrap();
+    assert_eq!(mv.to_uci(),"e7e5");
+    assert_eq!(server.requests.lock().unwrap().len(),1);
+}
+
+#[tokio::test]
+async fn minimal_proposer_move_works_without_selector_or_counterplay() {
+    let server=Server::script(vec![text(json!({"move":"Nf6"}))],512);
+    let mut m=state();
+    let mv=llm_match::generate_move(&mut m,&cfg(&server),|_,_|panic!()).await.unwrap();
+    assert_eq!(mv.to_uci(),"g8f6");
+    assert_eq!(server.requests.lock().unwrap().len(),1);
+}
+
+#[tokio::test]
+async fn empty_then_valid_proposal_retries_without_board_mutation() {
+    let server=Server::script(vec![
+        text(json!({"candidates":[{"move":"Nxe4"}]})),
+        text(json!({"move":"e5"}))
+    ],512);
+    let mut m=state();
+    let original=m.game().position().to_fen();
+    let mut rejected=0;
+    let mv=llm_match::generate_move(&mut m,&cfg(&server),|_,_|{rejected+=1;}).await.unwrap();
+    assert_eq!(mv.to_uci(),"e7e5");
+    assert_eq!(rejected,1);
+    assert_ne!(m.game().position().to_fen(),original);
+    assert_eq!(server.requests.lock().unwrap().len(),2);
 }
 
 #[tokio::test]

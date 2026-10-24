@@ -125,7 +125,7 @@ impl Config {
     }
     pub fn summary(&self) -> String {
         let pipeline = if self.classic.is_some() {
-            "engine-root Grounder / Proposer / LLM delta Grounder / Selector + legality gate"
+            "verified Grounder geometry / Proposer / Grounder move deltas / Selector + legality gate"
         } else {
             "grounder/proposer/verifier/selector + legality gate"
         };
@@ -234,7 +234,7 @@ impl Config {
             image_token_reserve: get("LLM_IMAGE_TOKEN_RESERVE")
                 .unwrap_or_else(|_| "4096".into())
                 .parse()?,
-            send_board_image: true,
+            send_board_image: false,
         })
     }
 }

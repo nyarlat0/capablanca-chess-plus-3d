@@ -332,9 +332,11 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
             Ok(serde_json::to_string_pretty(&result)?)
         }
         Stage::Proposer if config.classic.is_some() => {
-            let result: super::classic_pipeline::ProposerLines = request(
+            // Standalone debug accepts the same minimal/flexible JSON
+            // as the production Proposer, including {"move":"SAN"}.
+            let result:Value=request(
                 &mut client,&http,config,stage,&data,&image,
-                |_p:&super::classic_pipeline::ProposerLines| Ok(()),
+                |_p:&Value| Ok(()),
             ).await?;
             Ok(serde_json::to_string_pretty(&result)?)
         }

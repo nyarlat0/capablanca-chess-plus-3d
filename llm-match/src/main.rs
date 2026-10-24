@@ -17,7 +17,7 @@ async fn main() -> Result<()> {
     let mut print_prompt = false;
     let mut auto_grounder = false;
     let mut test_pipeline = false;
-    let mut send_board_image = true;
+    let mut send_board_image = false;
     let mut auto_initial_grounder = true;
     let mut replay = String::new();
     let mut moves_format = String::from("uci");
@@ -38,6 +38,7 @@ async fn main() -> Result<()> {
             "--auto-grounder" => auto_grounder = true,
             "--test-pipeline" => test_pipeline = true,
             "--no-image" | "--disable-image" => send_board_image = false,
+            "--image" => send_board_image = true,
             "--no-auto-initial-grounder" => auto_initial_grounder = false,
             "--stage" => stage = Some(args.next().context("missing stage name")?.parse()?),
             "--selected-piece" => {
