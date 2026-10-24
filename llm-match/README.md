@@ -26,8 +26,12 @@ cargo build --release -p llm-match
 
 ## Отладка одной стадии
 
-Выбранная стадия получает текущую доску и только явно переданные результаты.
-Остальные стадии не запускаются; доска, история и список отказов не изменяются.
+Выбранная стадия получает текущую доску. Для Classic Proposer и Verifier,
+если `--analysis-file` не указан, движок автоматически строит карту контроля
+и превращает её в **полный человекочитаемый отчёт Grounder**. Никакая LLM-стадия
+Grounder при этом не вызывается. Фигуры в отчёте называются `White Queen on c2`,
+а не внутренними ID. Переданный `--analysis-file` переопределяет автоматическую
+генерацию. Другие стадии не запускаются; доска, история и список отказов не изменяются.
 В этом режиме анализируется сторона, чей ход в заданной позиции; `--black`
 не требуется для отладки хода белых.
 Stdout содержит только результат стадии, логи идут в stderr.
@@ -37,16 +41,13 @@ Stdout содержит только результат стадии, логи �
 Пример для начальной позиции (во всех командах должна быть одна и та же позиция):
 
 ```sh
-./target/release/llm-match --stage grounder > target/facts.json
-
-./target/release/llm-match --stage proposer \
-  --analysis-file target/facts.json > target/proposal.json
+# Proposer автоматически получает карту, вычисленную движком.
+./target/release/llm-match --stage proposer > target/proposal.json
 
 # Сохраняем один конкретный кандидат из ответа Proposer:
 jq '.candidates[0]' target/proposal.json > target/candidate.json
 
 ./target/release/llm-match --stage verifier \
-  --analysis-file target/facts.json \
   --candidate-file target/candidate.json > target/verification.json
 
 # Формируем список только ACCEPT-результатов; повтори Verifier для других кандидатов.
@@ -65,8 +66,11 @@ jq -n --slurpfile c target/candidate.json --slurpfile v target/verification.json
 
 Контракты файлов:
 
-- `--analysis-file`: результат Grounder как текст (для Classic — нормализованный JSON, до 32768 байт),
-  без скрытого reasoning; обязателен для Proposer и Verifier.
+- `--analysis-file`: необязательное переопределение текста анализа для Classic
+  Proposer/Verifier (до 32768 байт); без него `ControlGraph` строится движком
+  и передаётся в читаемом виде. Для других вариантов файл обязателен.
+  Текст файла передаётся буквально; для отсутствия технических ID используй
+  автоматически вычисленный отчёт.
 - `--candidate-file`: один объект Proposer, например
   `{"id":"c1","move":"e4","from":"e2","to":"e4","rationale":"Control the centre"}`.
   До Verifier движок проверяет легальность и совпадение from/to.

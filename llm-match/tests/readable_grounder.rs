@@ -79,3 +79,48 @@ fn report_explains_pin_and_discovered_attack_candidates_without_claiming_legalit
         "moving Black Rook on e2 may uncover Black Rook on e8 toward White Queen on e1 along S"
     ));
 }
+
+
+#[test]
+fn standalone_classic_proposer_auto_bootstraps_readable_engine_analysis() {
+    use capablanca_chess_plus::Color;
+    use llm_match::{Config, Match};
+    use llm_match::pipeline::{Stage, debug::{self, Inputs}};
+
+    let position = "r3k2r/p1ppqpb1/bn2pnp1/2pP4/1p2P3/2N2N2/PPQBBPPP/R3K2R w KQkq - 0 1";
+    let state = Match::from_fen(Variant::Classic, Color::White, position).unwrap();
+    let config = Config::load_classic_with_profile(Some("no-history"));
+    let config = config.unwrap();
+    // Does not call KoboldCpp. Uses engine_map => ControlGraph => model facts.
+    let prompt = debug::preview(&state, &config, Stage::Proposer, &Inputs::default()).unwrap();
+    assert!(prompt.contains("VERIFIED GROUNDER GEOMETRY OF THE CURRENT POSITION"));
+    assert!(prompt.contains("White Queen on c2"));
+    assert!(prompt.contains("d3: empty | White controllers ("));
+    assert!(prompt.contains("White Queen on c2 [NE]: first White Pawn on e4; next Black Pawn on g6"));
+    assert!(!prompt.contains("wQ_c2"));
+    assert!(!prompt.contains("bP_g6"));
+}
+
+#[test]
+fn standalone_classic_analysis_file_still_overrides_engine_bootstrap() {
+    use capablanca_chess_plus::Color;
+    use llm_match::{Config, Match};
+    use llm_match::pipeline::{Stage, debug::{self, Inputs}};
+
+    let state = Match::new(Variant::Classic, Color::White);
+    let config = Config::load_classic_with_profile(Some("no-history")).unwrap();
+    let supplied = Inputs { analysis: Some("USER_SUPPLIED_ANALYSIS".into()), ..Default::default() };
+    let prompt = debug::preview(&state, &config, Stage::Proposer, &supplied).unwrap();
+    assert!(prompt.contains("USER_SUPPLIED_ANALYSIS"));
+    assert!(!prompt.contains("VERIFIED GROUNDER GEOMETRY OF THE CURRENT POSITION"));
+
+    // Verifier also bootstraps when an analysis file is absent.
+    let inputs = Inputs {
+        candidate: Some(json!({"id":"c1","move":"e4","from":"e2","to":"e4"})),
+        ..Default::default()
+    };
+    let prompt = debug::preview(&state, &config, Stage::Verifier, &inputs).unwrap();
+    assert!(prompt.contains("VERIFIED GROUNDER GEOMETRY OF THE CURRENT POSITION"));
+    assert!(prompt.contains("White Pawn on e2"));
+    assert!(!prompt.contains("wP_e2"));
+}

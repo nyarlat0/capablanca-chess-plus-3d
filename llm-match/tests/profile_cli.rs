@@ -166,11 +166,10 @@ fn deleted_modes_and_unknown_stages_fail_before_network() {
             .status
             .success()
     );
-    assert!(
-        !run(&["--stage", "proposer", "--print-prompt"])
-            .status
-            .success()
-    );
+    let proposer = success(run(&["--stage", "proposer", "--print-prompt"]));
+    assert!(proposer.contains("VERIFIED GROUNDER GEOMETRY OF THE CURRENT POSITION"));
+    assert!(proposer.contains("White Knight on b1"));
+    assert!(!proposer.contains("wN_b1"));
 }
 #[test]
 fn debug_grounder_preview_matches_full_pipeline_first_request() {

@@ -577,7 +577,11 @@ async fn debug_missing_inputs_and_illegal_candidates_fail_before_network() {
     let server = Server::script(vec![], 512);
     let c = cfg(&server);
     let m = state();
-    for stage in [Stage::Proposer, Stage::Verifier, Stage::Selector] {
+    // Classic Proposer no longer needs an analysis file: the engine supplies
+    // a complete readable control report before the model request.
+    let preview = debug::preview(&m, &c, Stage::Proposer, &Inputs::default()).unwrap();
+    assert!(preview.contains("VERIFIED GROUNDER GEOMETRY OF THE CURRENT POSITION"));
+    for stage in [Stage::Verifier, Stage::Selector] {
         assert!(debug::run(&m, &c, stage, &Inputs::default()).await.is_err());
     }
     let inputs = Inputs {

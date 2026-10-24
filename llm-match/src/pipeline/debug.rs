@@ -72,8 +72,8 @@ fn data(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result
         })
         .transpose()?;
     ensure!(
-        inputs.analysis.is_some() == matches!(stage, Stage::Proposer | Stage::Verifier),
-        "analysis-file is required only for proposer and verifier"
+        inputs.analysis.is_none() || matches!(stage, Stage::Proposer | Stage::Verifier),
+        "--analysis-file is allowed only for proposer and verifier"
     );
     ensure!(
         inputs.candidate.is_some() == (stage == Stage::Verifier),
@@ -93,11 +93,26 @@ fn data(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result
         let graph = crate::grounder::ControlGraph::parse(state.game.position(), map)?;
         data.custom["control-map"] = json!(graph.normalized_json()?);
     }
-    if let Some(analysis) = &inputs.analysis {
-        ensure!(
-            !analysis.trim().is_empty() && analysis.len() <= 32768,
-            "analysis must be non-empty compact text (max 32768 bytes)"
-        );
+    if matches!(stage, Stage::Proposer | Stage::Verifier) {
+        let analysis = if let Some(analysis) = &inputs.analysis {
+            ensure!(
+                !analysis.trim().is_empty() && analysis.len() <= 32768,
+                "analysis must be non-empty compact text (max 32768 bytes)"
+            );
+            analysis.clone()
+        } else if config.classic.is_some()
+            && state.variant == capablanca_chess_plus::Variant::Classic
+        {
+            // Isolated Proposer/Verifier runs have no preceding Grounder LLM
+            // stage. Bootstrap the same geometry using the chess engine,
+            // then derive the exact human-readable facts used by the game
+            // pipeline. Internal IDs never enter the generated prompt.
+            let position = state.game.position();
+            let map = crate::grounder::engine_map(position)?;
+            crate::grounder::ControlGraph::new(position, map)?.readable_analysis()
+        } else {
+            bail!("--analysis-file is required for proposer and verifier outside Classic");
+        };
         data.custom["analysis"] = json!(analysis);
     }
     if let Some(value) = &inputs.candidate {
