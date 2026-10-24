@@ -103,8 +103,15 @@ jq -n --slurpfile c target/candidate.json --slurpfile v target/verification.json
 
 Grounder Classic строит полную геометрическую карту контроля без расчёта будущих вариантов.
 Rust проверяет её структуру и состав фигур, но не истинность геометрии.
-В игровом режиме нормализованный JSON передаётся дальше как обычный текст `analysis`;
-новые индексы и tools к остальным стадиям не подключены. Fairy Grounder остаётся текстовым.
+В игровом режиме проверенная карта остаётся во внутреннем кеше с техническими ID.
+Для `analysis`, передаваемого Proposer и Verifier, Rust строит отдельный
+**полный читаемый отчёт**: по всем фигурам и 64 клеткам, с контролирующими
+сторонами, атаками, защитниками, рентгеновскими выстраиваниями и сводками
+геометрического давления. Во всём отчёте фигуры называются `White Queen on c2`,
+`Black Pawn on e5` и т. п., без технических ID `wQ_c2`. Цифровые оценки,
+легальные ходы и автоматически подтверждённые тактические выводы не добавляются.
+Сведения относятся только к исходной позиции: Verifier должен обновлять их
+после рассматриваемого хода. К остальным стадиям никакие tools не подключены. Fairy Grounder остаётся текстовым.
 Proposer доверяет фактам и предлагает 3–5 ходов с краткой идеей.
 Verifier доверяет Grounder и рассчитывает только последствия конкретного хода.
 Selector доверяет готовым результатам и только выбирает.
@@ -462,3 +469,29 @@ actual structured tool calls, not guessed text in a template.
 Model-context budgets, tool-call ID matching, square argument validation,
 and the independent engine check of the final Grounder geometry are retained.
 The model can continue using `piece_at` without a cap on tool rounds.
+
+
+## Readable Grounder facts for move selection
+
+After Classic Grounder prepares a full current-position map, the game pipeline
+validates its complete geometry and materializes `ControlGraph::readable_analysis()`.
+The raw `{"version":1,"pieces":[...]}` format and IDs are retained **only**
+for caching, offline inspection and incremental Grounder updates; Proposer
+and Verifier receive the following human-readable facts instead:
+
+- Complete per-piece geometric controls, occupied enemy targets, allied
+  defenders, current attackers and defenders, with **"White Knight on c3"**
+  style references and no internal piece IDs.
+- All 64 squares (occupied and empty), occupant and complete White/Black
+  controller lists with counts, including contested cells.
+- Every model-authored xray blocker and next blocker, with readable names.
+  Potential absolute pins and discovered-attack alignments are flagged
+  as **geometric possibilities**, never as proved legal moves.
+- Side control coverage, geometric king attacks, undefended pieces, currently
+  attacked/undefended pieces, and attacker-versus-defender count imbalances.
+
+No separate engine tactical search, move list, exchange evaluator or inferred
+piece move is injected. Geometry still matches the engine independently
+before publication; the report itself is derived from the supplied ControlMap.
+The baseline belongs to the **current** board only. Existing Stage::Grounder
+and public `prepare_controls()` outputs remain unchanged.

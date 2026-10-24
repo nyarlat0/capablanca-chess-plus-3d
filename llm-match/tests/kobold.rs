@@ -697,9 +697,11 @@ async fn four_stage_skips_analyst_and_shares_grounded_facts() {
                 && !prompt.contains("UNEXPECTED_ANALYSIS"))
     );
     for prompt in &p[0..4] {
-        assert!(prompt.contains("\"version\": 1"));
+        assert!(prompt.contains("VERIFIED GROUNDER GEOMETRY OF THE CURRENT POSITION"));
+        assert!(prompt.contains("White Pawn on e4"));
+        assert!(!prompt.contains("wP_e4"));
     }
-    assert!(!p[4].contains("\"version\": 1"));
+    assert!(!p[4].contains("VERIFIED GROUNDER GEOMETRY OF THE CURRENT POSITION"));
     assert!(
         p.iter()
             .all(|prompt| !prompt.contains("GROUNDER_PRIVATE_REASONING"))
@@ -736,7 +738,8 @@ async fn four_stage_reuses_grounder_after_illegal_candidates_and_deduplicates() 
     let p = server.prompts.lock().unwrap();
     assert_eq!(p.len(), 5);
     for prompt in &p[0..4] {
-        assert!(prompt.contains("\"version\": 1"));
+        assert!(prompt.contains("VERIFIED GROUNDER GEOMETRY OF THE CURRENT POSITION"));
+        assert!(!prompt.contains("wP_e4"));
     }
     assert!(p[1].contains("e6+"));
     assert!(p[4].contains("TACTICAL_RESULT_1") && p[4].contains("TACTICAL_RESULT_3"));
@@ -888,7 +891,7 @@ async fn engine_gate_filters_illegal_and_mismatched_candidates_without_committin
     assert_eq!(p.len(), 5);
     assert!(p[1].contains("e6+"));
     assert!(p[1].contains("Qh4"));
-    assert!(p[1].contains("\"version\": 1"));
+    assert!(p[1].contains("VERIFIED GROUNDER GEOMETRY OF THE CURRENT POSITION"));
     assert!(!p[1].contains("ANALYST_PRIVATE_FACT"));
     assert!(!p[2].contains("e6+"));
     assert!(p[2].contains(r#""move":"e5""#));
@@ -925,7 +928,7 @@ async fn incorrect_metadata_cannot_poison_same_legal_move_and_valid_duplicates_a
     assert!(p[1].contains(r#""from":"f6""#));
     assert!(!p[1].contains(r#""from":"c6""#));
     assert!(!p[1].contains("candidate_id"));
-    // Grounder now includes piece ids; candidate identity is still excluded.
+    // Human-readable Grounder facts contain no internal piece IDs; candidate identity is still excluded.
     assert!(!p[1].contains(r#""id":"c2""#));
     assert!(p[2].contains(r#""id":"c2""#));
     assert!(p[2].contains(r#""tactical_result":"TACTICAL_RESULT_2""#));

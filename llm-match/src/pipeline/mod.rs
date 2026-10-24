@@ -108,7 +108,16 @@ pub async fn generate(
     let image = crate::board_image::BoardImage::new(state.game.position())?;
     let grounder_data = prompt_data(state, config, Stage::Grounder)?;
     let grounded_analysis: String = if state.variant == capablanca_chess_plus::Variant::Classic {
-        incremental::prepare(state, config).await?
+        // Keep the versioned, internally identified map for caching and
+        // incremental updates. Only its human-readable derived report is
+        // ever given to the Proposer and Verifier.
+        incremental::prepare(state, config).await?;
+        let (_, map) = state.controls.complete.as_ref()
+            .context("Grounder did not publish a complete current-position map")?;
+        crate::grounder::validate_engine_map(state.game.position(), map)
+            .context("Grounder map must be verified before proposing moves")?;
+        crate::grounder::ControlGraph::new(state.game.position(), map.clone())?
+            .readable_analysis()
     } else { request_parsed(
         &mut client,
         &http,

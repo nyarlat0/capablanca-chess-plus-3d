@@ -550,3 +550,181 @@ impl ControlGraph {
         Ok(&self.squares[cell])
     }
 }
+
+
+impl ControlGraph {
+    /// Read-only tactical facts for Proposer and Verifier. Derived exclusively
+    /// from the supplied (already verified) Grounder map and its occupancy
+    /// indexes. Never asks the engine for moves, attacks or evaluations.
+    ///
+    /// Internal piece IDs must not leak into this model-facing representation.
+    pub fn readable_analysis(&self) -> String {
+        use std::fmt::Write as _;
+
+        let human = |id: &str| {
+            let piece = &self.pieces[id];
+            format!("{} {} on {}", piece.color, piece.kind, piece.square)
+        };
+        let names = |ids: &[String]| {
+            if ids.is_empty() {
+                "none".to_owned()
+            } else {
+                ids.iter().map(|id| human(id)).collect::<Vec<_>>().join(", ")
+            }
+        };
+
+        let mut result = String::new();
+        writeln!(result, "VERIFIED GROUNDER GEOMETRY OF THE CURRENT POSITION").unwrap();
+        writeln!(result, "This is geometric control, not a list of legal moves or safe captures.").unwrap();
+        writeln!(result, "A pinned piece still controls geometric squares; occupied friendly squares are defended.").unwrap();
+        writeln!(result, "All pressure, king threats and alignments refer ONLY to the current board, before any candidate move.").unwrap();
+        writeln!(result).unwrap();
+
+        let mut white_squares = 0usize;
+        let mut black_squares = 0usize;
+        let mut contested_squares = Vec::new();
+        for (square, info) in &self.squares {
+            let white = info.controlled_by.iter().any(|id| self.pieces[id].color == "White");
+            let black = info.controlled_by.iter().any(|id| self.pieces[id].color == "Black");
+            white_squares += usize::from(white);
+            black_squares += usize::from(black);
+            if white && black {
+                contested_squares.push(square.clone());
+            }
+        }
+        let white_pieces = self.pieces.values().filter(|p| p.color == "White").count();
+        let black_pieces = self.pieces.len() - white_pieces;
+        writeln!(result, "SUMMARY: White pieces {white_pieces}; Black pieces {black_pieces}; \
+            distinct squares controlled by White {white_squares}/64, by Black {black_squares}/64; \
+            contested squares {}: {}.",
+            contested_squares.len(),
+            if contested_squares.is_empty() { "none".into() } else { contested_squares.join(", ") }
+        ).unwrap();
+        writeln!(result).unwrap();
+
+        let mut attacked_undefended = Vec::new();
+        let mut attackers_outnumber_defenders = Vec::new();
+        let mut checks = Vec::new();
+        let mut unprotected = Vec::new();
+        writeln!(result, "EVERY PIECE (complete controls, opponents attacked, allies defended, current attackers and defenders):").unwrap();
+        for piece in self.pieces.values() {
+            let all = &self.squares[&piece.square].controlled_by;
+            let attackers: Vec<String> = all.iter()
+                .filter(|id| self.pieces[*id].color != piece.color).cloned().collect();
+            let label = human(&piece.id);
+            let status = if attackers.is_empty() {
+                "not geometrically attacked"
+            } else if piece.defended_by.is_empty() {
+                "ATTACKED AND GEOMETRICALLY UNDEFENDED"
+            } else if attackers.len() > piece.defended_by.len() {
+                "MORE GEOMETRIC ATTACKERS THAN DEFENDERS"
+            } else {
+                "attacked and defended"
+            };
+            if piece.defended_by.is_empty() {
+                unprotected.push(label.clone());
+                if !attackers.is_empty() {
+                    attacked_undefended.push(label.clone());
+                }
+            }
+            if attackers.len() > piece.defended_by.len() {
+                attackers_outnumber_defenders.push(format!(
+                    "{} ({} attackers, {} defenders)",
+                    label, attackers.len(), piece.defended_by.len()
+                ));
+            }
+            if piece.kind == "King" && !attackers.is_empty() {
+                checks.push(format!("{} by {}", label, names(&attackers)));
+            }
+            writeln!(result, "{} | controls: {} | attacks opponents: {} | defends allies: {} | \
+                attacked by: {} | defended by: {} | status: {}",
+                label,
+                if piece.controls.is_empty() { "none".into() } else { piece.controls.join(", ") },
+                names(&piece.attacks_enemies), names(&piece.defends_allies),
+                names(&attackers), names(&piece.defended_by), status
+            ).unwrap();
+        }
+        writeln!(result).unwrap();
+
+        writeln!(result, "EVERY SQUARE (occupant, geometric controllers from each side, including empty squares):").unwrap();
+        // Iterate by ranks so this section follows a chessboard rather than
+        // the BTreeMap's file-major ordering.
+        for rank in (1..=8).rev() {
+            for file in b'a'..=b'h' {
+                let square = format!("{}{rank}", char::from(file));
+                let info = &self.squares[&square];
+                let white: Vec<String> = info.controlled_by.iter()
+                    .filter(|id| self.pieces[*id].color == "White").cloned().collect();
+                let black: Vec<String> = info.controlled_by.iter()
+                    .filter(|id| self.pieces[*id].color == "Black").cloned().collect();
+                let occupant = info.occupant.as_deref().map(&human)
+                    .unwrap_or_else(|| "empty".into());
+                writeln!(result, "{}: {} | White controllers ({}): {} | Black controllers ({}): {}",
+                    square, occupant, white.len(), names(&white), black.len(), names(&black)
+                ).unwrap();
+            }
+        }
+        writeln!(result).unwrap();
+
+        writeln!(result, "XRAY ALIGNMENTS (first and next occupied blockers, including allies):").unwrap();
+        let mut xray_count = 0usize;
+        let mut pin_candidates = Vec::new();
+        let mut discovered_candidates = Vec::new();
+        for piece in self.pieces.values() {
+            for ray in &piece.xray {
+                xray_count += 1;
+                let first_id = self.squares[&ray.first].occupant.as_deref()
+                    .expect("validated xray first blocker");
+                let first = &self.pieces[first_id];
+                let second_id = ray.second.as_ref().and_then(|cell| {
+                    self.squares[cell].occupant.as_deref()
+                });
+                let second = second_id.map(&human).unwrap_or_else(|| "none".into());
+                writeln!(result, "{} [{}]: first {}; next {}",
+                    human(&piece.id), ray.direction, human(first_id), second
+                ).unwrap();
+
+                if let Some(second_id) = second_id {
+                    let behind = &self.pieces[second_id];
+                    if piece.color != first.color && first.color == behind.color
+                        && behind.kind == "King"
+                    {
+                        pin_candidates.push(format!(
+                            "{} may geometrically pin {} to {} along {}",
+                            human(&piece.id), human(first_id), human(second_id), ray.direction
+                        ));
+                    }
+                    if piece.color == first.color && piece.color != behind.color {
+                        discovered_candidates.push(format!(
+                            "moving {} may uncover {} toward {} along {}",
+                            human(first_id), human(&piece.id), human(second_id), ray.direction
+                        ));
+                    }
+                }
+            }
+        }
+        if xray_count == 0 { writeln!(result, "none").unwrap(); }
+        writeln!(result).unwrap();
+
+        let display = |entries: &[String]| if entries.is_empty() {
+            "none".to_owned()
+        } else {
+            entries.join("; ")
+        };
+        writeln!(result, "CURRENT GEOMETRIC PRESSURE SUMMARY:").unwrap();
+        writeln!(result, "Kings geometrically attacked: {}", display(&checks)).unwrap();
+        writeln!(result, "Attacked and without geometric defenders: {}",
+            display(&attacked_undefended)).unwrap();
+        writeln!(result, "More geometric attackers than defenders (NOT an exchange evaluation): {}",
+            display(&attackers_outnumber_defenders)).unwrap();
+        writeln!(result, "Pieces with no geometric defenders (even when not attacked): {}",
+            display(&unprotected)).unwrap();
+        writeln!(result, "Potential absolute pin alignments (geometry only): {}",
+            display(&pin_candidates)).unwrap();
+        writeln!(result, "Potential discovered-attack alignments (geometry only): {}",
+            display(&discovered_candidates)).unwrap();
+        writeln!(result, "Do NOT interpret these relations as legality, profitable captures, \
+            confirmed pins, tactical evaluations or facts about future positions.").unwrap();
+        result
+    }
+}
