@@ -1226,9 +1226,43 @@ async fn one_grounder_can_inspect_occupants_and_continue_in_same_attempt() {
     assert_eq!(tool_messages[1]["tool_call_id"],"call-c4");
     let first:Value=serde_json::from_str(tool_messages[0]["content"].as_str().unwrap()).unwrap();
     let second:Value=serde_json::from_str(tool_messages[1]["content"].as_str().unwrap()).unwrap();
-    assert_eq!(first,json!({"square":"c3","piece":"wN_c3"}));
+    assert_eq!(first,json!({"square":"c3","piece":"White Knight"}));
     assert_eq!(second,json!({"square":"c4","piece":null}));
     assert_eq!(server.prompts.lock().unwrap().len(),2); // one attempt, two generations
+}
+
+#[tokio::test]
+async fn piece_at_names_are_readable_for_both_colors() {
+    use llm_match::pipeline::{Stage,debug::{self,Inputs}};
+    let fen="r3k2r/p1ppqpb1/bn2pnp1/2pP4/1p2P3/2N2N2/PPQBBPPP/R3K2R w KQkq - 0 1";
+    let m=llm_match::Match::from_fen(Variant::Classic,Color::White,fen).unwrap();
+    let q=llm_match::grounder::engine_map(m.game().position()).unwrap()
+        .pieces.into_iter().find(|p|p.id=="wQ_c2").unwrap();
+    let call=|id:&str,square:&str| json!({
+        "id":id,"type":"function",
+        "function":{"name":"piece_at","arguments":json!({"square":square}).to_string()}
+    });
+    let server=Server::script(vec![
+        Reply::Message(json!({"role":"assistant","content":null,
+            "tool_calls":[call("black-queen","e7"),call("white-queen","c2"),
+                call("white-knight","c3"),call("empty-square","c4")]
+        })),
+        text(json!({"controls":q.controls,"xray":q.xray})),
+    ],512);
+    debug::run(&m,&cfg(&server),Stage::OneGrounder,&Inputs{
+        selected_piece:Some("c2".into()),..Default::default()
+    }).await.unwrap();
+    let requests=server.requests.lock().unwrap();
+    let observed:Vec<Value>=requests[1]["messages"].as_array().unwrap().iter()
+        .filter(|m|m["role"]=="tool")
+        .map(|m|serde_json::from_str(m["content"].as_str().unwrap()).unwrap())
+        .collect();
+    assert_eq!(observed,vec![
+        json!({"square":"e7","piece":"Black Queen"}),
+        json!({"square":"c2","piece":"White Queen"}),
+        json!({"square":"c3","piece":"White Knight"}),
+        json!({"square":"c4","piece":null})
+    ]);
 }
 
 #[tokio::test]

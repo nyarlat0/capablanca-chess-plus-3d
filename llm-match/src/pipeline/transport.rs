@@ -21,7 +21,7 @@ fn piece_at(position: &Position, call: &ToolCall) -> Value {
             "square must be a lowercase coordinate a1..h8");
         let square: Square=args.square.parse()?;
         let piece=position.board().piece_at(square)
-            .map(|p| crate::grounder::piece_id(position,&args.square,p));
+            .map(|p| format!("{:?} {}", p.color, p.kind.display_name()));
         Ok(json!({"square":args.square,"piece":piece}))
     })();
     match answer {
@@ -33,7 +33,7 @@ fn piece_at(position: &Position, call: &ToolCall) -> Value {
 fn occupancy_tool() -> ToolDefinition {
     ToolDefinition::new(
         "piece_at",
-        "Inspect the occupant of exactly one square in the current position. Choose the square yourself; receive a piece ID or null, never move or ray information.",
+        "Inspect the occupant of exactly one square in the current position. Choose the square yourself; receive a human-readable piece name such as White Knight or Black Queen, or null for an empty square. Never returns move or ray information.",
         json!({
             "type":"object",
             "properties":{"square":{"type":"string","description":"One lowercase square, e.g. c3"}},

@@ -430,7 +430,9 @@ supplied data.
 Classic `grounder`, `one-grounder` and each call in `one-grounder-full`
 advertise an optional `piece_at` tool. The selected model chooses when and
 where to call it. For example, `{"square":"c3"}` returns
-`{"square":"c3","piece":"wN_c3"}`; an empty square returns `"piece":null`.
+`{"square":"c3","piece":"White Knight"}`; an empty square returns `"piece":null`.
+Occupied squares always return a readable color and piece kind (e.g. `"Black Queen"`),
+not a piece ID. The coordinate is already provided separately in `square`.
 Invalid squares return an error as a tool result, allowing the model to
 correct its lookup. These observations contain **no attacks, rays or legal
 moves**. The tool uses the immutable Position of the current Grounder
