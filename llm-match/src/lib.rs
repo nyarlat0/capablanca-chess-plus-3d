@@ -58,6 +58,7 @@ pub struct Match {
     uci_history: Vec<String>,
     wrong_moves: Vec<String>,
     controls: grounder::Cache,
+    pub(crate) auto_grounder_updates: bool,
 }
 
 impl Match {
@@ -82,10 +83,20 @@ impl Match {
             uci_history: Vec::new(),
             wrong_moves: Vec::new(),
             controls: grounder::Cache::new(&variant.starting_position()),
+            auto_grounder_updates: false,
         }
     }
     pub fn game(&self) -> &Game {
         &self.game
+    }
+    /// Engine-calculate every simulated Grounder map (fast integration testing).
+    pub fn set_auto_grounder_updates(&mut self, enabled: bool) {
+        self.auto_grounder_updates = enabled;
+    }
+    /// Run a complete pipeline against the side to move, without relying
+    /// on the interactive CLI's human/model color convention.
+    pub fn set_model_side_to_move(&mut self) {
+        self.model_side = self.game.position().side_to_move();
     }
 
     /// Initial Classic map: engine by default, or sequential one-grounder requests.

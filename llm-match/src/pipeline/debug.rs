@@ -13,6 +13,8 @@ pub struct Inputs {
     pub candidate: Option<Value>,
     /// Array of accepted candidates with tactical_result instead of rationale.
     pub accepted_candidates: Option<Value>,
+    /// Verified candidate deltas (array) for standalone Classic Selector.
+    pub verified_candidates: Option<Value>,
 }
 
 fn candidates(state: &Match, config: &Config, value: &Value) -> Result<Vec<Candidate>> {
@@ -85,10 +87,14 @@ fn data(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result
         inputs.candidate.is_some() == (stage == Stage::Verifier),
         "candidate-file is required only for verifier"
     );
-    ensure!(
-        inputs.accepted_candidates.is_some() == (stage == Stage::Selector),
-        "accepted-candidates-file is required only for selector"
-    );
+    if config.classic.is_some() && stage == Stage::Selector {
+        ensure!(inputs.verified_candidates.is_some() && inputs.accepted_candidates.is_none(),
+            "--verified-candidates-file required for Classic selector");
+    } else {
+        ensure!(inputs.accepted_candidates.is_some() == (stage == Stage::Selector)
+            && inputs.verified_candidates.is_none(),
+            "--accepted-candidates-file required only for fairy selector");
+    }
     let mut data = prompt_data(state, config, stage)?;
     if let Some(selected) = selected {
         data.custom["selected-piece"] = json!(selected);
@@ -138,6 +144,13 @@ fn data(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result
             "move":candidate.proposed_move,"from":candidate.from,"to":candidate.to
         }))?);
     }
+    if let Some(value) = &inputs.verified_candidates {
+        ensure!(stage == Stage::Selector && config.classic.is_some(),
+            "verified candidates only for Classic selector");
+        ensure!(value.as_array().is_some_and(|a| !a.is_empty()),
+            "verified candidates must be a nonempty JSON array");
+        data.custom["verified-candidates"]=json!(serde_json::to_string(value)?);
+    }
     if let Some(value) = &inputs.accepted_candidates {
         let validated = candidates(state, config, value)?;
         let payload: Vec<_> = validated
@@ -152,6 +165,7 @@ fn data(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result
         data.custom["accepted-candidates"] = json!(serde_json::to_string(&payload)?);
     }
     if stage == Stage::Proposer {
+        data.custom["validation-feedback"]=json!("");
         data.custom["threats"] = json!(inputs.threats.as_deref().unwrap_or(
             "Not supplied in this isolated Proposer run; do not assume there are no threats."
         ));
@@ -201,7 +215,7 @@ pub fn preview(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) ->
     debug_state.model_side = debug_state.game.position().side_to_move();
     let state = &debug_state;
     let data = data(state, config, stage, inputs)?;
-    let image = crate::board_image::BoardImage::new(state.game.position())?;
+    let image = crate::board_image::BoardImage::with_enabled(state.game.position(),config.send_board_image)?;
     if stage == Stage::OneGrounderFull {
         let requests = full_targets(state)
             .into_iter()
@@ -233,7 +247,7 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
     }
     let state = &isolated;
     let data = data(state, config, stage, inputs)?;
-    let image = crate::board_image::BoardImage::new(state.game.position())?;
+    let image = crate::board_image::BoardImage::with_enabled(state.game.position(),config.send_board_image)?;
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(config.timeout_seconds))
         .build()?;
@@ -317,17 +331,18 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
             ).await?;
             Ok(serde_json::to_string_pretty(&result)?)
         }
+        Stage::Proposer if config.classic.is_some() => {
+            let result: super::classic_pipeline::ProposerLines = request(
+                &mut client,&http,config,stage,&data,&image,
+                |_p:&super::classic_pipeline::ProposerLines| Ok(()),
+            ).await?;
+            Ok(serde_json::to_string_pretty(&result)?)
+        }
         Stage::Proposer => {
             let result: Proposal = request(
-                &mut client,
-                &http,
-                config,
-                stage,
-                &data,
-                &image,
-                |p: &Proposal| validate_proposal(p, config),
-            )
-            .await?;
+                &mut client,&http,config,stage,&data,&image,
+                |p:&Proposal| validate_proposal(p,config),
+            ).await?;
             Ok(serde_json::to_string_pretty(&result)?)
         }
         Stage::Verifier => {
@@ -341,6 +356,19 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
                 Verification::validate,
             )
             .await?;
+            Ok(serde_json::to_string_pretty(&result)?)
+        }
+        Stage::Selector if config.classic.is_some() => {
+            let source=inputs.verified_candidates.as_ref().unwrap();
+            let result:super::classic_pipeline::SelectorChoice=request(
+                &mut client,&http,config,stage,&data,&image,
+                |s:&super::classic_pipeline::SelectorChoice| {
+                    ensure!(source.as_array().unwrap().iter()
+                        .any(|item|item["id"]==s.candidate_id),
+                        "selector id not found in verified candidates");
+                    Ok(())
+                }
+            ).await?;
             Ok(serde_json::to_string_pretty(&result)?)
         }
         Stage::Selector => {

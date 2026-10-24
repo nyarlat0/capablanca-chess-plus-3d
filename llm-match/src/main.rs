@@ -16,6 +16,8 @@ async fn main() -> Result<()> {
     let mut human = Color::White;
     let mut print_prompt = false;
     let mut auto_grounder = false;
+    let mut test_pipeline = false;
+    let mut send_board_image = true;
     let mut auto_initial_grounder = true;
     let mut replay = String::new();
     let mut moves_format = String::from("uci");
@@ -34,6 +36,8 @@ async fn main() -> Result<()> {
             s if s.starts_with("--llm-profile=") || s.starts_with("--llm-classic-profile=") => {}
             "--print-prompt" => print_prompt = true,
             "--auto-grounder" => auto_grounder = true,
+            "--test-pipeline" => test_pipeline = true,
+            "--no-image" | "--disable-image" => send_board_image = false,
             "--no-auto-initial-grounder" => auto_initial_grounder = false,
             "--stage" => stage = Some(args.next().context("missing stage name")?.parse()?),
             "--selected-piece" => {
@@ -59,6 +63,11 @@ async fn main() -> Result<()> {
                 inputs.candidate = Some(serde_json::from_str(&std::fs::read_to_string(
                     args.next().context("missing candidate file")?,
                 )?)?)
+            }
+            "--verified-candidates-file" => {
+                inputs.verified_candidates = Some(serde_json::from_str(
+                    &std::fs::read_to_string(args.next().context("missing verified candidates file")?)?
+                )?);
             }
             "--accepted-candidates-file" => {
                 inputs.accepted_candidates = Some(serde_json::from_str(&std::fs::read_to_string(
@@ -96,7 +105,7 @@ async fn main() -> Result<()> {
                 );
                 println!(
                     "{}",
-                    r#"Stage debug: --stage grounder|proposer|verifier|selector|threat-analyzer [--analysis-file facts.txt]. Classic proposer has the inspect_line SAN-variation tool and returns final JSON {"move":"e4"}; verifier/selector/threat-analyzer are debug-only in Classic. Isolated Classic proposer/verifier automatically receive engine Grounder facts unless --analysis-file is supplied. --print-prompt previews messages offline."#
+                    r#"Stage debug: --stage proposer|selector|grounder|verifier|threat-analyzer. Classic proposer returns candidate SAN plus opponent counterplay, and selector needs --verified-candidates-file verified.json. Use --test-pipeline for the whole Proposer/delta Grounder/Selector cycle. --no-image disables PNG in any stage. --print-prompt previews messages offline."#
                 );
                 println!(
                     "llm-match [--variant Classic|Gothic|Embassy|Grand|Shako|Pemba|TerachessII] [--black] [--url http://aistation:5001] [--llm-profile NAME] [--llm-classic-profile with-history|no-history] [--fen 'FEN'] [--print-prompt] [--moves 'e2e4 e7e5']\nEnter a UCI move, or quit. Defaults come from llm-match/.env. Classic chess uses its separate SAN configuration."
@@ -141,16 +150,20 @@ async fn main() -> Result<()> {
                 && inputs.analysis.is_none()
                 && inputs.threats.is_none()
                 && inputs.candidate.is_none()
-                && inputs.accepted_candidates.is_none(),
+                && inputs.accepted_candidates.is_none()
+                && inputs.verified_candidates.is_none(),
             "map loading cannot be combined with --print-prompt or other stage input files"
         );
     }
+    anyhow::ensure!(!test_pipeline || (stage.is_none() && variant == Variant::Classic),
+        "--test-pipeline is for full Classic chess only; do not combine with --stage");
     let mut game = match initial_fen {
         Some(fen) => llm_match::Match::from_fen(variant, human.opposite(), &fen)
             .context("invalid initial FEN for selected variant")?,
         None => llm_match::Match::new(variant, human.opposite()),
     };
     game.set_auto_initial_grounder(auto_initial_grounder);
+    game.set_auto_grounder_updates(auto_grounder);
     for (index, text) in replay.split_whitespace().enumerate() {
         let decoded = if moves_format == "san" {
             game.game()
@@ -206,11 +219,27 @@ async fn main() -> Result<()> {
     if let Some(endpoint) = endpoint {
         config.endpoint = endpoint;
     }
+    config.send_board_image = send_board_image;
     eprintln!(
         "LLM representation profile: {}\n{}",
         config.profile_name,
         config.summary()
     );
+    if test_pipeline {
+        anyhow::ensure!(!print_prompt,"--test-pipeline cannot be combined with --print-prompt");
+        game.set_model_side_to_move();
+        let mut preview=game.clone();
+        let mv=llm_match::generate_move(&mut preview,&config,|n,reason|{
+            eprintln!("Rejected candidate round {n}: {reason}");
+        }).await?;
+        println!("{}",serde_json::to_string_pretty(&serde_json::json!({
+            "selected_san":game.game().position().san(mv)?,
+            "selected_uci":mv.to_uci(),
+            "root_fen":game.game().position().to_fen(),
+            "after_fen":preview.game().position().to_fen()
+        }))?);
+        return Ok(());
+    }
     if let Some(stage) = stage {
         let result = if print_prompt {
             llm_match::pipeline::debug::preview(&game, &config, stage, &inputs)?
@@ -227,7 +256,8 @@ async fn main() -> Result<()> {
             && inputs.threats.is_none()
             && inputs.analysis.is_none()
             && inputs.candidate.is_none()
-            && inputs.accepted_candidates.is_none(),
+            && inputs.accepted_candidates.is_none()
+                && inputs.verified_candidates.is_none(),
         "stage input files require --stage"
     );
     if print_prompt {

@@ -21,7 +21,7 @@ async fn fill(
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(config.timeout_seconds)).build()?;
     let mut client = None;
-    let image = crate::board_image::BoardImage::new(state.game.position())?;
+    let image = crate::board_image::BoardImage::with_enabled(state.game.position(),config.send_board_image)?;
     for &index in targets {
         let piece = &mut map.pieces[index];
         tracing::info!(piece_id = %piece.id, "incremental one-grounder");

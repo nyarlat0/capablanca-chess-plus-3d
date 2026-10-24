@@ -627,153 +627,89 @@ async fn debug_retries_only_the_chosen_stage_and_strips_reasoning() {
 }
 
 
-fn tool_line(id: &str, moves: &[&str]) -> Reply {
-    Reply::Message(json!({
-        "role":"assistant","content":null,
-        "tool_calls":[{
-            "id":id,"type":"function",
-            "function":{"name":"inspect_line","arguments":json!({"moves":moves}).to_string()}
-        }]
-    }))
+fn classic_lines() -> Reply {
+    text(json!({"candidates":[
+        {"id":"c1","move":"e5","counterplay":["Nf3"]},
+        {"id":"c2","move":"d5","counterplay":["exd5"]}
+    ]}))
 }
 
 #[tokio::test]
-async fn classic_proposer_inspects_variation_and_commits_its_own_final_choice() {
+async fn classic_pipeline_uses_proposer_grounder_deltas_and_selector_without_image() {
     let server=Server::script(vec![
-        tool_line("line-1",&["e5","Nf3","Nc6"]),
-        text(json!({"move":"e5"}))
+        classic_lines(),
+        text(json!({"candidate_id":"c1"}))
     ],512);
     let mut m=state();
-    let c=cfg(&server);
-    let before=m.game().position().to_fen();
-    let mv=llm_match::generate_move(&mut m,&c,|_,_|panic!("unexpected rejection"))
+    m.set_auto_grounder_updates(true);
+    let mut config=cfg(&server);
+    config.send_board_image=false;
+    let original=m.game().position().to_fen();
+    let mv=llm_match::generate_move(&mut m,&config,|_,_|panic!("unexpected rejection"))
         .await.unwrap();
     assert_eq!(mv.to_uci(),"e7e5");
-    assert_ne!(m.game().position().to_fen(),before);
+    assert_ne!(original,m.game().position().to_fen());
     assert_eq!(m.uci_history(),["e2e4","e7e5"]);
     let requests=server.requests.lock().unwrap();
     assert_eq!(requests.len(),2);
-    assert_eq!(requests[0]["tools"][0]["function"]["name"],"inspect_line");
-    assert_eq!(requests[1]["tools"][0]["function"]["name"],"inspect_line");
-    let messages=requests[1]["messages"].as_array().unwrap();
-    let tool=messages.iter().find(|m|m["role"]=="tool").unwrap();
-    assert_eq!(tool["tool_call_id"],"line-1");
-    let reply:Value=serde_json::from_str(tool["content"].as_str().unwrap()).unwrap();
-    assert_eq!(reply["status"],"ok");
-    assert_eq!(reply["steps"].as_array().unwrap().len(),3);
-    let occupancy=&reply["steps"][0]["delta"]["occupancy"];
-    assert!(occupancy.to_string().contains("e7") && occupancy.to_string().contains("e5"));
-    assert!(reply["steps"][0]["delta"]["square_control_deltas"].as_array().unwrap().len()>0);
-    assert!(!tool["content"].as_str().unwrap().contains("bP_e5"));
-    assert!(server.prompts.lock().unwrap()[0].contains("VERIFIED GROUNDER GEOMETRY"));
+    assert!(requests.iter().all(|req|req["messages"].as_array().unwrap().iter().all(|msg|{
+        let parsed:prompt_core::ChatCompletionMessage=serde_json::from_value(msg.clone()).unwrap();
+        parsed.image_count()==0
+    })));
+    assert_eq!(requests[0]["chat_template_kwargs"]["enable_thinking"],false);
+    assert_eq!(requests[1]["chat_template_kwargs"]["enable_thinking"],false);
+    assert!(requests.iter().all(|req|req.get("tools").is_none()));
+    let selector=rendered_prompt(&requests[1]);
+    assert!(selector.contains("free_targets_after"));
+    assert!(selector.contains("after_move"));
+    assert!(selector.contains("counterplay"));
+    assert!(selector.contains("square_control_deltas"));
+    assert!(!selector.contains("wP_e4"));
 }
 
 #[tokio::test]
-async fn illegal_variation_reports_prefix_then_proposer_tests_another_branch() {
+async fn illegal_reply_returns_actionable_feedback_to_proposer_before_selector() {
     let server=Server::script(vec![
-        tool_line("bad-line",&["e5","Nf3","Bh6"]),
-        tool_line("good-line",&["d5","exd5"]),
-        text(json!({"move":"d5"}))
+        text(json!({"candidates":[
+            {"id":"c1","move":"e5","counterplay":["Bh6"]},
+            {"id":"c2","move":"d5","counterplay":["exd5"]}
+        ]})),
+        classic_lines(),
+        text(json!({"candidate_id":"c2"}))
     ],512);
     let mut m=state();
-    let root=m.game().position().to_fen();
-    llm_match::generate_move(&mut m,&cfg(&server),|_,_|panic!())
-        .await.unwrap();
-    assert_eq!(m.uci_history(),["e2e4","d7d5"]);
-    assert_ne!(m.game().position().to_fen(),root);
+    m.set_auto_grounder_updates(true);
+    let config=cfg(&server);
+    let mv=llm_match::generate_move(&mut m,&config,|_,_|{}).await.unwrap();
+    assert_eq!(mv.to_uci(),"d7d5");
     let requests=server.requests.lock().unwrap();
     assert_eq!(requests.len(),3);
-    let responses:Vec<Value>=requests[2]["messages"].as_array().unwrap().iter()
-        .filter(|m|m["role"]=="tool")
-        .map(|m|serde_json::from_str(m["content"].as_str().unwrap()).unwrap())
-        .collect();
-    assert_eq!(responses[0]["status"],"illegal");
-    assert_eq!(responses[0]["at_ply"],3);
-    assert_eq!(responses[0]["valid_prefix"].as_array().unwrap().len(),2);
-    assert!(responses[0]["reason"].as_str().unwrap().contains("SAN"));
-    assert_eq!(responses[1]["status"],"ok");
+    let retry=rendered_prompt(&requests[1]);
+    assert!(retry.contains("counterplay"));
+    assert!(retry.contains("Bh6"));
+    assert!(retry.contains("illegal"));
+    assert_eq!(m.uci_history(),["e2e4","d7d5"]);
 }
 
 #[tokio::test]
-async fn skipped_tool_call_gets_automatic_delta_then_model_finalizes() {
+async fn default_pipeline_uses_model_one_grounder_for_future_positions() {
     let server=Server::script(vec![
-        text(json!({"move":"e5"})),
-        text(json!({"move":"e5"}))
+        classic_lines(),
+        text(json!({"controls":[],"xray":[]}))
     ],512);
-    let mut c=cfg(&server);
-    c.stage_max_attempts=1;
     let mut m=state();
+    let mut config=cfg(&server);
+    config.stage_max_attempts=1;
+    // Auto-grounder remains disabled, so root is engine-grounded but
+    // candidate's changed-pieces require new LLM OneGrounder calls.
     let original=m.game().position().to_fen();
-    llm_match::generate_move(&mut m,&c,|_,_|panic!("unexpected rejection"))
-        .await.unwrap();
-    assert_ne!(m.game().position().to_fen(),original);
-    assert_eq!(m.uci_history(),["e2e4","e7e5"]);
-    assert!(m.wrong_moves().is_empty());
-    let requests=server.requests.lock().unwrap();
-    assert_eq!(requests.len(),2);
-    assert_eq!(requests[0]["tool_choice"],"auto");
-    assert_eq!(requests[1]["tool_choice"],"auto");
-    let feedback=requests[1]["messages"].as_array().unwrap().last().unwrap();
-    assert_eq!(feedback["role"],"user");
-    let msg=message_text(feedback);
-    assert!(msg.contains("VERIFIED RESULT"));
-    assert!(msg.contains(r#""status":"ok""#));
-    assert!(msg.contains("square_control_deltas"));
-    assert!(msg.contains("e5"));
-}
-
-#[tokio::test]
-async fn skipped_tool_call_with_illegal_san_does_not_finish() {
-    let server=Server::script(vec![
-        text(json!({"move":"e6+"})),
-        text(json!({"move":"e6+"}))
-    ],512);
-    let mut c=cfg(&server);
-    c.stage_max_attempts=1;
-    let mut m=state();
-    let original=m.game().position().to_fen();
-    assert!(llm_match::generate_move(&mut m,&c,|_,_|panic!()).await.is_err());
+    assert!(llm_match::generate_move(&mut m,&config,|_,_|{}).await.is_err());
     assert_eq!(m.game().position().to_fen(),original);
-    let requests=server.requests.lock().unwrap();
-    assert_eq!(requests.len(),2);
-    let msg=message_text(requests[1]["messages"].as_array().unwrap().last().unwrap());
-    assert!(msg.contains(r#""status":"illegal""#));
-    assert!(msg.contains("at_ply"));
-}
-
-#[tokio::test]
-async fn an_illegal_inspection_does_not_authorize_a_final_choice() {
-    let server=Server::script(vec![
-        tool_line("invalid-root",&["e6+"]),
-        text(json!({"move":"e6+"}))
-    ],512);
-    let mut c=cfg(&server);
-    c.stage_max_attempts=1;
-    let mut m=state();
-    assert!(llm_match::generate_move(&mut m,&c,|_,_|panic!()).await.is_err());
     assert_eq!(m.uci_history(),["e2e4"]);
     let requests=server.requests.lock().unwrap();
-    let tools:Vec<_>=requests[1]["messages"].as_array().unwrap().iter()
-        .filter(|m|m["role"]=="tool").collect();
-    let reply:Value=serde_json::from_str(tools[0]["content"].as_str().unwrap()).unwrap();
-    assert_eq!(reply["status"],"illegal");
-    assert_eq!(reply["at_ply"],1);
-    assert!(reply["valid_prefix"].as_array().unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn isolated_classic_proposer_can_analyze_white_to_move_without_black_flag() {
-    use llm_match::pipeline::{Stage, debug::{self,Inputs}};
-    let server=Server::script(vec![
-        tool_line("white-e4",&["e4"]),
-        text(json!({"move":"e4"}))
-    ],512);
-    let m=llm_match::Match::new(Variant::Classic,Color::Black);
-    let original=m.game().position().to_fen();
-    let result=debug::run(&m,&cfg(&server),Stage::Proposer,&Inputs::default()).await.unwrap();
-    assert_eq!(serde_json::from_str::<Value>(&result).unwrap(),json!({"move":"e4"}));
-    assert_eq!(m.game().position().to_fen(),original);
-    assert!(m.uci_history().is_empty());
+    assert_eq!(requests.len(),2);
+    assert_eq!(requests[1]["tools"][0]["function"]["name"],"piece_at");
+    assert!(rendered_prompt(&requests[1]).contains("selected"));
 }
 
 #[tokio::test]

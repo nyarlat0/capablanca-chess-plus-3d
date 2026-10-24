@@ -191,7 +191,7 @@ async fn request_parsed_inner<T>(
                     let fitted = client.fit_chat(&conversation).await?;
                     // Never lose the authoritative board image while fitting a
                     // long series of exchanges into the finite model context.
-                    ensure!(fitted.request.messages.iter().any(|m|m.image_count()>0),
+                    ensure!(!config.send_board_image || fitted.request.messages.iter().any(|m|m.image_count()>0),
                         "Tool context cannot retain the board image and transcript");
                     input_tokens=Some(fitted.preview.tokens);
                     let response=client.generate_chat_full(&fitted.request).await?;

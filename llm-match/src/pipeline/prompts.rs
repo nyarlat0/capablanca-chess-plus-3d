@@ -147,7 +147,7 @@ pub(crate) fn template(config: &Config, stage: Stage) -> SystemPromptTemplate {
 
 pub fn preview(state: &Match, config: &Config) -> Result<String> {
     let stage = Stage::Grounder;
-    let image = crate::board_image::BoardImage::new(state.game.position())?;
+    let image = crate::board_image::BoardImage::with_enabled(state.game.position(),config.send_board_image)?;
     Ok(serde_json::to_string_pretty(
         &build_request(config, stage, &request_data(state, config, stage)?, &image)?.messages,
     )?)
@@ -164,7 +164,10 @@ pub(super) fn build_request(
     let mut request: prompt_core::ChatCompletionRequest =
         ChatGenerationRequest::from_preset(messages, config.preset_for_stage(stage))?.into();
     image.attach(&mut request)?;
-    request.image_token_reserve = config.image_token_reserve;
+    request.image_token_reserve = if config.send_board_image {config.image_token_reserve} else {0};
+    if config.classic.is_some() && matches!(stage,Stage::Proposer | Stage::Selector) {
+        request.chat_template_kwargs.insert("enable_thinking".into(),json!(false));
+    }
     Ok(request)
 }
 

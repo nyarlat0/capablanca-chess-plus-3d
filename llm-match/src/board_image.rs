@@ -118,15 +118,22 @@ pub fn png(position: &Position) -> Result<Vec<u8>> {
 pub(crate) struct BoardImage {
     fen: String,
     uri: String,
+    enabled: bool,
 }
 impl BoardImage {
     pub(crate) fn new(position: &Position) -> Result<Self> {
+        Self::with_enabled(position,true)
+    }
+    pub(crate) fn with_enabled(position: &Position, enabled: bool) -> Result<Self> {
         Ok(Self {
             fen: position.to_fen(),
-            uri: format!("data:image/png;base64,{}", STANDARD.encode(png(position)?)),
+            uri: if enabled {format!("data:image/png;base64,{}", STANDARD.encode(png(position)?))}
+                 else {String::new()},
+            enabled,
         })
     }
     pub(crate) fn attach(&self, request: &mut ChatCompletionRequest) -> Result<()> {
+        if !self.enabled { return Ok(()); }
         let content = request
             .messages
             .iter_mut()

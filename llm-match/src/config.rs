@@ -26,6 +26,7 @@ pub struct Config {
     pub max_attempts: usize,
     /// Reserve for vision embeddings, in addition to Kobold's text token count.
     pub image_token_reserve: u64,
+    pub send_board_image: bool,
 }
 
 /// Missing stage overrides use the shared fallback preset.
@@ -124,7 +125,7 @@ impl Config {
     }
     pub fn summary(&self) -> String {
         let pipeline = if self.classic.is_some() {
-            "grounder/proposer(inspect_line + final SAN) + engine legality gate"
+            "engine-root Grounder / Proposer / LLM delta Grounder / Selector + legality gate"
         } else {
             "grounder/proposer/verifier/selector + legality gate"
         };
@@ -233,6 +234,7 @@ impl Config {
             image_token_reserve: get("LLM_IMAGE_TOKEN_RESERVE")
                 .unwrap_or_else(|_| "4096".into())
                 .parse()?,
+            send_board_image: true,
         })
     }
 }

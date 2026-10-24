@@ -63,7 +63,7 @@ fn map_index(map: &ControlMap) -> BTreeMap<&str, &PieceControls> {
     map.pieces.iter().map(|p|(p.id.as_str(),p)).collect()
 }
 
-fn position_delta(before: &Position, after: &Position, prior: &ControlMap, updated: &ControlMap) -> Result<Value> {
+pub(super) fn position_delta(before: &Position, after: &Position, prior: &ControlMap, updated: &ControlMap) -> Result<Value> {
     let old = ControlGraph::new(before, prior.clone())?;
     let new = ControlGraph::new(after, updated.clone())?;
     let old_index = map_index(prior);
@@ -100,6 +100,9 @@ fn position_delta(before: &Position, after: &Position, prior: &ControlMap, updat
                         "piece": label(after,&sq),
                         "attackers_after": attackers,
                         "defenders_after": defenders,
+                        "attacker_count": attackers.len(),
+                        "defender_count": defenders.len(),
+                        "free_by_count": attackers.len()>defenders.len(),
                         "note": "Geometric controllers only; not a legal-capture or exchange verdict"
                     }));
                 }
@@ -124,7 +127,19 @@ fn position_delta(before: &Position, after: &Position, prior: &ControlMap, updat
             }));
         }
     }
+    let free_targets:Vec<_>=after.board().pieces().filter_map(|(square,piece)| {
+        let square=square.to_string();
+        let white=controllers(&new,&square,Color::White);
+        let black=controllers(&new,&square,Color::Black);
+        let (a,d)=if piece.color==Color::White {(black,white)}else{(white,black)};
+        (a.len()>d.len()).then(||json!({
+            "piece":label(after,&square),
+            "attackers":a.len(),"defenders":d.len(),
+            "free_by_count":true
+        }))
+    }).collect();
     Ok(json!({
+        "free_targets_after":free_targets,
         "occupancy":squares,
         "square_control_deltas":control_changes,
         "xray_deltas":xray_changes,

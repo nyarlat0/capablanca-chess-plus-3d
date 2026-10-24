@@ -234,7 +234,7 @@ fn stage_files_are_loaded_and_routed_without_running_preceding_stages() {
     .unwrap();
     fs::write(
         &accepted,
-        r#"[{"id":"c1","move":"e4","from":"e2","to":"e4","tactical_result":"SUPPLIED_OUTCOME"}]"#,
+        r#"[{"id":"c1","move":"e4","after_move":{"note":"SUPPLIED_OUTCOME"},"counterplay":[]}]"#,
     )
     .unwrap();
     let facts = facts.to_str().unwrap();
@@ -262,7 +262,7 @@ fn stage_files_are_loaded_and_routed_without_running_preceding_stages() {
     let s = success(run(&[
         "--stage",
         "selector",
-        "--accepted-candidates-file",
+        "--verified-candidates-file",
         accepted,
         "--print-prompt",
     ]));
