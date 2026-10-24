@@ -447,19 +447,18 @@ format, model prompt templates, engine verification and retry counts are
 unchanged. Other stages do not receive tools.
 
 **KoboldCpp must run with `--jinjatools` (alias `--jinja_tools`)**
-and a compatible model tool-use template. The prompt-core tokenization
-preview rejects servers that omit the JSON tool definition or drop tool
-messages, instead of silently treating the model's tool request as prose.
-If the model chooses not to call `piece_at`, it can still answer normally.
+and a compatible model tool-use template. If the model chooses not to call
+`piece_at`, it can still answer normally.
 
-### Qwen parameter-rendering compatibility
+### Tool preview compatibility
 
-The default dependency is pinned to
-[nyarlat0/prompt-core at `ee908c89d`](https://github.com/nyarlat0/prompt-core/commit/ee908c89d2d569c7a083ef2d27968e93f709ecaf).
-That release validates both JSON-native Jinja tool arguments and Qwen's
-`<function=piece_at><parameter=square>c3</parameter></function>` rendering.
-Older prompt-core revisions wrongly reject the latter with
-`Backend template omitted or transformed tool arguments` after successful
-KoboldCpp generation. The tool schema, outputs, and Grounder prompts have
-not changed. The Kobold mock server mirrors Qwen's parameter rendering so
-integration tests catch regressions.
+The dependency is pinned to
+[nyarlat0/prompt-core at `43cb95960`](https://github.com/nyarlat0/prompt-core/commit/43cb959607869702af7c3847da7c936d4f11f3c1).
+The library **does not inspect** the backend's rendered Jinja tool transcript:
+it no longer tries to locate JSON or XML argument strings in the token-count
+preview. KoboldCpp owns tool rendering. Schema/argument validation applies to
+actual structured tool calls, not guessed text in a template.
+
+Model-context budgets, tool-call ID matching, square argument validation,
+and the independent engine check of the final Grounder geometry are retained.
+The model can continue using `piece_at` without a cap on tool rounds.

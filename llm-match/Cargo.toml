@@ -5,7 +5,7 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
-prompt-core = { git = "https://github.com/nyarlat0/prompt-core.git", rev = "45a3f86699d71375fe601f009dd4ed34ad505949" }
+prompt-core = { git = "https://github.com/nyarlat0/prompt-core.git", rev = "43cb959607869702af7c3847da7c936d4f11f3c1" }
 capablanca-engine = { path = "../engine" }
 anyhow = "1"
 base64 = "0.22"
