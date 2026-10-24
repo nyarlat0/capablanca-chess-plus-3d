@@ -237,7 +237,9 @@ pub async fn generate(
 
 fn grounder_response(state: &Match, config: &Config, answer: &str) -> Result<String> {
     if config.classic.is_some() {
-        crate::grounder::ControlGraph::parse(state.game.position(), answer)?.normalized_json()
+        let graph=crate::grounder::ControlGraph::parse(state.game.position(),answer)?;
+        crate::grounder::validate_engine_map(state.game.position(),graph.map())?;
+        graph.normalized_json()
     } else {
         Ok(answer.to_owned())
     }

@@ -46,7 +46,7 @@ fn castling_relocates_both_pieces_and_invalidates_old_rays() {
 }
 
 #[test]
-fn_en_passant_placeholder() {}
+fn en_passant_placeholder() {}
 
 #[test]
 fn engine_bootstrap_records_friendly_and_enemy_xray_blockers() {

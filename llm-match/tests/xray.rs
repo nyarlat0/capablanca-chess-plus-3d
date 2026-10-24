@@ -72,3 +72,27 @@ fn response_requires_xray_even_when_empty() {
     assert!(OnePieceControls::parse(r#"{"controls":["b4"],"xray":[]}"#).is_ok());
     assert!(OnePieceControls::parse(r#"{"controls":["b4"],"xray":null}"#).is_err());
 }
+
+#[test]
+fn engine_rejects_incomplete_controls_even_with_valid_xray() {
+    let (p,mut actual)=queen();
+    // Omitting the entire empty southwest ray was a real model failure.
+    actual.controls.retain(|cell|cell!="a5" && cell!="b6" && cell!="c7");
+    let error=llm_match::grounder::validate_one(&p,"d8",&actual).unwrap_err();
+    let message=format!("{error:#}");
+    assert!(message.contains("engine controls mismatch"),"{message}");
+    assert!(message.contains("a5"),"{message}");
+}
+
+#[test]
+fn engine_rejects_missing_xray_direction_and_accepts_arbitrary_order() {
+    let (p,mut actual)=queen();
+    actual.xray.retain(|ray|ray.direction!="SE");
+    let error=validate_one(&p,"d8",&actual).unwrap_err();
+    assert!(format!("{error:#}").contains("engine xray mismatch"));
+
+    let (p,mut valid)=queen();
+    valid.controls.reverse();
+    valid.xray.reverse();
+    validate_one(&p,"d8",&valid).unwrap();
+}

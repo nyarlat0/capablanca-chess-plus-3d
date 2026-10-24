@@ -1,6 +1,6 @@
-//! Model-authored control maps. Never generate or repair LLM controls from engine attacks.
-//! X-ray validation checks coordinates and the order of occupied ray blockers;
-//! the engine geometry oracle is used only for the explicitly selected bootstrap.
+//! Model-authored control maps. The engine is the validation oracle, not a
+//! replacement for generated controls: incorrect outputs are rejected/retried.
+//! Valid responses are canonically sorted only after parsing.
 use anyhow::{Context, Result, ensure};
 use capablanca_chess_plus::{Color, Piece, PieceKind, Position, Square, Variant};
 use serde::{Deserialize, Serialize};
@@ -143,15 +143,58 @@ fn validate_xrays(position: &Position, entry: &PieceControls, piece: Piece) -> R
     Ok(())
 }
 
-/// Validate a single new LLM result in the retry loop, not only after merging.
+/// Fail rather than silently overwrite any model-authored geometric claim.
+/// Both controls and xray must match the engine exactly, regardless of order.
+fn compare_engine_piece(actual: &PieceControls, expected: &PieceControls) -> Result<()> {
+    ensure!(actual.id == expected.id && actual.square == expected.square,
+        "engine inventory mismatch for {}",actual.id);
+
+    let found: BTreeSet<_> = actual.controls.iter().cloned().collect();
+    let wanted: BTreeSet<_> = expected.controls.iter().cloned().collect();
+    ensure!(found == wanted,
+        "engine controls mismatch for {}: missing {:?}, extra {:?}",
+        actual.id,
+        wanted.difference(&found).collect::<Vec<_>>(),
+        found.difference(&wanted).collect::<Vec<_>>());
+
+    let mut rays = actual.xray.clone();
+    rays.sort_by(|a,b|a.direction.cmp(&b.direction));
+    ensure!(rays == expected.xray,
+        "engine xray mismatch for {}: expected {:?}, got {:?}",
+        actual.id,expected.xray,rays);
+    Ok(())
+}
+
+/// Validate one model-generated piece INSIDE the transport retry callback.
+/// Coordinates/piece identity are trusted only after the engine cross-check.
 pub fn validate_one(position: &Position, cell: &str, result: &OnePieceControls) -> Result<()> {
+    square(cell)?;
     let from: Square=cell.parse()?;
     let piece=position.board().piece_at(from).context("selected square is empty")?;
-    let entry=PieceControls{
+    let mut entry=PieceControls{
         id:piece_id(position,cell,piece), square:cell.into(),
         controls:result.controls.clone(), xray:result.xray.clone(),
     };
-    validate_xrays(position,&entry,piece)
+    validate_controls(&entry.id,&mut entry.controls)?;
+    validate_xrays(position,&entry,piece)?;
+
+    let reference=engine_map(position)?;
+    let expected=reference.pieces.iter()
+        .find(|p|p.square==cell)
+        .context("selected piece missing from engine control map")?;
+    compare_engine_piece(&entry,expected)
+}
+
+/// Validate a complete model-generated control map against the engine without
+/// replacing any data in it. Structural parsing and normalization stay separate,
+/// so offline map inspection and existing consumers retain their behavior.
+pub fn validate_engine_map(position: &Position, map: &ControlMap) -> Result<()> {
+    let model=ControlGraph::new(position,map.clone())?;
+    let reference=engine_map(position)?;
+    for (actual,expected) in model.map().pieces.iter().zip(&reference.pieces) {
+        compare_engine_piece(actual,expected)?;
+    }
+    Ok(())
 }
 
 /// Cells whose changed occupancy/identity would alter the xray portion,

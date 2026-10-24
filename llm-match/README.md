@@ -410,3 +410,17 @@ is incomplete; regenerate the map before using it for pin analysis.
 The debug-only `pin-analyzer` accepts a reported pin only if the supplied
 x-ray map contains the corresponding (attacker, first=pinned square,
 second=protected square) relationship. It doesn't recalculate the model's geometry via the chess engine.
+
+## Engine verification of generated Grounder outputs
+
+Grounder and OneGrounder keep exactly the same model prompts and JSON schemas.
+The host normalizes order (piece IDs, controlled squares and xray directions)
+and checks the **entire** model-authored geometry against the chess engine:
+occupied blocker sequence and complete control/xray coverage, including rays
+the model forgot to report. The engine NEVER fills in an incorrect model
+response. A mismatch is a rejected attempt in the existing bounded
+`LLM_STAGE_MAX_ATTEMPTS` retry loop; if all attempts fail, the operation
+returns an error without publishing an incomplete control map.
+The comparison does not depend on array order. Debug-only offline map
+inspection still uses structural parsing without automatically modifying
+supplied data.

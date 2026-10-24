@@ -161,7 +161,7 @@ async fn one_grounder_full_collects_sequentially_retries_current_piece_and_build
     let server = Server::script(
         vec![
             Reply::Text("The king controls its three adjacent in-board squares.\n```json\n{\"controls\":[\"h7\",\"g8\",\"g7\"],\"xray\":[]}\n```".into()),
-            text(json!({"controls":["d1","d1"],"xray":[]})), // retry only the second piece
+            text(json!({"controls":["d1","d2","f1","f2"],"xray":[]})), // valid schema, missing e2: retry only this piece
             text(json!({"controls":["d1","d2","e2","f1","f2"],"xray":[]})),
             text(json!({"controls":["b3"],"xray":[]})),
             text(json!({"controls":["a2","b1","c1","d1","e1"],"xray":[{"direction":"E","first":"e1","second":null},{"direction":"N","first":"a2","second":null}]})),
@@ -364,15 +364,12 @@ fn grounding_for(position: &capablanca_chess_plus::Position) -> Reply {
     if position.rules().name() != Variant::Classic.rules().name() {
         return Reply::Text("GROUNDED_FACT".into());
     }
-    // Inventory-only fixture: intentionally no engine geometry oracle.
-    let pieces: Vec<_> = position.board().pieces().map(|(cell, piece)| json!({
-        "id":format!("{}{}_{}", if piece.color == Color::White {"w"} else {"b"},
-            position.rules().piece_symbol(capablanca_chess_plus::Piece::new(Color::White,piece.kind)), cell),
-        "square":cell.to_string(),"controls":[]
-    })).collect();
+    // Keep the mock's accepted response geometrically correct. Production
+    // Grounder still obtains the candidate map from the MODEL, not this helper.
+    let map=llm_match::grounder::engine_map(position).unwrap();
     Reply::Text(format!(
         "<thinking>GROUNDER_PRIVATE_REASONING</thinking>{}",
-        json!({"version":1,"pieces":pieces})
+        serde_json::to_string(&map).unwrap()
     ))
 }
 
@@ -1087,4 +1084,81 @@ async fn malformed_proposer_and_connect_failures_never_change_state() {
     );
     assert_eq!(m.uci_history(), ["e2e4"]);
     assert!(m.wrong_moves().is_empty());
+}
+
+#[tokio::test]
+async fn one_grounder_retries_engine_incorrect_controls_and_keeps_sorted_output() {
+    use llm_match::pipeline::{Stage,debug::{self,Inputs}};
+    let server=Server::script(vec![
+        text(json!({"controls":["f6","e7"],"xray":[]})),
+        text(json!({"controls":["h6","e7","f6"],"xray":[]})),
+    ],512);
+    let config=cfg(&server);
+    let m=state();
+    let before=m.game().position().to_fen();
+    let result=debug::run(&m,&config,Stage::OneGrounder,&Inputs {
+        selected_piece:Some("g8".into()), ..Default::default()
+    }).await.unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&result).unwrap(),
+        json!({"controls":["e7","f6","h6"],"xray":[]}));
+    assert_eq!(m.game().position().to_fen(),before);
+    let prompts=server.prompts.lock().unwrap();
+    assert_eq!(prompts.len(),2);
+    assert_eq!(prompts[0],prompts[1]); // error isn't fed to the model
+}
+
+#[tokio::test]
+async fn full_grounder_retries_model_geometry_and_normalizes_input_order() {
+    use llm_match::pipeline::{Stage,debug::{self,Inputs}};
+    let m=state();
+    let oracle=llm_match::grounder::engine_map(m.game().position()).unwrap();
+    let mut bad=oracle.clone();
+    bad.pieces.iter_mut().find(|p|p.id=="bN_g8").unwrap()
+        .controls.retain(|s|s!="h6");
+    let mut unordered=oracle.clone();
+    unordered.pieces.reverse();
+    for piece in &mut unordered.pieces {
+        piece.controls.reverse();
+        piece.xray.reverse();
+    }
+    let server=Server::script(vec![
+        text(serde_json::to_value(bad).unwrap()),
+        text(serde_json::to_value(unordered).unwrap()),
+    ],512);
+    let config=cfg(&server);
+    let result=debug::run(&m,&config,Stage::Grounder,&Inputs::default()).await.unwrap();
+    let validated: llm_match::grounder::ControlMap=serde_json::from_str(&result).unwrap();
+    assert_eq!(validated,oracle);
+    let prompts=server.prompts.lock().unwrap();
+    assert_eq!(prompts.len(),2);
+    assert_eq!(prompts[0],prompts[1]);
+}
+
+#[tokio::test]
+async fn one_grounder_retries_when_xray_omits_a_blocked_ray() {
+    use llm_match::pipeline::{Stage,debug::{self,Inputs}};
+    let fen="r1bqkb1r/pp2pppp/2n2n2/2PN4/5B2/8/PPP1PPPP/R2QKBNR b KQkq - 0 5";
+    let m=llm_match::Match::from_fen(Variant::Classic,Color::Black,fen).unwrap();
+    let oracle=llm_match::grounder::engine_map(m.game().position()).unwrap();
+    let queen=oracle.pieces.iter().find(|p|p.id=="bQ_d8").unwrap();
+    let mut incomplete=queen.clone();
+    incomplete.xray.retain(|r|r.direction!="S");
+    let mut valid=queen.clone();
+    valid.controls.reverse();
+    valid.xray.reverse();
+
+    let server=Server::script(vec![
+        text(json!({"controls":incomplete.controls,"xray":incomplete.xray})),
+        text(json!({"controls":valid.controls,"xray":valid.xray})),
+    ],512);
+    let config=cfg(&server);
+    let result=debug::run(&m,&config,Stage::OneGrounder,&Inputs {
+        selected_piece:Some("d8".into()),..Default::default()
+    }).await.unwrap();
+    let parsed: llm_match::grounder::OnePieceControls=serde_json::from_str(&result).unwrap();
+    assert_eq!(parsed.controls,queen.controls);
+    assert_eq!(parsed.xray,queen.xray);
+    let prompts=server.prompts.lock().unwrap();
+    assert_eq!(prompts.len(),2);
+    assert_eq!(prompts[0],prompts[1]);
 }

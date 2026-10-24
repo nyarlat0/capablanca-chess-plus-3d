@@ -290,3 +290,37 @@ fn offline_cli_works_without_configuration_or_server() {
     }
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn complete_model_map_requires_engine_geometry_without_changing_normalization() {
+    use llm_match::grounder::{engine_map,validate_engine_map};
+    let p=position();
+    let reference=engine_map(&p).unwrap();
+    let mut unordered=reference.clone();
+    unordered.pieces.reverse();
+    for piece in &mut unordered.pieces {
+        piece.controls.reverse();
+        piece.xray.reverse();
+    }
+    validate_engine_map(&p,&unordered).unwrap();
+    let graph=ControlGraph::new(&p,unordered).unwrap();
+    assert_eq!(graph.map(),&reference);
+
+    let mut incorrect=reference.clone();
+    incorrect.pieces.iter_mut().find(|p|p.id=="wR_a1").unwrap()
+        .controls.retain(|square|square!="b1");
+    let err=validate_engine_map(&p,&incorrect).unwrap_err();
+    assert!(format!("{err:#}").contains("engine controls mismatch"));
+}
+
+#[test]
+fn complete_model_map_rejects_missing_valid_xray_record() {
+    use llm_match::grounder::{engine_map,validate_engine_map};
+    let p=position();
+    let mut missing=engine_map(&p).unwrap();
+    let rook=missing.pieces.iter_mut().find(|p|p.id=="wR_a1").unwrap();
+    assert!(!rook.xray.is_empty());
+    rook.xray.pop();
+    let err=validate_engine_map(&p,&missing).unwrap_err();
+    assert!(format!("{err:#}").contains("engine xray mismatch"),"{err:#}");
+}
