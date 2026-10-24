@@ -166,7 +166,16 @@ pub(super) fn build_request(
     image.attach(&mut request)?;
     request.image_token_reserve = if config.send_board_image {config.image_token_reserve} else {0};
     if config.classic.is_some() && matches!(stage,Stage::Proposer | Stage::Selector) {
-        request.chat_template_kwargs.insert("enable_thinking".into(),json!(false));
+        // A preset may contain chat_template_kwargs inside parameters.
+        // prompt-core rejects passing kwargs in both supported locations.
+        // Preserve existing knobs and override ONLY enable_thinking.
+        if let Some(kwargs) = request.parameters.get_mut("chat_template_kwargs") {
+            kwargs.as_object_mut()
+                .context("preset chat_template_kwargs must be a JSON object")?
+                .insert("enable_thinking".into(), json!(false));
+        } else {
+            request.chat_template_kwargs.insert("enable_thinking".into(), json!(false));
+        }
     }
     Ok(request)
 }
@@ -177,4 +186,64 @@ pub(super) fn request_template(config: &Config, stage: Stage) -> SystemPromptTem
 
 fn request_data(state: &Match, config: &Config, stage: Stage) -> Result<PromptData> {
     prompt_data(state, config, stage)
+}
+
+#[cfg(test)]
+mod thinking_override_tests {
+    use super::*;
+    use capablanca_chess_plus::{Color, Variant};
+    use prompt_core::Preset;
+
+    #[test]
+    fn stage_override_does_not_duplicate_preset_chat_template_kwargs() {
+        let mut config = Config::load_classic_with_profile(Some("no-history")).unwrap();
+        config.send_board_image = false;
+        config.stage_presets.proposer = Some(Preset::from_value(json!({
+            "genamt":128,
+            "chat_template_kwargs":{"enable_thinking":true,"reasoning_effort":"low"}
+        })).unwrap());
+        config.stage_presets.selector = Some(Preset::from_value(json!({
+            "genamt":128,"temp":0.5
+        })).unwrap());
+        config.stage_presets.grounder = Some(Preset::from_value(json!({
+            "genamt":128,"chat_template_kwargs":{"enable_thinking":true}
+        })).unwrap());
+
+        let state = Match::new(Variant::Classic, Color::Black);
+        let image = crate::board_image::BoardImage::with_enabled(
+            state.game().position(), false
+        ).unwrap();
+        let make_request = |stage| build_request(
+            &config,stage,&prompt_data(&state,&config,stage).unwrap(),&image
+        ).unwrap();
+
+        let proposer = make_request(Stage::Proposer);
+        assert_eq!(proposer.parameters["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(proposer.parameters["chat_template_kwargs"]["reasoning_effort"], "low");
+        assert!(proposer.chat_template_kwargs.is_empty());
+
+        let selector = make_request(Stage::Selector);
+        assert_eq!(selector.chat_template_kwargs["enable_thinking"], false);
+        assert!(selector.parameters.get("chat_template_kwargs").is_none());
+
+        let grounder = make_request(Stage::Grounder);
+        assert_eq!(grounder.parameters["chat_template_kwargs"]["enable_thinking"], true);
+        assert!(grounder.chat_template_kwargs.is_empty());
+    }
+
+    #[test]
+    fn malformed_preset_kwargs_get_a_direct_error() {
+        let mut config = Config::load_classic_with_profile(Some("no-history")).unwrap();
+        config.send_board_image = false;
+        config.stage_presets.proposer = Some(Preset::from_value(json!({
+            "genamt":128,"chat_template_kwargs":"invalid"
+        })).unwrap());
+        let state = Match::new(Variant::Classic, Color::Black);
+        let image = crate::board_image::BoardImage::with_enabled(
+            state.game().position(), false
+        ).unwrap();
+        let err=build_request(&config,Stage::Proposer,
+            &prompt_data(&state,&config,Stage::Proposer).unwrap(),&image).unwrap_err();
+        assert!(format!("{err:#}").contains("preset chat_template_kwargs must be a JSON object"));
+    }
 }
