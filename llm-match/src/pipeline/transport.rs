@@ -1,7 +1,7 @@
 //! Chat Completion, bounded silent retries, reasoning stripping and protocol parsing.
 use super::*;
 use capablanca_chess_plus::{Position, Square};
-use prompt_core::{ChatCompletionMessage, ToolCall, ToolChoice, ToolDefinition};
+use prompt_core::{ChatCompletionMessage, ToolCall, ToolChoice, ToolDefinition, ToolType, FunctionCall};
 use serde::Deserialize;
 use std::{collections::BTreeSet, sync::{Arc,Mutex}};
 
@@ -165,6 +165,11 @@ async fn request_parsed_inner<T>(
     };
     let mut last_error = None;
     for attempt in 1..=config.stage_max_attempts {
+        // A protocol retry starts a new model transcript. Earlier inspected
+        // moves must not authorize a final move without visible tool evidence.
+        if let Some((_, checked)) = proposer.as_ref() {
+            checked.lock().unwrap().clear();
+        }
         let started = std::time::Instant::now();
         let mut input_tokens = None;
         tracing::info!(?stage, attempt, "LLM stage");
@@ -180,6 +185,8 @@ async fn request_parsed_inner<T>(
                 // No application-imposed limit on tool calls or rounds.
                 // Context capacity and the backend's request timeout still apply.
                 let mut conversation = request.clone();
+                let mut model_called_tool = false;
+                let mut auto_verified = false;
                 loop {
                     let fitted = client.fit_chat(&conversation).await?;
                     // Never lose the authoritative board image while fitting a
@@ -189,8 +196,52 @@ async fn request_parsed_inner<T>(
                     input_tokens=Some(fitted.preview.tokens);
                     let response=client.generate_chat_full(&fitted.request).await?;
                     if response.tool_calls.is_empty() {
-                        break Ok(response.content.context("Tool-enabled stage returned no final text")?);
+                        let raw = response.content.context("Tool-enabled stage returned no final text")?;
+                        // Thinking Qwen may generate a full answer without
+                        // requesting any tool (tool_choice=auto). Do not waste
+                        // that entire generation. Treat it as a provisional
+                        // move, verify it, and return the geometry to the model.
+                        // Only do this when the model never used tools, and at
+                        // most once, so a broken backend cannot loop forever.
+                        if let Some((state, checked)) = proposer.as_ref()
+                            && !model_called_tool && !auto_verified
+                        {
+                            let suggested = output::final_json_answer(reasoning,&raw)
+                                .ok().flatten()
+                                .and_then(|text| output::parse_final_json::<FinalMove>(&text).ok());
+                            if let Some(suggested) = suggested
+                                && !checked.lock().unwrap().contains(&suggested.proposed_move)
+                            {
+                                auto_verified = true;
+                                let check = ToolCall {
+                                    id:"host-verify-final".into(),
+                                    kind:ToolType::Function,
+                                    function:FunctionCall {
+                                        name:"inspect_line".into(),
+                                        arguments:json!({"moves":[suggested.proposed_move.clone()]}).to_string(),
+                                    },
+                                };
+                                let result = super::delta::inspect_line(state,&check);
+                                if let Some(san) = result["steps"][0]["san"].as_str() {
+                                    checked.lock().unwrap().insert(san.to_owned());
+                                }
+                                tracing::warn!(?stage,attempt,move_san=%suggested.proposed_move,
+                                    status=%result["status"],
+                                    "Proposer skipped inspect_line; automatically verified tentative final move");
+                                conversation=fitted.request;
+                                // Use a short assistant turn; do not copy 4096
+                                // reasoning tokens into the next prompt.
+                                conversation.messages.push(ChatCompletionMessage::assistant(raw));
+                                conversation.messages.push(ChatCompletionMessage::user(
+                                    format!(r#"Your previous final move was premature: it was not checked with inspect_line. Rust has now checked that exact first move on the ORIGINAL board. Treat this as tool evidence, not as an evaluation. VERIFIED RESULT: {result}
+You must now reconsider the result and either call inspect_line for other candidates or return one final JSON {{"move":"<canonical SAN>"}}. Only a verified legal root move may be finalized."#)
+                                ));
+                                continue;
+                            }
+                        }
+                        break Ok(raw);
                     }
+                    model_called_tool = true;
                     tracing::debug!(?stage, count=response.tool_calls.len(),
                         "LLM tool calls");
                     conversation=fitted.request;
@@ -243,6 +294,7 @@ async fn request_parsed_inner<T>(
                 continue;
             }
             Err(e) => {
+                tracing::warn!(?stage, attempt, error=%e, "LLM request failed");
                 tracing::info!(
                     ?stage,
                     attempt,
@@ -303,6 +355,7 @@ async fn request_parsed_inner<T>(
             }
             Err(e) => {
                 record("invalid_protocol");
+                tracing::warn!(?stage,attempt,error=%e,"LLM final answer rejected");
                 report_invalid(attempt, &raw, &e);
                 last_error = Some(e);
             }

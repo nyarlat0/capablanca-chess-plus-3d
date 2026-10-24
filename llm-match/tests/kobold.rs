@@ -695,16 +695,50 @@ async fn illegal_variation_reports_prefix_then_proposer_tests_another_branch() {
 }
 
 #[tokio::test]
-async fn a_final_move_without_a_successful_inspection_is_rejected() {
-    let server=Server::script(vec![text(json!({"move":"e5"}))],512);
+async fn skipped_tool_call_gets_automatic_delta_then_model_finalizes() {
+    let server=Server::script(vec![
+        text(json!({"move":"e5"})),
+        text(json!({"move":"e5"}))
+    ],512);
+    let mut c=cfg(&server);
+    c.stage_max_attempts=1;
+    let mut m=state();
+    let original=m.game().position().to_fen();
+    llm_match::generate_move(&mut m,&c,|_,_|panic!("unexpected rejection"))
+        .await.unwrap();
+    assert_ne!(m.game().position().to_fen(),original);
+    assert_eq!(m.uci_history(),["e2e4","e7e5"]);
+    assert!(m.wrong_moves().is_empty());
+    let requests=server.requests.lock().unwrap();
+    assert_eq!(requests.len(),2);
+    assert_eq!(requests[0]["tool_choice"],"auto");
+    assert_eq!(requests[1]["tool_choice"],"auto");
+    let feedback=requests[1]["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(feedback["role"],"user");
+    let msg=message_text(feedback);
+    assert!(msg.contains("VERIFIED RESULT"));
+    assert!(msg.contains(r#""status":"ok""#));
+    assert!(msg.contains("square_control_deltas"));
+    assert!(msg.contains("e5"));
+}
+
+#[tokio::test]
+async fn skipped_tool_call_with_illegal_san_does_not_finish() {
+    let server=Server::script(vec![
+        text(json!({"move":"e6+"})),
+        text(json!({"move":"e6+"}))
+    ],512);
     let mut c=cfg(&server);
     c.stage_max_attempts=1;
     let mut m=state();
     let original=m.game().position().to_fen();
     assert!(llm_match::generate_move(&mut m,&c,|_,_|panic!()).await.is_err());
     assert_eq!(m.game().position().to_fen(),original);
-    assert_eq!(m.uci_history(),["e2e4"]);
-    assert!(m.wrong_moves().is_empty());
+    let requests=server.requests.lock().unwrap();
+    assert_eq!(requests.len(),2);
+    let msg=message_text(requests[1]["messages"].as_array().unwrap().last().unwrap());
+    assert!(msg.contains(r#""status":"illegal""#));
+    assert!(msg.contains("at_ply"));
 }
 
 #[tokio::test]
