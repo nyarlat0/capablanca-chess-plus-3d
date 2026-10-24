@@ -45,6 +45,11 @@ async fn main() -> Result<()> {
             "--grounder-map-file" => map_file = Some(args.next().context("missing map file")?),
             "--inspect-square" => inspect_square = Some(args.next().context("missing square")?),
             "--inspect-piece" => inspect_piece = Some(args.next().context("missing piece id")?),
+            "--threats-file" => {
+                inputs.threats = Some(std::fs::read_to_string(
+                    args.next().context("missing threats file")?,
+                )?);
+            }
             "--analysis-file" => {
                 inputs.analysis = Some(std::fs::read_to_string(
                     args.next().context("missing analysis file")?,
@@ -90,7 +95,7 @@ async fn main() -> Result<()> {
                     "Grounder map (Classic): --stage grounder --grounder-map-file map.json [--inspect-square e4] [--inspect-piece bN_f6]. Offline validation against --fen/--moves; no LLM configuration or network required. Without inspect flags prints normalized map JSON."
                 );
                 println!(
-                    "Stage debug: --stage grounder|proposer|verifier|selector [--analysis-file facts.txt] [--candidate-file candidate.json] [--accepted-candidates-file accepted.json]. Classic proposer/verifier automatically get an engine-generated, human-readable Grounder report when --analysis-file is omitted. Other variants require --analysis-file. --print-prompt previews offline."
+                    "Stage debug: --stage grounder|threat-analyzer|proposer|verifier|selector [--threats-file threats.json] [--analysis-file facts.txt] [--candidate-file candidate.json] [--accepted-candidates-file accepted.json]. Classic proposer/verifier automatically get an engine-generated, human-readable Grounder report when --analysis-file is omitted. Other variants require --analysis-file. --print-prompt previews offline."
                 );
                 println!(
                     "llm-match [--variant Classic|Gothic|Embassy|Grand|Shako|Pemba|TerachessII] [--black] [--url http://aistation:5001] [--llm-profile NAME] [--llm-classic-profile with-history|no-history] [--fen 'FEN'] [--print-prompt] [--moves 'e2e4 e7e5']\nEnter a UCI move, or quit. Defaults come from llm-match/.env. Classic chess uses its separate SAN configuration."
@@ -133,6 +138,7 @@ async fn main() -> Result<()> {
                     (inspect_square.is_none() && inspect_piece.is_none()))
                 && inputs.selected_piece.is_none()
                 && inputs.analysis.is_none()
+                && inputs.threats.is_none()
                 && inputs.candidate.is_none()
                 && inputs.accepted_candidates.is_none(),
             "map loading cannot be combined with --print-prompt or other stage input files"
@@ -217,6 +223,7 @@ async fn main() -> Result<()> {
     }
     anyhow::ensure!(
         inputs.selected_piece.is_none()
+            && inputs.threats.is_none()
             && inputs.analysis.is_none()
             && inputs.candidate.is_none()
             && inputs.accepted_candidates.is_none(),
