@@ -730,6 +730,16 @@ async fn minimal_proposer_move_works_without_selector_or_counterplay() {
 }
 
 #[tokio::test]
+async fn bare_san_without_json_can_complete_the_turn() {
+    let server=Server::script(vec![Reply::Text("e5".into())],512);
+    let mut m=state();
+    let mv=llm_match::generate_move(&mut m,&cfg(&server),|_,_|panic!())
+        .await.unwrap();
+    assert_eq!(mv.to_uci(),"e7e5");
+    assert_eq!(server.requests.lock().unwrap().len(),1);
+}
+
+#[tokio::test]
 async fn empty_then_valid_proposal_retries_without_board_mutation() {
     let server=Server::script(vec![
         text(json!({"candidates":[{"move":"Nxe4"}]})),

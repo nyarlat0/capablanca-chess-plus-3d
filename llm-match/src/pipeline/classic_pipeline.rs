@@ -162,8 +162,14 @@ pub(super) async fn choose(
         let mut data=prompt_data(state,config,Stage::Proposer)?;
         data.custom["analysis"]=json!(analysis);
         data.custom["validation-feedback"]=json!(feedback);
-        let response:Value=request(&mut client,&http,config,Stage::Proposer,
-            &data,&image,|_v:&Value|Ok(())).await?;
+        let response:Value=request_parsed(&mut client,&http,config,Stage::Proposer,
+            &data,&image,|answer| {
+                // JSON is preferred, but a single bare SAN/UCI is also
+                // a valid proposal. Never require a second LLM generation
+                // merely to wrap a legal move in braces.
+                Ok(output::parse_final_json::<Value>(answer)
+                    .unwrap_or_else(|_|json!({"move":answer.trim()})))
+            }).await?;
         let (candidates,errors)=legal_suggestions(state,&response);
         if candidates.is_empty() {
             feedback=if errors.is_empty() {
