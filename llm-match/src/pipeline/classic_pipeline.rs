@@ -117,12 +117,23 @@ fn legal_suggestions(root:&Match, value:&Value) -> (Vec<CandidateLine>,Vec<Strin
     (valid,errors)
 }
 
-fn map_after(position:&capablanca_chess_plus::Position) -> Result<ControlMap> {
-    // Engine supplies Grounder geometry as an observation ONLY. It never
-    // supplies candidate moves or a tactical/evaluation score.
-    let map=crate::grounder::engine_map(position)?;
-    crate::grounder::validate_engine_map(position,&map)?;
-    Ok(map)
+async fn map_after(trial:&mut Match, config:&Config) -> Result<ControlMap> {
+    if trial.auto_grounder_updates {
+        // Opt-in fast test mode: Grounder geometry is calculated by the
+        // engine. No scores, candidate moves or search are generated.
+        let map=crate::grounder::engine_map(trial.game.position())?;
+        trial.controls.complete=Some((trial.controls.positions.len()-1,map.clone()));
+        return Ok(map);
+    }
+    // Initial map (when auto-initial is enabled) comes from the engine.
+    // Every accepted move after that invalidates relevant pieces and
+    // makes OneGrounder LLM requests for their updated controls and xrays.
+    incremental::prepare(trial,config).await?;
+    let (index,map)=trial.controls.complete.as_ref().context("Grounder map missing")?;
+    ensure!(*index+1==trial.controls.positions.len(),
+        "Grounder cache is not current");
+    crate::grounder::validate_engine_map(trial.game.position(),map)?;
+    Ok(map.clone())
 }
 
 fn applied(root:&Match, san:&str) -> Result<Match> {
@@ -133,9 +144,9 @@ fn applied(root:&Match, san:&str) -> Result<Match> {
     Ok(trial)
 }
 
-/// The Classic variant does not use model-generated geometry on hypothetical
-/// positions. Model Grounder remains available as an isolated debug stage.
-/// Engine Grounder computes geometry, not tactical evaluations or candidate moves.
+/// Initial Grounder may be engine-calculated; subsequent accepted or
+/// hypothetical positions are updated by OneGrounder LLM, unless the user
+/// explicitly requests automatic Grounder updates for fast testing.
 pub(super) async fn choose(
     state:&mut Match,
     config:&Config,
@@ -145,8 +156,7 @@ pub(super) async fn choose(
         "Classic pipeline needs Classic rules/config");
     ensure!(state.game.position().side_to_move()==state.model_side,"not the model turn");
     ensure!(matches!(state.game.outcome(),GameOutcome::Ongoing | GameOutcome::Check),"game over");
-    let current=map_after(state.game.position())?;
-    state.controls.complete=Some((state.controls.positions.len()-1,current.clone()));
+    let current=map_after(state,config).await?;
     let graph=ControlGraph::new(state.game.position(),current.clone())?;
     let analysis=graph.readable_analysis();
     let image=crate::board_image::BoardImage::with_enabled(
@@ -187,17 +197,18 @@ pub(super) async fn choose(
         }
 
         let mut annotated=Vec::new();
+        let mut prepared=Vec::new();
         for candidate in &candidates {
-            let moved=applied(state,&candidate.san)?;
-            let map=map_after(moved.game.position())?;
+            let mut moved=applied(state,&candidate.san)?;
+            let map=map_after(&mut moved,config).await?;
             let diff=delta::position_delta(state.game.position(),
                 moved.game.position(),&current,&map)?;
             let mut replies=Vec::new();
             for counter in &candidate.counterplay {
                 match normalized_move(moved.game(),counter) {
                     Ok((_,san))=>{
-                        let replied=applied(&moved,&san)?;
-                        let reply_map=map_after(replied.game.position())?;
+                        let mut replied=applied(&moved,&san)?;
+                        let reply_map=map_after(&mut replied,config).await?;
                         let delta=delta::position_delta(moved.game.position(),
                             replied.game.position(),&map,&reply_map)?;
                         replies.push(json!({"reply":san,"delta":delta}));
@@ -213,6 +224,9 @@ pub(super) async fn choose(
                 "id":candidate.id,"move":candidate.san,
                 "after_move":diff,"counterplay":replies
             }));
+            // Commit exactly the already grounded first-move snapshot.
+            // No duplicate LLM Grounder requests for the chosen move.
+            prepared.push(moved);
         }
 
         // One candidate: no LLM selector needed. No tactical hint or engine
@@ -245,10 +259,11 @@ pub(super) async fn choose(
             }
         };
         let (mv,_)=normalized_move(state.game(),&chosen.san)?;
-        // One authoritative commit, never applying hypothetical opponent replies.
-        let mut trial=state.clone();
-        trial.accept_model(&mv.to_uci())?;
-        *state=trial;
+        // Persist the selected move's verified incremental Grounder map.
+        // Opponent hypotheses remain disposable snapshots.
+        let selected_index=candidates.iter().position(|c|c.id==chosen.id)
+            .context("selected candidate missing")?;
+        *state=prepared.swap_remove(selected_index);
         return Ok(mv);
     }
     bail!("Proposer provided no legal SAN/UCI move after {} rounds",config.max_attempts)

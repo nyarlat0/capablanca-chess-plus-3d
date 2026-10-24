@@ -159,7 +159,7 @@ fn isolated_threat_analyzer_is_archived_and_not_used_by_interactive_proposer() {
     };
     let proposal = debug::preview(&state, &config, Stage::Proposer, &inputs).unwrap();
     assert!(!proposal.contains("GEOMETRIC: Black Rook e8 attacks e2"));
-    assert!(proposal.contains("counterplay"));
+    assert!(proposal.contains("promising legal moves"));
     assert!(proposal.contains("VERIFIED GROUNDER GEOMETRY"));
     let verifier = debug::preview(&state, &config, Stage::Verifier, &Inputs {
         candidate: Some(serde_json::json!({"id":"c1","move":"Kf1","from":"e1","to":"f1"})),

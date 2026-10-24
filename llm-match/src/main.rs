@@ -182,7 +182,10 @@ async fn main() -> Result<()> {
             game.accept_model(mv)?;
         }
     }
-    if stage.is_some() || !replay.is_empty() || auto_grounder {
+    if stage.is_some() || test_pipeline {
+        // Isolated experiments intentionally start from the given FEN/replay
+        // position. Ordinary matches preserve the initial snapshot and let
+        // OneGrounder replay every accepted delta, including --moves history.
         game.prepare_grounder_test(auto_grounder);
     }
     if let Some(path) = map_file {

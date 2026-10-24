@@ -693,18 +693,19 @@ async fn illegal_reply_returns_actionable_feedback_to_proposer_before_selector()
 }
 
 #[tokio::test]
-async fn engine_grounder_geometry_is_available_without_flag_or_llm_calls() {
+async fn engine_grounder_fast_test_mode_needs_only_proposer_and_selector() {
     let server=Server::script(vec![
         classic_lines(),
         text(json!({"candidate_id":"c2"}))
     ],512);
     let mut m=state();
+    m.set_auto_grounder_updates(true);
     let config=cfg(&server);
     assert!(!m.uci_history().is_empty());
     let mv=llm_match::generate_move(&mut m,&config,|_,_|{}).await.unwrap();
     assert_eq!(mv.to_uci(),"d7d5");
     let requests=server.requests.lock().unwrap();
-    assert_eq!(requests.len(),2,"only Proposer and Selector are LLM stages");
+    assert_eq!(requests.len(),2,"auto-grounder bypasses LLM OneGrounder");
     assert!(rendered_prompt(&requests[1]).contains("square_control_deltas"));
 }
 
@@ -717,6 +718,7 @@ async fn illegal_candidate_does_not_veto_legal_candidate_or_require_retry() {
         ]}))
     ],512);
     let mut m=state();
+    m.set_auto_grounder_updates(true);
     let mv=llm_match::generate_move(&mut m,&cfg(&server),|_,_|panic!("unexpected retry")).await.unwrap();
     assert_eq!(mv.to_uci(),"e7e5");
     assert_eq!(server.requests.lock().unwrap().len(),1);
@@ -726,6 +728,7 @@ async fn illegal_candidate_does_not_veto_legal_candidate_or_require_retry() {
 async fn minimal_proposer_move_works_without_selector_or_counterplay() {
     let server=Server::script(vec![text(json!({"move":"Nf6"}))],512);
     let mut m=state();
+    m.set_auto_grounder_updates(true);
     let mv=llm_match::generate_move(&mut m,&cfg(&server),|_,_|panic!()).await.unwrap();
     assert_eq!(mv.to_uci(),"g8f6");
     assert_eq!(server.requests.lock().unwrap().len(),1);
@@ -735,6 +738,7 @@ async fn minimal_proposer_move_works_without_selector_or_counterplay() {
 async fn bare_san_without_json_can_complete_the_turn() {
     let server=Server::script(vec![Reply::Text("e5".into())],512);
     let mut m=state();
+    m.set_auto_grounder_updates(true);
     let mv=llm_match::generate_move(&mut m,&cfg(&server),|_,_|panic!())
         .await.unwrap();
     assert_eq!(mv.to_uci(),"e7e5");
@@ -748,6 +752,7 @@ async fn empty_then_valid_proposal_retries_without_board_mutation() {
         text(json!({"move":"e5"}))
     ],512);
     let mut m=state();
+    m.set_auto_grounder_updates(true);
     let original=m.game().position().to_fen();
     let mut rejected=0;
     let mv=llm_match::generate_move(&mut m,&cfg(&server),|_,_|{rejected+=1;}).await.unwrap();
@@ -755,6 +760,57 @@ async fn empty_then_valid_proposal_retries_without_board_mutation() {
     assert_eq!(rejected,1);
     assert_ne!(m.game().position().to_fen(),original);
     assert_eq!(server.requests.lock().unwrap().len(),2);
+}
+
+#[tokio::test]
+async fn auto_initial_uses_engine_only_at_start_then_llm_updates_after_every_move() {
+    // The match starts from the engine-seeded root. Human's move invalidates
+    // the white king, and the subsequent model move invalidates the black king.
+    // Both changes MUST be supplied by OneGrounder, not by engine_map.
+    let server=Server::script(vec![
+        text(json!({"controls":["c1","c2","d2","e1","e2"],"xray":[]})),
+        text(json!({"move":"Ka7"})),
+        text(json!({"controls":["a6","a8","b6","b7","b8"],"xray":[]}))
+    ],512);
+    let mut m=llm_match::Match::from_fen(
+        Variant::Classic, Color::Black,
+        "k7/8/8/8/8/8/8/4K3 w - - 0 1"
+    ).unwrap();
+    m.set_auto_initial_grounder(true);
+    m.accept_human("e1d1").unwrap();
+    let mut config=cfg(&server);
+    config.send_board_image=false;
+    let mv=llm_match::generate_move(&mut m,&config,|_,_|panic!("invalid move"))
+        .await.unwrap();
+    assert_eq!(mv.to_uci(),"a8a7");
+    let requests=server.requests.lock().unwrap();
+    assert_eq!(requests.len(),3,
+        "two model Grounder deltas around one Proposer choice");
+    assert_eq!(requests[0]["tools"][0]["function"]["name"],"piece_at");
+    assert!(rendered_prompt(&requests[0]).contains("White King"));
+    assert!(rendered_prompt(&requests[1]).contains("promising legal moves"));
+    assert_eq!(requests[2]["tools"][0]["function"]["name"],"piece_at");
+    assert!(rendered_prompt(&requests[2]).contains("Black King"));
+    assert_eq!(m.uci_history(),["e1d1","a8a7"]);
+}
+
+#[tokio::test]
+async fn test_from_initial_fen_recalculates_hypothetical_delta_with_llm() {
+    let server=Server::script(vec![
+        text(json!({"move":"Kd1"})),
+        text(json!({"controls":["c1","c2","d2","e1","e2"],"xray":[]}))
+    ],512);
+    let mut m=llm_match::Match::from_fen(
+        Variant::Classic,Color::White,
+        "k7/8/8/8/8/8/8/4K3 w - - 0 1"
+    ).unwrap();
+    m.set_auto_initial_grounder(true);
+    let mv=llm_match::generate_move(&mut m,&cfg(&server),|_,_|panic!())
+        .await.unwrap();
+    assert_eq!(mv.to_uci(),"e1d1");
+    let requests=server.requests.lock().unwrap();
+    assert_eq!(requests.len(),2,"Proposer and one LLM Grounder update");
+    assert_eq!(requests[1]["tools"][0]["function"]["name"],"piece_at");
 }
 
 #[tokio::test]
