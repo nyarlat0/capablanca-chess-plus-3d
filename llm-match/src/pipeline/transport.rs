@@ -53,7 +53,7 @@ pub(super) async fn request<T: DeserializeOwned>(
     validate: impl Fn(&T) -> Result<()>,
 ) -> Result<T> {
     request_parsed(client, http, config, stage, data, image, |answer| {
-        let value = if matches!(stage, Stage::Proposer | Stage::Selector | Stage::PinAnalyzer) {
+        let value = if matches!(stage, Stage::ThreatAnalyzer | Stage::Proposer | Stage::Selector | Stage::PinAnalyzer) {
             output::parse_final_json(answer)?
         } else {
             output::parse_json(answer)?
@@ -223,7 +223,7 @@ async fn request_parsed_inner<T>(
                 "llm_stage_metrics"
             )
         };
-        let answer = if matches!(stage, Stage::Proposer | Stage::Selector | Stage::PinAnalyzer) {
+        let answer = if matches!(stage, Stage::ThreatAnalyzer | Stage::Proposer | Stage::Selector | Stage::PinAnalyzer) {
             output::final_json_answer(reasoning, &raw)?
         } else {
             output::final_answer(reasoning, &raw)?

@@ -29,6 +29,8 @@ pub enum Stage {
     /// Debug-only sequential collection of every piece's controls.
     OneGrounderFull,
     Grounder,
+    /// Analyze threats against the side to move (Classic only).
+    ThreatAnalyzer,
     /// Debug-only, consumes a verified existing control map.
     PinAnalyzer,
     Proposer,
@@ -43,12 +45,13 @@ impl std::str::FromStr for Stage {
             "one-grounder" => Ok(Self::OneGrounder),
             "one-grounder-full" => Ok(Self::OneGrounderFull),
             "grounder" => Ok(Self::Grounder),
+            "threat-analyzer" => Ok(Self::ThreatAnalyzer),
             "pin-analyzer" => Ok(Self::PinAnalyzer),
             "proposer" => Ok(Self::Proposer),
             "verifier" => Ok(Self::Verifier),
             "selector" => Ok(Self::Selector),
             _ => bail!(
-                "stage must be one-grounder, one-grounder-full, grounder, pin-analyzer, proposer, verifier or selector"
+                "stage must be one-grounder, one-grounder-full, grounder, threat-analyzer, pin-analyzer, proposer, verifier or selector"
             ),
         }
     }
@@ -94,6 +97,7 @@ pub async fn generate(
     );
     for stage in [
         Stage::Grounder,
+        Stage::ThreatAnalyzer,
         Stage::Proposer,
         Stage::Verifier,
         Stage::Selector,
@@ -107,32 +111,41 @@ pub async fn generate(
     let mut client = None;
     let image = crate::board_image::BoardImage::new(state.game.position())?;
     let grounder_data = prompt_data(state, config, Stage::Grounder)?;
-    let grounded_analysis: String = if state.variant == capablanca_chess_plus::Variant::Classic {
-        // Keep the versioned, internally identified map for caching and
-        // incremental updates. Only its human-readable derived report is
-        // ever given to the Proposer and Verifier.
-        incremental::prepare(state, config).await?;
-        let (_, map) = state.controls.complete.as_ref()
-            .context("Grounder did not publish a complete current-position map")?;
-        crate::grounder::validate_engine_map(state.game.position(), map)
-            .context("Grounder map must be verified before proposing moves")?;
-        crate::grounder::ControlGraph::new(state.game.position(), map.clone())?
-            .readable_analysis()
-    } else { request_parsed(
-        &mut client,
-        &http,
-        config,
-        Stage::Grounder,
-        &grounder_data,
-        &image,
-        |answer| grounder_response(state, config, answer),
-    )
-    .await? };
+    let (grounded_analysis, threat_facts) =
+        if state.variant == capablanca_chess_plus::Variant::Classic {
+            // Keep the verified map unchanged for cache/delta updates.
+            // Project a compact geometry report for the new analysis stage.
+            incremental::prepare(state, config).await?;
+            let (_, map) = state.controls.complete.as_ref()
+                .context("Grounder did not publish a complete current-position map")?;
+            crate::grounder::validate_engine_map(state.game.position(), map)
+                .context("Grounder map must be verified before analyzing threats")?;
+            let graph = crate::grounder::ControlGraph::new(state.game.position(), map.clone())?;
+            (graph.readable_analysis(), Some(graph.threat_facts(state.model_side)))
+        } else {
+            (request_parsed(&mut client, &http, config, Stage::Grounder,
+                &grounder_data, &image, |answer| grounder_response(state, config, answer),
+            ).await?, None)
+        };
+    // Run once for this position, not once per proposer retry.
+    // Fairy chess keeps the previous pipeline.
+    let threat_report = if let Some(facts) = threat_facts {
+        let mut data = prompt_data(state, config, Stage::ThreatAnalyzer)?;
+        data.custom["threat-facts"] = json!(facts);
+        let report: ThreatAnalysis = request(
+            &mut client, &http, config, Stage::ThreatAnalyzer, &data, &image,
+            ThreatAnalysis::validate,
+        ).await?;
+        serde_json::to_string_pretty(&report)?
+    } else {
+        String::new()
+    };
     let mut excluded: HashSet<String> = state.wrong_moves.iter().cloned().collect();
     for round in 1..=config.max_attempts {
         tracing::info!(round, "LLM candidate round");
         let mut data = prompt_data(state, config, Stage::Proposer)?;
         data.custom["analysis"] = json!(grounded_analysis);
+        data.custom["threats"] = json!(threat_report);
         let mut sorted: Vec<_> = excluded.iter().cloned().collect();
         sorted.sort();
         data.custom["excluded-moves"] = json!(if sorted.is_empty() {
@@ -352,6 +365,7 @@ mod tests {
             );
             for stage in [
                 Stage::Grounder,
+                Stage::ThreatAnalyzer,
                 Stage::Proposer,
                 Stage::Verifier,
                 Stage::Selector,
@@ -365,6 +379,7 @@ mod tests {
                         &mut config.pipeline.one_grounder
                     }
                     Stage::Grounder => &mut config.pipeline.grounder,
+                    Stage::ThreatAnalyzer => &mut config.pipeline.threat_analyzer,
                     Stage::PinAnalyzer => &mut config.pipeline.pin_analyzer,
                     Stage::Proposer => &mut config.pipeline.proposer,
                     Stage::Verifier => &mut config.pipeline.verifier,

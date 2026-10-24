@@ -34,6 +34,7 @@ pub struct StagePresets {
     pub one_grounder: Option<Preset>,
     pub pin_analyzer: Option<Preset>,
     pub grounder: Option<Preset>,
+    pub threat_analyzer: Option<Preset>,
     pub proposer: Option<Preset>,
     pub verifier: Option<Preset>,
     pub selector: Option<Preset>,
@@ -54,6 +55,7 @@ impl StagePresets {
         };
         Ok(Self {
             grounder: read("LLM_GROUNDER_PRESET")?,
+            threat_analyzer: read("LLM_THREAT_ANALYZER_PRESET")?,
             one_grounder: read("LLM_ONE_GROUNDER_PRESET")?,
             pin_analyzer: read("LLM_PIN_ANALYZER_PRESET")?,
             proposer: read("LLM_PROPOSER_PRESET")?,
@@ -75,6 +77,10 @@ impl Config {
                     .unwrap_or_else(|| self.preset_for_stage(Stage::Grounder));
             }
             Stage::Grounder => &self.stage_presets.grounder,
+            Stage::ThreatAnalyzer => {
+                return self.stage_presets.threat_analyzer.as_ref()
+                    .unwrap_or_else(|| self.preset_for_stage(Stage::Proposer));
+            }
             Stage::PinAnalyzer => &self.stage_presets.pin_analyzer,
             Stage::Proposer => &self.stage_presets.proposer,
             Stage::Verifier => &self.stage_presets.verifier,
@@ -117,7 +123,11 @@ impl Config {
         Self::from_env_mode(&path, profile, true)
     }
     pub fn summary(&self) -> String {
-        let pipeline = "grounder/proposer/verifier/selector + legality gate";
+        let pipeline = if self.classic.is_some() {
+            "grounder/threat-analyzer/proposer/verifier/selector + legality gate"
+        } else {
+            "grounder/proposer/verifier/selector + legality gate"
+        };
         if let Some(c) = &self.classic {
             format!(
                 "{pipeline} | classic chess | history: {} | output: SAN",

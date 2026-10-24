@@ -4,6 +4,7 @@ use super::*;
 pub struct Templates {
     pub one_grounder: SystemPromptTemplate,
     pub grounder: SystemPromptTemplate,
+    pub threat_analyzer: SystemPromptTemplate,
     pub pin_analyzer: SystemPromptTemplate,
     pub proposer: SystemPromptTemplate,
     pub verifier: SystemPromptTemplate,
@@ -34,6 +35,12 @@ impl Templates {
                 read("LLM_GROUNDER_TEMPLATE", "grounder")?
             },
             grounder: read("LLM_GROUNDER_TEMPLATE", "grounder")?,
+            threat_analyzer: if classic {
+                read("LLM_THREAT_ANALYZER_TEMPLATE", "threat-analyzer")?
+            } else {
+                // Fairy variants do not schedule this stage.
+                read("LLM_GROUNDER_TEMPLATE", "grounder")?
+            },
             pin_analyzer: if classic { read("LLM_PIN_ANALYZER_TEMPLATE", "pin-analyzer")? }
                           else { read("LLM_GROUNDER_TEMPLATE", "grounder")? },
             proposer: read("LLM_PROPOSER_TEMPLATE", "proposer")?,
@@ -52,6 +59,7 @@ pub fn prompt_data(state: &Match, config: &Config, stage: Stage) -> Result<Promp
         Stage::OneGrounder
             | Stage::OneGrounderFull
             | Stage::Grounder
+            | Stage::ThreatAnalyzer
             | Stage::PinAnalyzer
             | Stage::Verifier
             | Stage::Selector
@@ -128,6 +136,7 @@ pub(crate) fn template(config: &Config, stage: Stage) -> SystemPromptTemplate {
     match stage {
         Stage::OneGrounder | Stage::OneGrounderFull => &config.pipeline.one_grounder,
         Stage::Grounder => &config.pipeline.grounder,
+        Stage::ThreatAnalyzer => &config.pipeline.threat_analyzer,
         Stage::PinAnalyzer => &config.pipeline.pin_analyzer,
         Stage::Proposer => &config.pipeline.proposer,
         Stage::Verifier => &config.pipeline.verifier,

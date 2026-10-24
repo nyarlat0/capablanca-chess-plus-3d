@@ -124,3 +124,44 @@ fn standalone_classic_analysis_file_still_overrides_engine_bootstrap() {
     assert!(prompt.contains("White Pawn on e2"));
     assert!(!prompt.contains("wP_e2"));
 }
+
+#[test]
+fn threat_facts_are_compact_and_keep_attackers_defenders_and_xrays() {
+    use capablanca_chess_plus::Color;
+    let p = position("4r2k/8/8/8/8/8/4R3/4K3 w - - 0 1");
+    let graph = ControlGraph::new(&p, engine_map(&p).unwrap()).unwrap();
+    let facts = graph.threat_facts(Color::White);
+    assert!(facts.contains("We play White; opponent plays Black"));
+    assert!(facts.contains("White Rook on e2 | attacked by: Black Rook on e8"));
+    assert!(facts.contains("defended by: White King on e1"));
+    assert!(facts.contains("Black Rook on e8 [S] -> first White Rook on e2; next White King on e1"));
+    assert!(facts.contains("POTENTIAL ABSOLUTE PIN ALIGNMENT"));
+    assert!(!facts.contains("EVERY SQUARE"));
+    assert!(!facts.contains("wR_e2"));
+    assert!(!facts.contains("bR_e8"));
+}
+
+#[test]
+fn isolated_threat_analyzer_uses_compact_geometry_and_proposer_accepts_report() {
+    use capablanca_chess_plus::Color;
+    use llm_match::{Config, Match};
+    use llm_match::pipeline::{Stage, debug::{self, Inputs}};
+    let state = Match::from_fen(Variant::Classic, Color::White,
+        "4r2k/8/8/8/8/8/4R3/4K3 w - - 0 1").unwrap();
+    let config = Config::load_classic_with_profile(Some("no-history")).unwrap();
+    let prompt = debug::preview(&state, &config, Stage::ThreatAnalyzer, &Inputs::default()).unwrap();
+    assert!(prompt.contains("VERIFIED CURRENT-POSITION GEOMETRY"));
+    assert!(prompt.contains("Black Rook on e8 [S]"));
+    assert!(!prompt.contains("EVERY SQUARE"));
+    let inputs = Inputs {
+        threats: Some(r#"{"immediate_threats":["GEOMETRIC: Black Rook e8 attacks e2"],"opponent_plans":[]}"#.into()),
+        ..Default::default()
+    };
+    let proposal = debug::preview(&state, &config, Stage::Proposer, &inputs).unwrap();
+    assert!(proposal.contains("GEOMETRIC: Black Rook e8 attacks e2"));
+    let verifier = debug::preview(&state, &config, Stage::Verifier, &Inputs {
+        candidate: Some(serde_json::json!({"id":"c1","move":"Kf1","from":"e1","to":"f1"})),
+        ..Default::default()
+    }).unwrap();
+    assert!(!verifier.contains("Black Rook e8 attacks e2"));
+}

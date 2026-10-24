@@ -19,6 +19,25 @@ pub struct Proposal {
     pub candidates: Vec<Candidate>,
 }
 
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreatAnalysis {
+    pub immediate_threats: Vec<String>,
+    pub opponent_plans: Vec<String>,
+}
+impl ThreatAnalysis {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(self.immediate_threats.len() <= 6, "too many immediate threats");
+        ensure!(self.opponent_plans.len() <= 5, "too many opponent plans");
+        for note in self.immediate_threats.iter().chain(&self.opponent_plans) {
+            ensure!(!note.trim().is_empty() && note.chars().count() <= 240,
+                "threat note must contain 1..=240 characters");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Verdict {
@@ -58,6 +77,24 @@ pub fn bounded(text: &str, max: usize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn threat_report_has_bounded_fields_and_no_extras() {
+        let valid: ThreatAnalysis = serde_json::from_str(
+            r#"{"immediate_threats":[],"opponent_plans":[]}"#).unwrap();
+        valid.validate().unwrap();
+        assert!(serde_json::from_str::<ThreatAnalysis>(
+            r#"{"immediate_threats":[],"opponent_plans":[],"extra":"x"}"#).is_err());
+        let invalid = ThreatAnalysis {
+            immediate_threats: vec![" ".into()],
+            opponent_plans: vec![],
+        };
+        assert!(invalid.validate().is_err());
+        let invalid = ThreatAnalysis {
+            immediate_threats: vec![],
+            opponent_plans: vec!["x".repeat(241)],
+        };
+        assert!(invalid.validate().is_err());
+    }
     #[test]
     fn explanations_are_optional_and_not_length_limited() {
         let p: Proposal = serde_json::from_str(

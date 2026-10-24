@@ -552,6 +552,79 @@ impl ControlGraph {
 }
 
 
+
+impl ControlGraph {
+    /// Compact, verified geometric facts for opponent-threat analysis.
+    /// Does not predict legal moves, plans, or profitable exchanges.
+    pub fn threat_facts(&self, side_to_move: Color) -> String {
+        use std::fmt::Write as _;
+        let us = format!("{side_to_move:?}");
+        let opponent = if side_to_move == Color::White { "Black" } else { "White" };
+        let human = |id: &str| {
+            let p = &self.pieces[id];
+            format!("{} {} on {}", p.color, p.kind, p.square)
+        };
+        let names = |ids: &[String]| {
+            if ids.is_empty() { "none".to_owned() }
+            else { ids.iter().map(|id| human(id)).collect::<Vec<_>>().join(", ") }
+        };
+        let mut out = String::new();
+        writeln!(out, "VERIFIED CURRENT-POSITION GEOMETRY (not legal moves or an evaluation)").unwrap();
+        writeln!(out, "We play {us}; opponent plays {opponent}. All observations precede future moves.").unwrap();
+        writeln!(out, "Controls include allied occupied squares and pinned pieces. Defenders do not establish a safe capture.").unwrap();
+        writeln!(out).unwrap();
+
+        writeln!(out, "OCCUPIED PIECES UNDER DIRECT GEOMETRIC ATTACK:").unwrap();
+        let mut attacked = 0;
+        for piece in self.pieces.values() {
+            let attackers: Vec<String> = self.squares[&piece.square].controlled_by.iter()
+                .filter(|id| self.pieces[*id].color != piece.color).cloned().collect();
+            if attackers.is_empty() { continue; }
+            attacked += 1;
+            writeln!(out, "{} | attacked by: {} | defended by: {}",
+                human(&piece.id), names(&attackers), names(&piece.defended_by)).unwrap();
+        }
+        if attacked == 0 { writeln!(out, "none").unwrap(); }
+        writeln!(out).unwrap();
+
+        writeln!(out, "GEOMETRIC CONTROLS BY PIECE (includes empty squares):").unwrap();
+        for piece in self.pieces.values() {
+            writeln!(out, "{}: {}",
+                human(&piece.id),
+                if piece.controls.is_empty() { "none".to_owned() } else { piece.controls.join(", ") }
+            ).unwrap();
+        }
+        writeln!(out).unwrap();
+
+        writeln!(out, "SLIDING-PIECE XRAYS (first and second occupied blockers):").unwrap();
+        let mut rays = 0;
+        for piece in self.pieces.values() {
+            for ray in &piece.xray {
+                rays += 1;
+                let first_id = self.squares[&ray.first].occupant.as_deref()
+                    .expect("validated first blocker");
+                let next_id = ray.second.as_ref()
+                    .and_then(|sq| self.squares[sq].occupant.as_deref());
+                let next = next_id.map(&human).unwrap_or_else(|| "none".to_owned());
+                writeln!(out, "{} [{}] -> first {}; next {}",
+                    human(&piece.id), ray.direction, human(first_id), next).unwrap();
+                if let Some(next_id) = next_id {
+                    let first = &self.pieces[first_id];
+                    let behind = &self.pieces[next_id];
+                    if piece.color != first.color && first.color == behind.color && behind.kind == "King" {
+                        writeln!(out, "  POTENTIAL ABSOLUTE PIN ALIGNMENT (not legally confirmed)").unwrap();
+                    } else if piece.color == first.color && piece.color != behind.color {
+                        writeln!(out, "  POTENTIAL DISCOVERED-ATTACK ALIGNMENT (not legally confirmed)").unwrap();
+                    }
+                }
+            }
+        }
+        if rays == 0 { writeln!(out, "none").unwrap(); }
+        writeln!(out, "Infer opponent plans separately. The facts above do not prove future threats.").unwrap();
+        out
+    }
+}
+
 impl ControlGraph {
     /// Read-only tactical facts for Proposer and Verifier. Derived exclusively
     /// from the supplied (already verified) Grounder map and its occupancy

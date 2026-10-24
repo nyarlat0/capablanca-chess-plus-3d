@@ -7,6 +7,8 @@ pub struct Inputs {
     pub selected_piece: Option<String>,
     pub control_map: Option<String>,
     pub analysis: Option<String>,
+    /// Output from the separate threat-analyzer run for isolated Proposer.
+    pub threats: Option<String>,
     /// One Proposer candidate: id, move, from, to, optional rationale.
     pub candidate: Option<Value>,
     /// Array of accepted candidates with tactical_result instead of rationale.
@@ -76,6 +78,10 @@ fn data(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result
         "--analysis-file is allowed only for proposer and verifier"
     );
     ensure!(
+        inputs.threats.is_none() || stage == Stage::Proposer,
+        "--threats-file is allowed only for proposer"
+    );
+    ensure!(
         inputs.candidate.is_some() == (stage == Stage::Verifier),
         "candidate-file is required only for verifier"
     );
@@ -92,6 +98,14 @@ fn data(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result
             "pin-analyzer requires Classic chess");
         let graph = crate::grounder::ControlGraph::parse(state.game.position(), map)?;
         data.custom["control-map"] = json!(graph.normalized_json()?);
+    }
+    if stage == Stage::ThreatAnalyzer {
+        ensure!(config.classic.is_some() && state.variant == capablanca_chess_plus::Variant::Classic,
+            "threat-analyzer requires Classic chess");
+        let position = state.game.position();
+        let map = crate::grounder::engine_map(position)?;
+        let graph = crate::grounder::ControlGraph::new(position, map)?;
+        data.custom["threat-facts"] = json!(graph.threat_facts(position.side_to_move()));
     }
     if matches!(stage, Stage::Proposer | Stage::Verifier) {
         let analysis = if let Some(analysis) = &inputs.analysis {
@@ -138,6 +152,9 @@ fn data(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) -> Result
         data.custom["accepted-candidates"] = json!(serde_json::to_string(&payload)?);
     }
     if stage == Stage::Proposer {
+        data.custom["threats"] = json!(inputs.threats.as_deref().unwrap_or(
+            "Not supplied in this isolated Proposer run; do not assume there are no threats."
+        ));
         data.custom["excluded-moves"] = json!(if state.wrong_moves.is_empty() {
             String::new()
         } else {
@@ -279,6 +296,13 @@ pub async fn run(state: &Match, config: &Config, stage: Stage, inputs: &Inputs) 
                 grounder_response(state, config, text)
             })
             .await
+        }
+        Stage::ThreatAnalyzer => {
+            let result: ThreatAnalysis = request(
+                &mut client, &http, config, stage, &data, &image,
+                ThreatAnalysis::validate,
+            ).await?;
+            Ok(serde_json::to_string_pretty(&result)?)
         }
         Stage::Proposer => {
             let result: Proposal = request(

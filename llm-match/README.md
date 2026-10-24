@@ -4,7 +4,7 @@
 Основной сценарий — **Classic Chess**, ходы модели в каноническом SAN.
 Остался один pipeline:
 
-**Grounder → Proposer → engine legality gate → Verifier для каждого кандидата → Selector → commit.**
+**Grounder → Threat Analyzer (Classic) → Proposer → engine legality gate → Verifier для каждого кандидата → Selector → commit.**
 
 ## Быстрый запуск
 
@@ -122,6 +122,33 @@ Selector доверяет готовым результатам и только 
 Grounder выполняется один раз на запрос хода, его результат переиспользуется
 при повторном подборе кандидатов. При трёх легальных кандидатах успешный ход —
 шесть LLM-генераций.
+
+## Анализ угроз противника (Classic)
+
+Между Grounder и Proposer добавлена LLM-стадия `threat-analyzer`.
+Она получает компактные проверенные факты `ControlGraph::threat_facts()`:
+атаки/защиты фигур, управление клетками по фигурам и xray,
+без повторного перечисления всех 64 клеток. Её JSON:
+`immediate_threats` (до 6), `opponent_plans` (до 5).
+Геометрические наблюдения маркируются `GEOMETRIC:`,
+гипотетические продолжения `HYPOTHESIS:`. Планы модели не являются
+доказанными фактами или проверенными форсированными вариантами.
+
+Threat Analyzer вызывается **один раз на позицию** до попыток Proposer.
+Его результат подставляется как `{{threats}}` в Proposer.
+Verifier не получает гипотезы и независимо считает конкретный ход.
+Fairy chess продолжает работать по старому четырёхстадийному пайплайну.
+
+```sh
+./target/release/llm-match --stage threat-analyzer --fen "$FEN" --print-prompt
+./target/release/llm-match --stage threat-analyzer --fen "$FEN" > target/threats.json
+./target/release/llm-match --stage proposer --fen "$FEN" --threats-file target/threats.json
+```
+
+Шаблон настраивается через `LLM_THREAT_ANALYZER_TEMPLATE`,
+пресет через необязательный `LLM_THREAT_ANALYZER_PRESET`.
+Если отдельный пресет не указан, используется пресет Proposer.
+Дополнительная стадия означает ещё один вызов LLM для каждого нового хода.
 
 ## Изолированная карта контроля Grounder (Classic)
 
@@ -299,6 +326,8 @@ Retry повторяет лишь текущую фигуру, не уже ус�
 - `{{classic-san-history}}`, `{{move-history}}` — вся принятая SAN-история,
   независимо от профиля, в Proposer.
 - `{{analysis}}` — результат Grounder в Proposer и Verifier.
+- `{{threat-facts}}` — проверенная компактная геометрия в Threat Analyzer.
+- `{{threats}}` — гипотезы о планах противника в Proposer.
 - `{{candidate}}` — единственный проверяемый ход в Verifier.
 - `{{accepted-candidates}}` — принятые ходы с tactical_result в Selector.
 - `{{excluded-moves}}` — исключения раунда в Proposer; без исключений пустая строка.
