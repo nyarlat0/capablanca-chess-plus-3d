@@ -30,7 +30,7 @@ cargo run --release -p llm-match -- --test-pipeline \
   --fen 'r1bqkb1r/pp2pppp/2n2n2/2PN4/5B2/8/PPP1PPPP/R2QKBNR b KQkq - 0 5'
 ```
 
-PNG доски **по умолчанию выключен**; `--image` включает,
+Настройки thinking для каждой стадии берутся **только из её пресета**.\nНапример, `LLM_PROPOSER_PRESET=presets/proposer.json`, где\n`chat_template_kwargs.enable_thinking=true` действительно включает thinking.\nПайплайн не переопределяет эту настройку.\n\nPNG доски **по умолчанию выключен**; `--image` включает,
 `--no-image` выключает. FEN, ASCII и Grounder передаются текстом.
 `--test-pipeline` прогоняет полный ход без изменения исходной партии.
 `--auto-grounder` сохранён для совместимости: в рабочем Classic-пути

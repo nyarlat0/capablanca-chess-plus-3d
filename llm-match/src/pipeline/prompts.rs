@@ -165,18 +165,11 @@ pub(super) fn build_request(
         ChatGenerationRequest::from_preset(messages, config.preset_for_stage(stage))?.into();
     image.attach(&mut request)?;
     request.image_token_reserve = if config.send_board_image {config.image_token_reserve} else {0};
-    if config.classic.is_some() && matches!(stage,Stage::Proposer | Stage::Selector) {
-        // A preset may contain chat_template_kwargs inside parameters.
-        // prompt-core rejects passing kwargs in both supported locations.
-        // Preserve existing knobs and override ONLY enable_thinking.
-        if let Some(kwargs) = request.parameters.get_mut("chat_template_kwargs") {
-            kwargs.as_object_mut()
-                .context("preset chat_template_kwargs must be a JSON object")?
-                .insert("enable_thinking".into(), json!(false));
-        } else {
-            request.chat_template_kwargs.insert("enable_thinking".into(), json!(false));
-        }
-    }
+    // Sampling/reasoning options belong to the selected stage preset.
+    // In particular, never override chat_template_kwargs.enable_thinking.
+    // Presets already put their kwargs inside request.parameters, and
+    // prompt-core transfers them to the Chat Completion payload.
+
     Ok(request)
 }
 
@@ -189,61 +182,71 @@ fn request_data(state: &Match, config: &Config, stage: Stage) -> Result<PromptDa
 }
 
 #[cfg(test)]
-mod thinking_override_tests {
+mod stage_reasoning_preset_tests {
     use super::*;
     use capablanca_chess_plus::{Color, Variant};
     use prompt_core::Preset;
 
-    #[test]
-    fn stage_override_does_not_duplicate_preset_chat_template_kwargs() {
-        let mut config = Config::load_classic_with_profile(Some("no-history")).unwrap();
-        config.send_board_image = false;
-        config.stage_presets.proposer = Some(Preset::from_value(json!({
-            "genamt":128,
-            "chat_template_kwargs":{"enable_thinking":true,"reasoning_effort":"low"}
-        })).unwrap());
-        config.stage_presets.selector = Some(Preset::from_value(json!({
-            "genamt":128,"temp":0.5
-        })).unwrap());
-        config.stage_presets.grounder = Some(Preset::from_value(json!({
-            "genamt":128,"chat_template_kwargs":{"enable_thinking":true}
-        })).unwrap());
-
-        let state = Match::new(Variant::Classic, Color::Black);
-        let image = crate::board_image::BoardImage::with_enabled(
-            state.game().position(), false
-        ).unwrap();
-        let make_request = |stage| build_request(
-            &config,stage,&prompt_data(&state,&config,stage).unwrap(),&image
-        ).unwrap();
-
-        let proposer = make_request(Stage::Proposer);
-        assert_eq!(proposer.parameters["chat_template_kwargs"]["enable_thinking"], false);
-        assert_eq!(proposer.parameters["chat_template_kwargs"]["reasoning_effort"], "low");
-        assert!(proposer.chat_template_kwargs.is_empty());
-
-        let selector = make_request(Stage::Selector);
-        assert_eq!(selector.chat_template_kwargs["enable_thinking"], false);
-        assert!(selector.parameters.get("chat_template_kwargs").is_none());
-
-        let grounder = make_request(Stage::Grounder);
-        assert_eq!(grounder.parameters["chat_template_kwargs"]["enable_thinking"], true);
-        assert!(grounder.chat_template_kwargs.is_empty());
+    fn request_for(config:&Config, stage:Stage) -> prompt_core::ChatCompletionRequest {
+        let state=Match::new(Variant::Classic,Color::Black);
+        let image=crate::board_image::BoardImage::with_enabled(
+            state.game().position(),false).unwrap();
+        build_request(config,stage,&prompt_data(&state,config,stage).unwrap(),&image)
+            .unwrap()
     }
 
     #[test]
-    fn malformed_preset_kwargs_get_a_direct_error() {
-        let mut config = Config::load_classic_with_profile(Some("no-history")).unwrap();
-        config.send_board_image = false;
-        config.stage_presets.proposer = Some(Preset::from_value(json!({
-            "genamt":128,"chat_template_kwargs":"invalid"
+    fn proposer_thinking_true_is_preserved() {
+        let mut config=Config::load_classic_with_profile(Some("no-history")).unwrap();
+        config.send_board_image=false;
+        config.stage_presets.proposer=Some(Preset::from_value(json!({
+            "genamt":128,
+            "chat_template_kwargs":{"enable_thinking":true,"reasoning_effort":"high"}
         })).unwrap());
-        let state = Match::new(Variant::Classic, Color::Black);
-        let image = crate::board_image::BoardImage::with_enabled(
-            state.game().position(), false
-        ).unwrap();
-        let err=build_request(&config,Stage::Proposer,
-            &prompt_data(&state,&config,Stage::Proposer).unwrap(),&image).unwrap_err();
-        assert!(format!("{err:#}").contains("preset chat_template_kwargs must be a JSON object"));
+        let req=request_for(&config,Stage::Proposer);
+        assert_eq!(req.parameters["chat_template_kwargs"]["enable_thinking"],true);
+        assert_eq!(req.parameters["chat_template_kwargs"]["reasoning_effort"],"high");
+        assert!(req.chat_template_kwargs.is_empty());
+    }
+
+    #[test]
+    fn proposer_thinking_false_is_preserved() {
+        let mut config=Config::load_classic_with_profile(Some("no-history")).unwrap();
+        config.send_board_image=false;
+        config.stage_presets.proposer=Some(Preset::from_value(json!({
+            "genamt":128,
+            "chat_template_kwargs":{"enable_thinking":false}
+        })).unwrap());
+        let req=request_for(&config,Stage::Proposer);
+        assert_eq!(req.parameters["chat_template_kwargs"]["enable_thinking"],false);
+        assert!(req.chat_template_kwargs.is_empty());
+    }
+
+    #[test]
+    fn selector_does_not_gain_unrequested_thinking_override() {
+        let mut config=Config::load_classic_with_profile(Some("no-history")).unwrap();
+        config.send_board_image=false;
+        config.stage_presets.selector=Some(Preset::from_value(json!({
+            "genamt":128
+        })).unwrap());
+        let req=request_for(&config,Stage::Selector);
+        assert!(req.parameters.get("chat_template_kwargs").is_none());
+        assert!(req.chat_template_kwargs.is_empty());
+        config.stage_presets.selector=Some(Preset::from_value(json!({
+            "genamt":128,
+            "chat_template_kwargs":{"enable_thinking":true}
+        })).unwrap());
+        assert_eq!(request_for(&config,Stage::Selector).parameters
+            ["chat_template_kwargs"]["enable_thinking"],true);
+    }
+
+    #[test]
+    fn real_proposer_preset_thinking_is_unchanged() {
+        let mut config=Config::load_classic_with_profile(Some("no-history")).unwrap();
+        config.send_board_image=false;
+        let expected=config.preset_for_stage(Stage::Proposer)
+            .raw()["chat_template_kwargs"].clone();
+        let req=request_for(&config,Stage::Proposer);
+        assert_eq!(req.parameters["chat_template_kwargs"],expected);
     }
 }

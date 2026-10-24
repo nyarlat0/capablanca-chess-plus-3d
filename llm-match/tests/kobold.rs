@@ -656,8 +656,10 @@ async fn classic_pipeline_uses_proposer_grounder_deltas_and_selector_without_ima
         let parsed:prompt_core::ChatCompletionMessage=serde_json::from_value(msg.clone()).unwrap();
         parsed.image_count()==0
     })));
-    assert_eq!(requests[0]["chat_template_kwargs"]["enable_thinking"],false);
-    assert_eq!(requests[1]["chat_template_kwargs"]["enable_thinking"],false);
+    // The Proposer preset explicitly enables thinking; never override it.
+    assert_eq!(requests[0]["chat_template_kwargs"]["enable_thinking"],true);
+    // Selector preset does not specify enable_thinking; do not inject it.
+    assert!(requests[1].get("chat_template_kwargs").is_none());
     assert!(requests.iter().all(|req|req.get("tools").is_none()));
     let selector=rendered_prompt(&requests[1]);
     assert!(selector.contains("free_targets_after"));
