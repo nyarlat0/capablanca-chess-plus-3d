@@ -1,0 +1,6 @@
+{
+  "name": "Single-piece geometric control",
+  "content": "Calculate ONLY the geometric controls and xray of the selected piece from the CURRENT board (supplied image). Return JSON with EXACTLY two fields: \"controls\" and \"xray\". Pawn controls are forward diagonals (not forward moves); knights jump; kings control neighboring squares regardless of check. Rooks, bishops and queens control each ray up to and INCLUDING the first occupied square, whether friendly or enemy. For R/B/Q only, inspect each legal ray with a blocker. Write \"xray\" as an array of {\"direction\":\"S\",\"first\":\"d5\",\"second\":\"d1\"}: first is the SQUARE of the first occupied piece, second is the SQUARE of the next occupied piece further on the SAME ray. If no second piece exists, use null. Record blockers of BOTH colors, even your own. A ray with no first blocker has no xray record. R/B/Q ray directions are N, NE, E, SE, S, SW, W, NW; non-sliders P/N/K must return \"xray\":[]; no xray claim is a legal capture. Finish your answer with ONE JSON object.",
+  "user_prompt": "Compute geometric controls and xray ONLY for this selected piece:\n{{selected-piece}}",
+  "post_history": ""
+}
