@@ -24,8 +24,14 @@ fn message_text(message: &Value) -> String {
         serde_json::from_value(message.clone()).unwrap();
     let mut text=parsed.text_parts().concat();
     for call in parsed.tool_calls() {
-        text.push_str(&call.function.name);
-        text.push_str(&call.arguments::<Value>().unwrap().to_string());
+        // Emulate Qwen's Jinja template: function arguments are NOT JSON.
+        text.push_str(&format!("<tool_call><function={}>",call.function.name));
+        let arguments=call.arguments::<Value>().unwrap();
+        for (name,value) in arguments.as_object().unwrap() {
+            let argument=value.as_str().map(str::to_owned).unwrap_or_else(||value.to_string());
+            text.push_str(&format!("<parameter={name}>\n{argument}\n</parameter>"));
+        }
+        text.push_str("</function></tool_call>");
     }
     text
 }

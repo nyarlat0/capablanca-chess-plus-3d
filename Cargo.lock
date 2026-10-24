@@ -7586,6 +7586,7 @@ dependencies = [
 [[package]]
 name = "prompt-core"
 version = "0.1.0"
+source = "git+https://github.com/nyarlat0/prompt-core.git?rev=ee908c89d2d569c7a083ef2d27968e93f709ecaf#ee908c89d2d569c7a083ef2d27968e93f709ecaf"
 dependencies = [
  "anyhow",
  "handlebars",

@@ -451,3 +451,15 @@ and a compatible model tool-use template. The prompt-core tokenization
 preview rejects servers that omit the JSON tool definition or drop tool
 messages, instead of silently treating the model's tool request as prose.
 If the model chooses not to call `piece_at`, it can still answer normally.
+
+### Qwen parameter-rendering compatibility
+
+The default dependency is pinned to
+[nyarlat0/prompt-core at `ee908c89d`](https://github.com/nyarlat0/prompt-core/commit/ee908c89d2d569c7a083ef2d27968e93f709ecaf).
+That release validates both JSON-native Jinja tool arguments and Qwen's
+`<function=piece_at><parameter=square>c3</parameter></function>` rendering.
+Older prompt-core revisions wrongly reject the latter with
+`Backend template omitted or transformed tool arguments` after successful
+KoboldCpp generation. The tool schema, outputs, and Grounder prompts have
+not changed. The Kobold mock server mirrors Qwen's parameter rendering so
+integration tests catch regressions.

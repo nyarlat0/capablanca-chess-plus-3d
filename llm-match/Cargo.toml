@@ -5,7 +5,7 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
-prompt-core = {path = "../../ai-tg-bot/crates/prompt-core"}
+prompt-core = { git = "https://github.com/nyarlat0/prompt-core.git", rev = "ee908c89d2d569c7a083ef2d27968e93f709ecaf" }
 capablanca-engine = { path = "../engine" }
 anyhow = "1"
 base64 = "0.22"
